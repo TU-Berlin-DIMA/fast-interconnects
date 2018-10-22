@@ -1,0 +1,28 @@
+[package]
+name = "numa-gpu"
+version = "0.1.0"
+authors = ["Clemens Lutz <lutzcle@cml.li>"]
+license = "MPL-2.0"
+repository = "https://github.com/TU-Berlin-DIMA/numa-gpu"
+description = "Joins and morsel-driven parallelism using NVLink 2.0 on POWER9"
+readme = "README.md"
+
+[dependencies]
+accel = { git = "https://github.com/rust-accel/accel.git", rev = "fecbf4b" }
+accel-native = { git = "https://github.com/lutzcle/accel-native" }
+cuda-sys = "0.2.0"
+
+[dev-dependencies]
+criterion = "~0.2.5"
+
+[profile.release]
+debug = true
+opt-level = 3
+
+[profile.bench]
+debug = true
+opt-level = 3
+
+[[bench]]
+name = "hash_join"
+harness = false
