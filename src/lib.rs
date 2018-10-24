@@ -10,6 +10,9 @@
 
 #[macro_use]
 extern crate accel_native;
+#[macro_use]
+extern crate error_chain;
 
+pub mod error;
 pub mod operators;
 pub mod runtime;
