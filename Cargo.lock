@@ -1,7 +1,7 @@
 [[package]]
 name = "accel"
 version = "0.2.1-alpha.0"
-source = "git+https://github.com/rust-accel/accel.git?rev=fecbf4b#fecbf4b80398716a8320b959a2bf3c85f1327551"
+source = "git+https://github.com/LutzCle/accel.git#d36fe2420a89784fbeecc1cf9652b9230a7fe672"
 dependencies = [
  "cuda-sys 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "procedurals 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -314,7 +314,7 @@ dependencies = [
 name = "numa-gpu"
 version = "0.1.0"
 dependencies = [
- "accel 0.2.1-alpha.0 (git+https://github.com/rust-accel/accel.git?rev=fecbf4b)",
+ "accel 0.2.1-alpha.0 (git+https://github.com/LutzCle/accel.git)",
  "accel-native 0.1.0 (git+https://github.com/lutzcle/accel-native)",
  "criterion 0.2.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "cuda-sys 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -644,7 +644,7 @@ version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [metadata]
-"checksum accel 0.2.1-alpha.0 (git+https://github.com/rust-accel/accel.git?rev=fecbf4b)" = "<none>"
+"checksum accel 0.2.1-alpha.0 (git+https://github.com/LutzCle/accel.git)" = "<none>"
 "checksum accel-native 0.1.0 (git+https://github.com/lutzcle/accel-native)" = "<none>"
 "checksum aho-corasick 0.6.8 (registry+https://github.com/rust-lang/crates.io-index)" = "68f56c7353e5a9547cbd76ed90f7bb5ffc3ba09d4ea9bd1d8c06c8b1142eeb5a"
 "checksum ansi_term 0.11.0 (registry+https://github.com/rust-lang/crates.io-index)" = "ee49baf6cb617b853aa8d93bf420db2383fab46d314482ca2803b40d5fde979b"

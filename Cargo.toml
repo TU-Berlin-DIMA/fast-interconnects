@@ -8,7 +8,7 @@ description = "Joins and morsel-driven parallelism using NVLink 2.0 on POWER9"
 readme = "README.md"
 
 [dependencies]
-accel = { git = "https://github.com/rust-accel/accel.git", rev = "fecbf4b" }
+accel = { git = "https://github.com/LutzCle/accel.git" }
 accel-native = { git = "https://github.com/lutzcle/accel-native" }
 cuda-sys = "0.2.0"
 error-chain = "~0.12.0"
