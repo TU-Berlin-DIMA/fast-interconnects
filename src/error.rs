@@ -28,17 +28,12 @@ error_chain!{
 impl From<AccelError> for Error {
     fn from(error: AccelError) -> Self {
         match &error {
-            AccelError::cudaError(e) => {
-                Self::from_kind(ErrorKind::Cuda(format!("{:?}", e)))
-            },
+            AccelError::cudaError(e) => Self::from_kind(ErrorKind::Cuda(format!("{:?}", e))),
             AccelError::cudaRuntimeError(e) => {
                 Self::from_kind(ErrorKind::CudaRuntime(format!("{:?}", e)))
-            },
-            AccelError::cublasError(e) => {
-                Self::from_kind(ErrorKind::CuBlas(format!("{:?}", e)))
-            },
+            }
+            AccelError::cublasError(e) => Self::from_kind(ErrorKind::CuBlas(format!("{:?}", e))),
             // _ => panic!("Unexpected Accel error!"),
         }
-
     }
 }

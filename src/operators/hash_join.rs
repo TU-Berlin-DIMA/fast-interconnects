@@ -65,11 +65,7 @@ impl CudaHashJoin {
         self
     }
 
-    pub fn probe(
-        &mut self,
-        join_attr: UVec<i64>,
-        filter_attr: UVec<i64>,
-    ) -> &mut UVec<u64> {
+    pub fn probe(&mut self, join_attr: UVec<i64>, filter_attr: UVec<i64>) -> &mut UVec<u64> {
         let (grid, block) = self.probe_dim;
         assert!(self.result_set.len() >= (grid * block) as usize);
         assert_eq!(join_attr.len(), filter_attr.len());

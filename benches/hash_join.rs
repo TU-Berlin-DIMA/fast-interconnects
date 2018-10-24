@@ -3,18 +3,18 @@ extern crate accel;
 extern crate average;
 extern crate core; // Required by average::concatenate!{} macro
 extern crate csv;
-extern crate numa_gpu;
 extern crate cuda_sys;
 extern crate hostname;
+extern crate numa_gpu;
 #[macro_use]
 extern crate serde_derive;
 extern crate serde;
 
 use accel::device::sync;
-use accel::uvec::UVec;
 use accel::event::Event;
+use accel::uvec::UVec;
 
-use average::{Estimate,Max,Min,Quantile,Variance};
+use average::{Estimate, Max, Min, Quantile, Variance};
 
 use numa_gpu::error::Result;
 use numa_gpu::operators::hash_join;
@@ -34,54 +34,51 @@ pub struct DataPoint<'h> {
 fn main() {
     let repeat = 100;
 
-    measure("full_hash_join", repeat)
-        .expect("Failure: full hash join benchmark");
+    measure("full_hash_join", repeat).expect("Failure: full hash join benchmark");
 }
 
-fn measure(name: &str, repeat: u32) -> Result<()>
-{
-    let hostname = &hostname::get_hostname()
-        .ok_or_else(|| "Couldn't get hostname")?;
+fn measure(name: &str, repeat: u32) -> Result<()> {
+    let hostname = &hostname::get_hostname().ok_or_else(|| "Couldn't get hostname")?;
 
     let measurements = (0..repeat)
         .map(|_| {
-            full_hash_join()
-                .map(|total_ms| DataPoint{
-                    hostname,
-                    warm_up: false,
-                    hash_table_bytes: 1024 * 16,
-                    build_bytes: 10 * 8,
-                    probe_bytes: 1000 * 8,
-                    total_ms,
-                })
-        })
-    .collect::<Result<Vec<_>>>()?;
+            full_hash_join().map(|total_ms| DataPoint {
+                hostname,
+                warm_up: false,
+                hash_table_bytes: 1024 * 16,
+                build_bytes: 10 * 8,
+                probe_bytes: 1000 * 8,
+                total_ms,
+            })
+        }).collect::<Result<Vec<_>>>()?;
 
-    let csv_path = PathBuf::from(name)
-        .with_extension("csv");
+    let csv_path = PathBuf::from(name).with_extension("csv");
 
     let csv_file = std::fs::File::create(csv_path)?;
 
     let mut csv = csv::Writer::from_writer(csv_file);
-    measurements.iter()
+    measurements
+        .iter()
         .try_for_each(|row| csv.serialize(row))
         .expect("Couldn't write serialized measurements");
 
-    concatenate!(Estimator,
-                 [Variance, variance, mean, error],
-                 [Quantile, quantile, quantile],
-                 [Min, min, min],
-                 [Max, max, max]
-                );
+    concatenate!(
+        Estimator,
+        [Variance, variance, mean, error],
+        [Quantile, quantile, quantile],
+        [Min, min, min],
+        [Max, max, max]
+    );
 
-        let bw_scale_factor = 2.0;
-        let stats: Estimator = measurements.iter()
-            .map(|row| (row.probe_bytes as f64, row.total_ms as f64))
-            .map(|(bytes, ms)| bytes / ms / 10.0_f64.powf(6.0))
-            .collect();
+    let bw_scale_factor = 2.0;
+    let stats: Estimator = measurements
+        .iter()
+        .map(|row| (row.probe_bytes as f64, row.total_ms as f64))
+        .map(|(bytes, ms)| bytes / ms / 10.0_f64.powf(6.0))
+        .collect();
 
-        println!(
-r#"{} benchmark
+    println!(
+        r#"Bench: {}
 Sample size: {}
                Throughput      Bandwidth
                 GiB/s           GiB/s
@@ -90,25 +87,24 @@ Stddev:        {:6.2}          {:6.2}
 Median:        {:6.2}          {:6.2}
 Min:           {:6.2}          {:6.2}
 Max:           {:6.2}          {:6.2}"#,
-            "name here",
-            measurements.len(),
-            stats.mean(),
-            stats.mean() * bw_scale_factor,
-            stats.error(),
-            stats.error() * bw_scale_factor,
-            stats.quantile(),
-            stats.quantile() * bw_scale_factor,
-            stats.min(),
-            stats.min() * bw_scale_factor,
-            stats.max(),
-            stats.max() * bw_scale_factor,
-            );
+        name.replace("_", " "),
+        measurements.len(),
+        stats.mean(),
+        stats.mean() * bw_scale_factor,
+        stats.error(),
+        stats.error() * bw_scale_factor,
+        stats.quantile(),
+        stats.quantile() * bw_scale_factor,
+        stats.min(),
+        stats.min() * bw_scale_factor,
+        stats.max(),
+        stats.max() * bw_scale_factor,
+    );
 
     Ok(())
 }
 
 fn full_hash_join() -> Result<f32> {
-
     let hash_table = hash_join::HashTable::new(1024);
     let mut build_join_attr = UVec::<i64>::new(10).unwrap();
     let mut build_selection_attr: UVec<i64> = UVec::new(build_join_attr.len()).unwrap();
