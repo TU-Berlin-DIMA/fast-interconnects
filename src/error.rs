@@ -33,7 +33,6 @@ impl From<AccelError> for Error {
                 Self::from_kind(ErrorKind::CudaRuntime(format!("{:?}", e)))
             }
             AccelError::cublasError(e) => Self::from_kind(ErrorKind::CuBlas(format!("{:?}", e))),
-            // _ => panic!("Unexpected Accel error!"),
         }
     }
 }
