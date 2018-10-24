@@ -1,7 +1,5 @@
 extern crate accel;
 
-// use std::os::raw::c_int;
-// use std::ffi::CStr;
 use self::accel::error::Error as AccelError;
 
 error_chain!{
