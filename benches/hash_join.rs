@@ -2,12 +2,15 @@ extern crate accel;
 #[macro_use]
 extern crate criterion;
 extern crate numa_gpu;
+extern crate cuda_sys;
 
 use accel::device::sync;
 use accel::uvec::UVec;
+use accel::event::Event;
 
 use criterion::Criterion;
 
+use numa_gpu::error;
 use numa_gpu::operators::hash_join;
 
 fn basic_functionality() {
@@ -55,9 +58,19 @@ fn basic_functionality() {
 
     // println!("{:#?}", hj_op);
 
+    let start_event = Event::new().unwrap();
+    let stop_event = Event::new().unwrap();
+
+    start_event.record().unwrap();
+
     let join_result = hj_op
         .build(build_join_attr, build_selection_attr)
         .probe(probe_join_attr, probe_selection_attr);
+
+    stop_event.record().and_then(|e| e.synchronize()).unwrap();
+    let millis = stop_event.elapsed_time(&start_event).unwrap();
+
+    println!("Time (ms): {}", millis);
 
     sync().unwrap();
 }
