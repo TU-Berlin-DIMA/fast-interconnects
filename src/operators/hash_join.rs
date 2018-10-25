@@ -17,6 +17,8 @@ use self::accel::uvec::UVec;
 
 use std::path::Path;
 
+use error::Result;
+
 #[derive(Debug)]
 pub struct CudaHashJoin {
     ops: Module,
@@ -41,8 +43,11 @@ pub struct CudaHashJoinBuilder {
 }
 
 impl CudaHashJoin {
-    pub fn build(&mut self, join_attr: UVec<i64>, filter_attr: UVec<i64>) -> &mut Self {
-        assert_eq!(join_attr.len(), filter_attr.len());
+    pub fn build(&mut self, join_attr: UVec<i64>, filter_attr: UVec<i64>) -> Result<&mut Self> {
+        ensure!(
+            join_attr.len() == filter_attr.len(),
+            "Join and filter attributes have different sizes"
+        );
 
         let (grid, block) = self.build_dim;
 
@@ -59,16 +64,25 @@ impl CudaHashJoin {
                     hash_table_len,
                     self.hash_table.data
                 )
-        ).expect("Cannot launch build kernel");
-        sync().unwrap();
+        )?;
 
-        self
+        Ok(self)
     }
 
-    pub fn probe(&mut self, join_attr: UVec<i64>, filter_attr: UVec<i64>) -> &mut UVec<u64> {
+    pub fn probe(
+        &mut self,
+        join_attr: UVec<i64>,
+        filter_attr: UVec<i64>,
+    ) -> Result<&mut UVec<u64>> {
         let (grid, block) = self.probe_dim;
-        assert!(self.result_set.len() >= (grid * block) as usize);
-        assert_eq!(join_attr.len(), filter_attr.len());
+        ensure!(
+            self.result_set.len() >= (grid * block) as usize,
+            "Result set size is too small, must be at least grid * block size"
+        );
+        ensure!(
+            join_attr.len() == filter_attr.len(),
+            "Join and filter attributes have different sizes"
+        );
 
         let join_attr_len = join_attr.len() as u64;
         let hash_table_len = self.hash_table.data.len() as u64;
@@ -83,20 +97,22 @@ impl CudaHashJoin {
                     hash_table_len,
                     self.result_set
                 )
-        ).expect("Cannot launch probe kernel");
-        sync().unwrap();
+        )?;
 
-        &mut self.result_set
+        Ok(&mut self.result_set)
     }
 }
 
 impl HashTable {
     const NULL_KEY: i64 = -1;
 
-    pub fn new(size: usize) -> Self {
-        assert!(size.is_power_of_two());
+    pub fn new(size: usize) -> Result<Self> {
+        ensure!(
+            size.is_power_of_two(),
+            "Hash table size must be a power of two"
+        );
 
-        let mut data = UVec::<i64>::new(size).unwrap();
+        let mut data = UVec::<i64>::new(size)?;
 
         // Initialize hash table
         data.as_slice_mut()
@@ -105,7 +121,7 @@ impl HashTable {
             .map(|entry| *entry = Self::NULL_KEY)
             .collect::<()>();
 
-        Self { data }
+        Ok(Self { data })
     }
 }
 
@@ -141,16 +157,16 @@ impl CudaHashJoinBuilder {
         self
     }
 
-    pub fn build(self) -> CudaHashJoin {
-        assert!(self.hash_table_i.is_some());
-        assert!(self.result_set_i.is_some());
+    pub fn build(self) -> Result<CudaHashJoin> {
+        ensure!(self.hash_table_i.is_some(), "Hash table not set");
+        ensure!(self.result_set_i.is_some(), "Result set array not set");
 
         let module_path = Path::new(env!("CUDAUTILS_PATH"));
 
         // force CUDA to init device and create context
-        sync().unwrap();
+        sync()?;
 
-        let ops = Module::load_file(module_path).expect("Cannot load CUDA module");
+        let ops = Module::load_file(module_path)?;
 
         let (build_grid, build_block) = self.build_dim_i;
         let build_result_size = build_grid as usize * build_block as usize;
@@ -158,26 +174,30 @@ impl CudaHashJoinBuilder {
         let (probe_grid, probe_block) = self.probe_dim_i;
         let result_set_size = probe_grid as usize * probe_block as usize;
 
-        let build_result: UVec<u64> = UVec::new(build_result_size).unwrap();
+        let build_result: UVec<u64> = UVec::new(build_result_size)?;
 
-        CudaHashJoin {
+        let hash_table = if let Some(ht) = self.hash_table_i {
+            ht
+        } else {
+            HashTable {
+                data: UVec::<i64>::new(Self::DEFAULT_HT_SIZE)?,
+            }
+        };
+
+        let result_set = if let Some(rs) = self.result_set_i {
+            rs
+        } else {
+            UVec::<u64>::new(result_set_size)?
+        };
+
+        Ok(CudaHashJoin {
             ops,
-            hash_table: if let Some(ht) = self.hash_table_i {
-                ht
-            } else {
-                HashTable {
-                    data: UVec::<i64>::new(Self::DEFAULT_HT_SIZE).unwrap(),
-                }
-            },
-            result_set: if let Some(rs) = self.result_set_i {
-                rs
-            } else {
-                UVec::<u64>::new(result_set_size).unwrap()
-            },
+            hash_table,
+            result_set,
             build_result,
             build_dim: self.build_dim_i,
             probe_dim: self.probe_dim_i,
-        }
+        })
     }
 }
 

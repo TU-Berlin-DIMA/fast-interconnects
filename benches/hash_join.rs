@@ -14,6 +14,8 @@ extern crate average;
 extern crate core; // Required by average::concatenate!{} macro
 extern crate csv;
 extern crate cuda_sys;
+#[macro_use]
+extern crate error_chain;
 extern crate hostname;
 extern crate numa_gpu;
 #[macro_use]
@@ -86,10 +88,13 @@ fn measure(name: &str, repeat: u32) -> Result<()> {
     let csv_file = std::fs::File::create(csv_path)?;
 
     let mut csv = csv::Writer::from_writer(csv_file);
-    measurements
-        .iter()
-        .try_for_each(|row| csv.serialize(row))
-        .expect("Couldn't write serialized measurements");
+    ensure!(
+        measurements
+            .iter()
+            .try_for_each(|row| csv.serialize(row))
+            .is_ok(),
+        "Couldn't write serialized measurements"
+    );
 
     concatenate!(
         Estimator,
@@ -99,10 +104,7 @@ fn measure(name: &str, repeat: u32) -> Result<()> {
         [Max, max, max]
     );
 
-    let time_stats: Estimator = measurements
-        .iter()
-        .map(|row| row.gpu_ms as f64)
-        .collect();
+    let time_stats: Estimator = measurements.iter().map(|row| row.gpu_ms as f64).collect();
 
     let tput_stats: Estimator = measurements
         .iter()
@@ -148,12 +150,13 @@ struct HashJoinBench {
 
 impl HashJoinBench {
     fn full_hash_join(&self) -> Result<f32> {
-        let hash_table = hash_join::HashTable::new(self.hash_table_size);
-        let mut build_join_attr = UVec::<i64>::new(self.build_size).unwrap();
-        let mut build_selection_attr: UVec<i64> = UVec::new(build_join_attr.len()).unwrap();
-        let mut counts_result: UVec<u64> = UVec::new((self.probe_dim.0 * self.probe_dim.1) as usize).unwrap();
-        let mut probe_join_attr: UVec<i64> = UVec::new(self.probe_size).unwrap();
-        let mut probe_selection_attr: UVec<i64> = UVec::new(probe_join_attr.len()).unwrap();
+        let hash_table = hash_join::HashTable::new(self.hash_table_size)?;
+        let mut build_join_attr = UVec::<i64>::new(self.build_size)?;
+        let mut build_selection_attr: UVec<i64> = UVec::new(build_join_attr.len())?;
+        let mut counts_result: UVec<u64> =
+            UVec::new((self.probe_dim.0 * self.probe_dim.1) as usize)?;
+        let mut probe_join_attr: UVec<i64> = UVec::new(self.probe_size)?;
+        let mut probe_selection_attr: UVec<i64> = UVec::new(probe_join_attr.len())?;
 
         // Generate some random build data
         for (i, x) in build_join_attr.as_slice_mut().iter_mut().enumerate() {
@@ -188,23 +191,23 @@ impl HashJoinBench {
             .probe_dim(self.probe_dim.0, self.probe_dim.1)
             .hash_table(hash_table)
             .result_set(counts_result)
-            .build();
+            .build()?;
 
         // println!("{:#?}", hj_op);
 
-        let start_event = Event::new().unwrap();
-        let stop_event = Event::new().unwrap();
+        let start_event = Event::new()?;
+        let stop_event = Event::new()?;
 
-        start_event.record().unwrap();
+        start_event.record()?;
 
         let _join_result = hj_op
-            .build(build_join_attr, build_selection_attr)
-            .probe(probe_join_attr, probe_selection_attr);
+            .build(build_join_attr, build_selection_attr)?
+            .probe(probe_join_attr, probe_selection_attr)?;
 
-        stop_event.record().and_then(|e| e.synchronize()).unwrap();
-        let millis = stop_event.elapsed_time(&start_event).unwrap();
+        stop_event.record().and_then(|e| e.synchronize())?;
+        let millis = stop_event.elapsed_time(&start_event)?;
 
-        sync().unwrap();
+        sync()?;
         Ok(millis)
     }
 }
