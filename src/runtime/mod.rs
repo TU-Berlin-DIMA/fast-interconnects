@@ -9,6 +9,7 @@
  */
 
 pub mod backend;
+pub mod memory;
 pub mod store;
 
 pub struct Runtime {}

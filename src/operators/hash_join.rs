@@ -18,6 +18,7 @@ use self::accel::uvec::UVec;
 use std::path::Path;
 
 use error::Result;
+use runtime::memory::*;
 
 #[derive(Debug)]
 pub struct CudaHashJoin {
@@ -43,7 +44,7 @@ pub struct CudaHashJoinBuilder {
 }
 
 impl CudaHashJoin {
-    pub fn build(&mut self, join_attr: UVec<i64>, filter_attr: UVec<i64>) -> Result<&mut Self> {
+    pub fn build(&mut self, join_attr: Mem<i64>, filter_attr: Mem<i64>) -> Result<&mut Self> {
         ensure!(
             join_attr.len() == filter_attr.len(),
             "Join and filter attributes have different sizes"
@@ -59,8 +60,8 @@ impl CudaHashJoin {
                 >> (
                     join_attr_len,
                     self.build_result,
-                    filter_attr,
-                    join_attr,
+                    *filter_attr.as_any(),
+                    *join_attr.as_any(),
                     hash_table_len,
                     self.hash_table.data
                 )
@@ -69,11 +70,7 @@ impl CudaHashJoin {
         Ok(self)
     }
 
-    pub fn probe(
-        &mut self,
-        join_attr: UVec<i64>,
-        filter_attr: UVec<i64>,
-    ) -> Result<&mut UVec<u64>> {
+    pub fn probe(&mut self, join_attr: Mem<i64>, filter_attr: Mem<i64>) -> Result<&mut UVec<u64>> {
         let (grid, block) = self.probe_dim;
         ensure!(
             self.result_set.len() >= (grid * block) as usize,
@@ -91,8 +88,8 @@ impl CudaHashJoin {
             aggregation_kernel << [&self.ops, Grid::x(grid), Block::x(block)]
                 >> (
                     join_attr_len,
-                    filter_attr,
-                    join_attr,
+                    *filter_attr.as_any(),
+                    *join_attr.as_any(),
                     self.hash_table.data,
                     hash_table_len,
                     self.result_set

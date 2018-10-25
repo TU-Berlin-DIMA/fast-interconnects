@@ -30,6 +30,7 @@ use average::{Estimate, Max, Min, Quantile, Variance};
 
 use numa_gpu::error::Result;
 use numa_gpu::operators::hash_join;
+use numa_gpu::runtime::memory::*;
 
 use std::path::PathBuf;
 
@@ -151,21 +152,25 @@ struct HashJoinBench {
 impl HashJoinBench {
     fn full_hash_join(&self) -> Result<f32> {
         let hash_table = hash_join::HashTable::new(self.hash_table_size)?;
-        let mut build_join_attr = UVec::<i64>::new(self.build_size)?;
-        let mut build_selection_attr: UVec<i64> = UVec::new(build_join_attr.len())?;
+        let mut build_join_attr = CudaUniMem(UVec::<i64>::new(self.build_size)?);
+        let mut build_selection_attr = CudaUniMem(UVec::<i64>::new(build_join_attr.len())?);
         let mut counts_result: UVec<u64> =
             UVec::new((self.probe_dim.0 * self.probe_dim.1) as usize)?;
-        let mut probe_join_attr: UVec<i64> = UVec::new(self.probe_size)?;
-        let mut probe_selection_attr: UVec<i64> = UVec::new(probe_join_attr.len())?;
+        let mut probe_join_attr = CudaUniMem(UVec::<i64>::new(self.probe_size)?);
+        let mut probe_selection_attr = CudaUniMem(UVec::<i64>::new(probe_join_attr.len())?);
 
         // Generate some random build data
-        for (i, x) in build_join_attr.as_slice_mut().iter_mut().enumerate() {
-            *x = i as i64;
+        if let CudaUniMem(ref mut a) = build_join_attr {
+            for (i, x) in a.as_slice_mut().iter_mut().enumerate() {
+                *x = i as i64;
+            }
         }
 
         // Generate some random probe data
-        for (i, x) in probe_join_attr.as_slice_mut().iter_mut().enumerate() {
-            *x = (i % build_join_attr.len()) as i64;
+        if let CudaUniMem(ref mut a) = probe_join_attr {
+            for (i, x) in a.as_slice_mut().iter_mut().enumerate() {
+                *x = (i % build_join_attr.len()) as i64;
+            }
         }
 
         // Initialize counts
@@ -175,16 +180,14 @@ impl HashJoinBench {
             .collect::<()>();
 
         // Set build selection attributes to 100% selectivity
-        build_selection_attr
-            .iter_mut()
-            .map(|x| *x = 2)
-            .collect::<()>();
+        if let CudaUniMem(ref mut a) = build_selection_attr {
+            a.iter_mut().map(|x| *x = 2).collect::<()>();
+        }
 
         // Set probe selection attributes to 100% selectivity
-        probe_selection_attr
-            .iter_mut()
-            .map(|x| *x = 2)
-            .collect::<()>();
+        if let CudaUniMem(ref mut a) = probe_selection_attr {
+            a.iter_mut().map(|x| *x = 2).collect::<()>();
+        }
 
         let mut hj_op = hash_join::CudaHashJoinBuilder::default()
             .build_dim(self.build_dim.0, self.build_dim.1)
