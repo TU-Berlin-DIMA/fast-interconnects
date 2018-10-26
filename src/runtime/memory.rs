@@ -16,6 +16,7 @@ use self::accel::uvec::UVec;
 use std::any::Any;
 
 pub use self::Mem::*;
+#[derive(Debug)]
 pub enum Mem<T> {
     SysMem(Vec<T>),
     CudaDevMem(MVec<T>),

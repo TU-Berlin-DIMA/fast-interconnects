@@ -151,11 +151,13 @@ struct HashJoinBench {
 
 impl HashJoinBench {
     fn full_hash_join(&self) -> Result<f32> {
-        let hash_table = hash_join::HashTable::new(self.hash_table_size)?;
+        let hash_table_mem = CudaUniMem(UVec::<i64>::new(self.hash_table_size)?);
+        let hash_table = hash_join::HashTable::new(hash_table_mem, self.hash_table_size)?;
         let mut build_join_attr = CudaUniMem(UVec::<i64>::new(self.build_size)?);
         let mut build_selection_attr = CudaUniMem(UVec::<i64>::new(build_join_attr.len())?);
-        let mut counts_result: UVec<u64> =
-            UVec::new((self.probe_dim.0 * self.probe_dim.1) as usize)?;
+        let mut result_counts = CudaUniMem(UVec::<u64>::new(
+            (self.probe_dim.0 * self.probe_dim.1) as usize,
+        )?);
         let mut probe_join_attr = CudaUniMem(UVec::<i64>::new(self.probe_size)?);
         let mut probe_selection_attr = CudaUniMem(UVec::<i64>::new(probe_join_attr.len())?);
 
@@ -174,10 +176,9 @@ impl HashJoinBench {
         }
 
         // Initialize counts
-        counts_result
-            .iter_mut()
-            .map(|count| *count = 0)
-            .collect::<()>();
+        if let CudaUniMem(ref mut c) = result_counts {
+            c.iter_mut().map(|count| *count = 0).collect::<()>();
+        }
 
         // Set build selection attributes to 100% selectivity
         if let CudaUniMem(ref mut a) = build_selection_attr {
@@ -193,7 +194,6 @@ impl HashJoinBench {
             .build_dim(self.build_dim.0, self.build_dim.1)
             .probe_dim(self.probe_dim.0, self.probe_dim.1)
             .hash_table(hash_table)
-            .result_set(counts_result)
             .build()?;
 
         // println!("{:#?}", hj_op);
@@ -203,9 +203,9 @@ impl HashJoinBench {
 
         start_event.record()?;
 
-        let _join_result = hj_op
+        let _result_counts = hj_op
             .build(build_join_attr, build_selection_attr)?
-            .probe(probe_join_attr, probe_selection_attr)?;
+            .probe_count(probe_join_attr, probe_selection_attr, result_counts)?;
 
         stop_event.record().and_then(|e| e.synchronize())?;
         let millis = stop_event.elapsed_time(&start_event)?;
