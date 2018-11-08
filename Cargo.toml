@@ -8,10 +8,12 @@ description = "Joins and morsel-driven parallelism using NVLink 2.0 on POWER9"
 readme = "README.md"
 
 [dependencies]
+# accel = { path = "../accel" }
 accel = { git = "https://github.com/LutzCle/accel.git" }
 accel-native = { git = "https://github.com/lutzcle/accel-native" }
 cuda-sys = "0.2.0"
 error-chain = "~0.12.0"
+mchj-generator = { git = "https://github.com/LutzCle/mchj-generator.git" }
 
 [dev-dependencies]
 average = "~0.9.2"

@@ -43,7 +43,7 @@ pub struct CudaHashJoinBuilder {
 }
 
 impl CudaHashJoin {
-    pub fn build(&mut self, join_attr: Mem<i64>, filter_attr: Mem<i64>) -> Result<&mut Self> {
+    pub fn build(&mut self, join_attr: &Mem<i64>, filter_attr: &Mem<i64>) -> Result<&mut Self> {
         ensure!(
             join_attr.len() == filter_attr.len(),
             "Join and filter attributes have different sizes"
@@ -71,10 +71,10 @@ impl CudaHashJoin {
 
     pub fn probe_count(
         &mut self,
-        join_attr: Mem<i64>,
-        filter_attr: Mem<i64>,
-        result_set: Mem<u64>,
-    ) -> Result<Mem<u64>> {
+        join_attr: &Mem<i64>,
+        filter_attr: &Mem<i64>,
+        result_set: &mut Mem<u64>,
+    ) -> Result<()> {
         let (grid, block) = self.probe_dim;
         ensure!(
             result_set.len() >= (grid * block) as usize,
@@ -100,7 +100,7 @@ impl CudaHashJoin {
                 )
         )?;
 
-        Ok(result_set)
+        Ok(())
     }
 }
 

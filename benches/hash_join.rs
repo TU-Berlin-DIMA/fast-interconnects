@@ -17,6 +17,7 @@ extern crate cuda_sys;
 #[macro_use]
 extern crate error_chain;
 extern crate hostname;
+extern crate mchj_generator;
 extern crate numa_gpu;
 #[macro_use]
 extern crate serde_derive;
@@ -36,7 +37,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, Serialize)]
 pub struct DataPoint<'h> {
-    pub hostname: &'h String,
+    pub hostname: &'h str,
     pub warm_up: bool,
     pub hash_table_bytes: usize,
     pub build_bytes: usize,
@@ -48,11 +49,32 @@ pub struct DataPoint<'h> {
 fn main() {
     let repeat = 100;
 
-    measure("full_hash_join", repeat).expect("Failure: full hash join benchmark");
-}
+    // Generate Kim dataset
+    mchj_generator::seed_generator(100);
+    let pk = mchj_generator::Relation::new_pk(128 * 10_i32.pow(6), mchj_generator::BuildMode::Seq)
+        .expect("Couldn't generate primary keys");
+    let fk = mchj_generator::Relation::new_fk_from_pk(&pk, 128 * 10_i32.pow(6))
+        .expect("Couldn't generate foreign keys");
 
-fn measure(name: &str, repeat: u32) -> Result<()> {
-    let hostname = &hostname::get_hostname().ok_or_else(|| "Couldn't get hostname")?;
+    // FIXME: Convert i64 to (i32, i32) key, value pair and support this in hash table
+    let mut pk_gpu = UVec::<i64>::new(pk.len()).expect("Couldn't allocate GPU primary keys");
+    let mut fk_gpu = UVec::<i64>::new(fk.len()).expect("Couldn't allocate GPU foreign keys");
+
+    pk_gpu
+        .iter_mut()
+        .by_ref()
+        .zip(pk.iter())
+        .map(|(gpu, origin)| {
+            *gpu = origin.key as i64;
+        }).collect::<()>();
+
+    fk_gpu
+        .iter_mut()
+        .by_ref()
+        .zip(fk.iter())
+        .map(|(gpu, origin)| {
+            *gpu = origin.key as i64;
+        }).collect::<()>();
 
     let warp_size = 32;
     let cuda_cores = 384;
@@ -63,24 +85,41 @@ fn measure(name: &str, repeat: u32) -> Result<()> {
 
     let hjb = HashJoinBench {
         hash_table_size: 1024,
-        build_size: 50,
-        probe_size: 10_usize.pow(7),
-        join_selectivity: 0.0,
+        build_relation: CudaUniMem(pk_gpu),
+        probe_relation: CudaUniMem(fk_gpu),
+        join_selectivity: 1.0,
         build_dim: (grid_size, block_size),
         probe_dim: (grid_size, block_size),
     };
 
+    let dp = DataPoint {
+        hostname: "",
+        warm_up: false,
+        hash_table_bytes: hjb.hash_table_size * 16,
+        build_bytes: hjb.build_relation.len() * 8,
+        probe_bytes: hjb.probe_relation.len() * 8,
+        join_selectivity: 1.0,
+        gpu_ms: 0.0,
+    };
+
+    measure("hash_join_kim", repeat, dp, || hjb.full_hash_join())
+        .expect("Failure: hash join benchmark");
+}
+
+fn measure<F>(name: &str, repeat: u32, template: DataPoint, func: F) -> Result<()>
+where
+    F: Fn() -> Result<f32>,
+{
+    let hostname = &hostname::get_hostname().ok_or_else(|| "Couldn't get hostname")?;
+
     // FIXME: hard-coded unit sizes
     let measurements = (0..repeat)
         .map(|_| {
-            hjb.full_hash_join().map(|gpu_ms| DataPoint {
+            func().map(|gpu_ms| DataPoint {
                 hostname,
                 warm_up: false,
-                hash_table_bytes: hjb.hash_table_size * 16,
-                build_bytes: hjb.build_size * 8,
-                probe_bytes: hjb.probe_size * 8,
-                join_selectivity: 0.0,
                 gpu_ms,
+                ..template
             })
         }).collect::<Result<Vec<_>>>()?;
 
@@ -142,8 +181,8 @@ Max:           {:6.2}          {:6.2}"#,
 
 struct HashJoinBench {
     hash_table_size: usize,
-    build_size: usize,
-    probe_size: usize,
+    build_relation: Mem<i64>,
+    probe_relation: Mem<i64>,
     join_selectivity: f64,
     build_dim: (u32, u32),
     probe_dim: (u32, u32),
@@ -153,27 +192,11 @@ impl HashJoinBench {
     fn full_hash_join(&self) -> Result<f32> {
         let hash_table_mem = CudaUniMem(UVec::<i64>::new(self.hash_table_size)?);
         let hash_table = hash_join::HashTable::new(hash_table_mem, self.hash_table_size)?;
-        let mut build_join_attr = CudaUniMem(UVec::<i64>::new(self.build_size)?);
-        let mut build_selection_attr = CudaUniMem(UVec::<i64>::new(build_join_attr.len())?);
+        let mut build_selection_attr = CudaUniMem(UVec::<i64>::new(self.build_relation.len())?);
         let mut result_counts = CudaUniMem(UVec::<u64>::new(
             (self.probe_dim.0 * self.probe_dim.1) as usize,
         )?);
-        let mut probe_join_attr = CudaUniMem(UVec::<i64>::new(self.probe_size)?);
-        let mut probe_selection_attr = CudaUniMem(UVec::<i64>::new(probe_join_attr.len())?);
-
-        // Generate some random build data
-        if let CudaUniMem(ref mut a) = build_join_attr {
-            for (i, x) in a.as_slice_mut().iter_mut().enumerate() {
-                *x = i as i64;
-            }
-        }
-
-        // Generate some random probe data
-        if let CudaUniMem(ref mut a) = probe_join_attr {
-            for (i, x) in a.as_slice_mut().iter_mut().enumerate() {
-                *x = (i % build_join_attr.len()) as i64;
-            }
-        }
+        let mut probe_selection_attr = CudaUniMem(UVec::<i64>::new(self.probe_relation.len())?);
 
         // Initialize counts
         if let CudaUniMem(ref mut c) = result_counts {
@@ -203,9 +226,13 @@ impl HashJoinBench {
 
         start_event.record()?;
 
-        let _result_counts = hj_op
-            .build(build_join_attr, build_selection_attr)?
-            .probe_count(probe_join_attr, probe_selection_attr, result_counts)?;
+        hj_op
+            .build(&self.build_relation, &build_selection_attr)?
+            .probe_count(
+                &self.probe_relation,
+                &probe_selection_attr,
+                &mut result_counts,
+            )?;
 
         stop_event.record().and_then(|e| e.synchronize())?;
         let millis = stop_event.elapsed_time(&start_event)?;
