@@ -23,7 +23,7 @@ extern crate numa_gpu;
 extern crate serde_derive;
 extern crate serde;
 
-use accel::device::sync;
+use accel::device::{sync, Device};
 use accel::event::Event;
 use accel::uvec::UVec;
 
@@ -76,8 +76,14 @@ fn main() {
             *gpu = origin.key as i64;
         }).collect::<()>();
 
-    let warp_size = 32;
-    let cuda_cores = 384;
+    // Device tuning
+    let dev = Device::current().expect("Couldn't get CUDA device");
+    let dev_props = dev
+        .get_property()
+        .expect("Couldn't get CUDA device property map");
+    let sm_cores = dev.cores().expect("Couldn't get number of GPU cores");
+    let cuda_cores = sm_cores * dev_props.multiProcessorCount as u32;
+    let warp_size = dev_props.warpSize as u32;
     let overcommit_factor = 8;
 
     let block_size = warp_size;
