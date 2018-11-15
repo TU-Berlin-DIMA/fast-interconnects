@@ -24,15 +24,20 @@ extern crate serde_derive;
 extern crate serde;
 
 use accel::device::{sync, Device};
+use accel::error::Check;
 use accel::event::Event;
 use accel::uvec::UVec;
 
 use average::{Estimate, Max, Min, Quantile, Variance};
 
+use cuda_sys::cudart::*;
+
 use numa_gpu::error::Result;
 use numa_gpu::operators::hash_join;
 use numa_gpu::runtime::memory::*;
 
+use std::mem::size_of;
+use std::os::raw::c_void;
 use std::path::PathBuf;
 
 #[derive(Debug, Serialize)]
@@ -51,7 +56,8 @@ fn main() {
 
     // Generate Kim dataset
     mchj_generator::seed_generator(100);
-    let pk = mchj_generator::Relation::new_pk(128 * 10_i32.pow(6), mchj_generator::BuildMode::Seq)
+    // FIXME: pk relation should be 128 * 10^6 large
+    let pk = mchj_generator::Relation::new_pk(128 * 10_i32.pow(0), mchj_generator::BuildMode::Seq)
         .expect("Couldn't generate primary keys");
     let fk = mchj_generator::Relation::new_fk_from_pk(&pk, 128 * 10_i32.pow(6))
         .expect("Couldn't generate foreign keys");
@@ -89,6 +95,29 @@ fn main() {
     let block_size = warp_size;
     let grid_size = cuda_cores * overcommit_factor / warp_size;
 
+    // Tune memory location
+    if dev_props.concurrentManagedAccess != 0 {
+        unsafe {
+            cudaMemAdvise(
+                pk_gpu.as_mut_ptr() as *mut c_void,
+                pk_gpu.len() * size_of::<i64>(),
+                cudaMemoryAdvise::cudaMemAdviseSetPreferredLocation,
+                0,
+            )
+        }.check()
+        .unwrap();
+
+        unsafe {
+            cudaMemAdvise(
+                fk_gpu.as_mut_ptr() as *mut c_void,
+                fk_gpu.len() * size_of::<i64>(),
+                cudaMemoryAdvise::cudaMemAdviseSetPreferredLocation,
+                0,
+            )
+        }.check()
+        .unwrap();
+    }
+
     let hjb = HashJoinBench {
         hash_table_size: 1024,
         build_relation: CudaUniMem(pk_gpu),
@@ -108,6 +137,7 @@ fn main() {
         gpu_ms: 0.0,
     };
 
+    // Run experiment
     measure("hash_join_kim", repeat, dp, || hjb.full_hash_join())
         .expect("Failure: hash join benchmark");
 }
