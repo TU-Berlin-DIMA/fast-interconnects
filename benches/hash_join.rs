@@ -26,6 +26,7 @@ extern crate serde;
 use accel::device::{sync, Device};
 use accel::error::Check;
 use accel::event::Event;
+use accel::mvec::MVec;
 use accel::uvec::UVec;
 
 use average::{Estimate, Max, Min, Quantile, Variance};
@@ -216,7 +217,7 @@ struct HashJoinBench {
 
 impl HashJoinBench {
     fn full_hash_join(&self) -> Result<f32> {
-        let hash_table_mem = CudaUniMem(UVec::<i64>::new(self.hash_table_size)?);
+        let hash_table_mem = CudaDevMem(MVec::<i64>::new(self.hash_table_size)?);
         let hash_table = hash_join::HashTable::new(hash_table_mem, self.hash_table_size)?;
         let mut build_selection_attr = CudaUniMem(UVec::<i64>::new(self.build_relation.len())?);
         let mut result_counts = CudaUniMem(UVec::<u64>::new(
