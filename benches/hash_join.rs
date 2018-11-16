@@ -57,8 +57,7 @@ fn main() {
 
     // Generate Kim dataset
     mchj_generator::seed_generator(100);
-    // FIXME: pk relation should be 128 * 10^6 large
-    let pk = mchj_generator::Relation::new_pk(128 * 10_i32.pow(0), mchj_generator::BuildMode::Seq)
+    let pk = mchj_generator::Relation::new_pk(128 * 10_i32.pow(6), mchj_generator::BuildMode::Seq)
         .expect("Couldn't generate primary keys");
     let fk = mchj_generator::Relation::new_fk_from_pk(&pk, 128 * 10_i32.pow(6))
         .expect("Couldn't generate foreign keys");
@@ -110,7 +109,7 @@ fn main() {
     let grid_size = cuda_cores * overcommit_factor / warp_size;
 
     let hjb = HashJoinBench {
-        hash_table_size: 1024,
+        hash_table_size: 2 * 128 * 2_usize.pow(20),
         build_relation: pk_gpu.into(),
         probe_relation: fk_gpu.into(),
         join_selectivity: 1.0,
