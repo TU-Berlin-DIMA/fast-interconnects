@@ -41,6 +41,22 @@ impl<T: Any + Copy> Mem<T> {
             CudaUniMem(ref m) => m as &Any,
         }
     }
+
+    pub fn as_ptr(&self) -> *const T {
+        match self {
+            SysMem(m) => m.as_ptr(),
+            CudaDevMem(m) => m.as_ptr(),
+            CudaUniMem(m) => m.as_ptr(),
+        }
+    }
+
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        match self {
+            SysMem(m) => m.as_mut_ptr(),
+            CudaDevMem(m) => m.as_mut_ptr(),
+            CudaUniMem(m) => m.as_mut_ptr(),
+        }
+    }
 }
 
 impl<T> From<DerefMem<T>> for Mem<T> {

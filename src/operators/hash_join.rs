@@ -9,12 +9,18 @@
  */
 
 extern crate accel;
+extern crate cuda_sys;
 
 use self::accel::device::sync;
+use self::accel::error::Check;
 use self::accel::kernel::{Block, Grid};
 use self::accel::module::Module;
 use self::accel::uvec::UVec;
 
+use self::cuda_sys::cudart::cudaMemset;
+
+use std::mem::size_of;
+use std::os::raw::c_void;
 use std::path::Path;
 
 use error::Result;
@@ -47,6 +53,10 @@ impl CudaHashJoin {
         ensure!(
             join_attr.len() == filter_attr.len(),
             "Join and filter attributes have different sizes"
+        );
+        ensure!(
+            join_attr.len() <= self.hash_table.mem.len(),
+            "Hash table is too small for the build data"
         );
 
         let (grid, block) = self.build_dim;
@@ -107,7 +117,7 @@ impl CudaHashJoin {
 impl HashTable {
     const NULL_KEY: i64 = -1;
 
-    pub fn new(mut mem: Mem<i64>, size: usize) -> Result<Self> {
+    pub fn new(mem: Mem<i64>, size: usize) -> Result<Self> {
         ensure!(
             size.is_power_of_two(),
             "Hash table size must be a power of two"
@@ -118,17 +128,13 @@ impl HashTable {
         );
 
         // Initialize hash table
-        // FIXME: do initialization on GPU
-        match mem {
-            CudaUniMem(ref mut m) => {
-                m.as_slice_mut()
-                    .iter_mut()
-                    .by_ref()
-                    .map(|entry| *entry = Self::NULL_KEY)
-                    .collect::<()>();
-            }
-            _ => unimplemented!(),
-        }
+        unsafe {
+            cudaMemset(
+                mem.as_ptr() as *mut c_void,
+                Self::NULL_KEY as i32,
+                mem.len() * size_of::<i64>(),
+            )
+        }.check()?;
 
         Ok(Self { mem, size })
     }
