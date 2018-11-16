@@ -14,6 +14,8 @@ use self::accel::mvec::MVec;
 use self::accel::uvec::UVec;
 
 use std::any::Any;
+use std::ops::Deref;
+use std::ops::DerefMut;
 
 pub use self::Mem::*;
 #[derive(Debug)]
@@ -37,6 +39,41 @@ impl<T: Any + Copy> Mem<T> {
             SysMem(ref m) => m as &Any,
             CudaDevMem(ref m) => m as &Any,
             CudaUniMem(ref m) => m as &Any,
+        }
+    }
+}
+
+impl<T> From<DerefMem<T>> for Mem<T> {
+    fn from(demem: DerefMem<T>) -> Mem<T> {
+        match demem {
+            DerefMem::SysMem(m) => Mem::SysMem(m),
+            DerefMem::CudaUniMem(m) => Mem::CudaUniMem(m),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum DerefMem<T> {
+    SysMem(Vec<T>),
+    CudaUniMem(UVec<T>),
+}
+
+impl<T> Deref for DerefMem<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &[T] {
+        match self {
+            DerefMem::SysMem(m) => m.as_slice(),
+            DerefMem::CudaUniMem(m) => m.as_slice(),
+        }
+    }
+}
+
+impl<T> DerefMut for DerefMem<T> {
+    fn deref_mut(&mut self) -> &mut [T] {
+        match self {
+            DerefMem::SysMem(m) => m.as_mut_slice(),
+            DerefMem::CudaUniMem(m) => m.as_slice_mut(),
         }
     }
 }

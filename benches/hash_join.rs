@@ -53,6 +53,7 @@ pub struct DataPoint<'h> {
 
 fn main() {
     let repeat = 100;
+    let use_mem_type = "unified";
 
     // Generate Kim dataset
     mchj_generator::seed_generator(100);
@@ -63,8 +64,21 @@ fn main() {
         .expect("Couldn't generate foreign keys");
 
     // FIXME: Convert i64 to (i32, i32) key, value pair and support this in hash table
-    let mut pk_gpu = UVec::<i64>::new(pk.len()).expect("Couldn't allocate GPU primary keys");
-    let mut fk_gpu = UVec::<i64>::new(fk.len()).expect("Couldn't allocate GPU foreign keys");
+    let mut pk_gpu = match use_mem_type {
+        "unified" => DerefMem::CudaUniMem(
+            UVec::<i64>::new(pk.len()).expect("Couldn't allocate GPU primary keys"),
+        ),
+        "system" => DerefMem::SysMem(vec![0; pk.len()]),
+        _ => panic!("This type of memory isn't specified, sorry."),
+    };
+
+    let mut fk_gpu = match use_mem_type {
+        "unified" => DerefMem::CudaUniMem(
+            UVec::<i64>::new(fk.len()).expect("Couldn't allocate GPU foreign keys"),
+        ),
+        "system" => DerefMem::SysMem(vec![0; fk.len()]),
+        _ => panic!("This type of memory isn't specified, sorry."),
+    };
 
     pk_gpu
         .iter_mut()
@@ -95,33 +109,10 @@ fn main() {
     let block_size = warp_size;
     let grid_size = cuda_cores * overcommit_factor / warp_size;
 
-    // Tune memory location
-    if dev_props.concurrentManagedAccess != 0 {
-        unsafe {
-            cudaMemAdvise(
-                pk_gpu.as_mut_ptr() as *mut c_void,
-                pk_gpu.len() * size_of::<i64>(),
-                cudaMemoryAdvise::cudaMemAdviseSetPreferredLocation,
-                0,
-            )
-        }.check()
-        .unwrap();
-
-        unsafe {
-            cudaMemAdvise(
-                fk_gpu.as_mut_ptr() as *mut c_void,
-                fk_gpu.len() * size_of::<i64>(),
-                cudaMemoryAdvise::cudaMemAdviseSetPreferredLocation,
-                0,
-            )
-        }.check()
-        .unwrap();
-    }
-
     let hjb = HashJoinBench {
         hash_table_size: 1024,
-        build_relation: CudaUniMem(pk_gpu),
-        probe_relation: CudaUniMem(fk_gpu),
+        build_relation: pk_gpu.into(),
+        probe_relation: fk_gpu.into(),
         join_selectivity: 1.0,
         build_dim: (grid_size, block_size),
         probe_dim: (grid_size, block_size),
