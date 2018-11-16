@@ -27,21 +27,16 @@ extern crate serde;
 extern crate structopt;
 
 use accel::device::{sync, Device};
-use accel::error::Check;
 use accel::event::Event;
 use accel::mvec::MVec;
 use accel::uvec::UVec;
 
 use average::{Estimate, Max, Min, Quantile, Variance};
 
-use cuda_sys::cudart::*;
-
 use numa_gpu::error::Result;
 use numa_gpu::operators::hash_join;
 use numa_gpu::runtime::memory::*;
 
-use std::mem::size_of;
-use std::os::raw::c_void;
 use std::path::PathBuf;
 
 use structopt::StructOpt;
