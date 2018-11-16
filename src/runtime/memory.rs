@@ -34,7 +34,7 @@ impl<T: Any + Copy> Mem<T> {
 
     pub fn as_any(&self) -> &Any {
         match self {
-            SysMem(ref m) => &m[0] as &Any,
+            SysMem(ref m) => m as &Any,
             CudaDevMem(ref m) => m as &Any,
             CudaUniMem(ref m) => m as &Any,
         }
