@@ -79,19 +79,28 @@ struct CmdOpt {
     /// Memory type to allocate data with. Options are:
     //   unified: CUDA Unified memory (default)
     //   system: System memory allocated with std::vec::Vec
-    #[structopt(short = "m", long = "mem-type", default_value = "Unified", raw(
-        possible_values = "&ArgMemType::variants()",
-        case_insensitive = "true"
-    ))]
+    #[structopt(
+        short = "m",
+        long = "mem-type",
+        default_value = "Unified",
+        raw(
+            possible_values = "&ArgMemType::variants()",
+            case_insensitive = "true"
+        )
+    )]
     mem_type: ArgMemType,
 
     /// Use pre-defined data set.
     //   alb: Albutiu et al. Massively parallel sort-merge joins"
     //   kim: Kim et al. "Sort vs. hash revisited"
-    #[structopt(short = "d", long = "data-set", raw(
-        possible_values = "&ArgDataSet::variants()",
-        case_insensitive = "true"
-    ))]
+    #[structopt(
+        short = "d",
+        long = "data-set",
+        raw(
+            possible_values = "&ArgDataSet::variants()",
+            case_insensitive = "true"
+        )
+    )]
     data_set: Option<ArgDataSet>,
 }
 
