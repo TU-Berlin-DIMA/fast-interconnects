@@ -11,6 +11,8 @@
 extern crate accel;
 #[macro_use]
 extern crate average;
+#[macro_use]
+extern crate clap;
 extern crate core; // Required by average::concatenate!{} macro
 extern crate csv;
 extern crate cuda_sys;
@@ -22,6 +24,7 @@ extern crate numa_gpu;
 #[macro_use]
 extern crate serde_derive;
 extern crate serde;
+extern crate structopt;
 
 use accel::device::{sync, Device};
 use accel::error::Check;
@@ -41,6 +44,62 @@ use std::mem::size_of;
 use std::os::raw::c_void;
 use std::path::PathBuf;
 
+use structopt::StructOpt;
+
+arg_enum! {
+    #[derive(Debug)]
+    enum ArgDataSet {
+        Alb,
+        Kim,
+    }
+}
+
+arg_enum! {
+    #[derive(Debug)]
+    enum ArgMemType {
+        Unified,
+        System,
+    }
+}
+
+#[derive(StructOpt)]
+#[structopt(
+    name = "hash_join",
+    about = "A benchmark for the hash join operator"
+)]
+struct CmdOpt {
+    /// Number of times to repeat benchmark
+    #[structopt(short = "r", long = "repeat", default_value = "30")]
+    repeat: u32,
+
+    /// Output path for measurement files (defaults to current directory)
+    #[structopt(
+        short = "o",
+        long = "out-dir",
+        parse(from_os_str),
+        default_value = "."
+    )]
+    out_dir: PathBuf,
+
+    /// Memory type to allocate data with. Options are:
+    //   unified: CUDA Unified memory (default)
+    //   system: System memory allocated with std::vec::Vec
+    #[structopt(short = "m", long = "mem-type", default_value = "Unified", raw(
+        possible_values = "&ArgMemType::variants()",
+        case_insensitive = "true"
+    ))]
+    mem_type: ArgMemType,
+
+    /// Use pre-defined data set.
+    //   alb: Albutiu et al. Massively parallel sort-merge joins"
+    //   kim: Kim et al. "Sort vs. hash revisited"
+    #[structopt(short = "d", long = "data-set", raw(
+        possible_values = "&ArgDataSet::variants()",
+        case_insensitive = "true"
+    ))]
+    data_set: Option<ArgDataSet>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct DataPoint<'h> {
     pub hostname: &'h str,
@@ -53,8 +112,7 @@ pub struct DataPoint<'h> {
 }
 
 fn main() {
-    let repeat = 100;
-    let use_mem_type = "unified";
+    let cmd = CmdOpt::from_args();
 
     // Generate Kim dataset
     mchj_generator::seed_generator(100);
@@ -64,20 +122,18 @@ fn main() {
         .expect("Couldn't generate foreign keys");
 
     // FIXME: Convert i64 to (i32, i32) key, value pair and support this in hash table
-    let mut pk_gpu = match use_mem_type {
-        "unified" => DerefMem::CudaUniMem(
+    let mut pk_gpu = match cmd.mem_type {
+        ArgMemType::Unified => DerefMem::CudaUniMem(
             UVec::<i64>::new(pk.len()).expect("Couldn't allocate GPU primary keys"),
         ),
-        "system" => DerefMem::SysMem(vec![0; pk.len()]),
-        _ => panic!("This type of memory isn't specified, sorry."),
+        ArgMemType::System => DerefMem::SysMem(vec![0; pk.len()]),
     };
 
-    let mut fk_gpu = match use_mem_type {
-        "unified" => DerefMem::CudaUniMem(
+    let mut fk_gpu = match cmd.mem_type {
+        ArgMemType::Unified => DerefMem::CudaUniMem(
             UVec::<i64>::new(fk.len()).expect("Couldn't allocate GPU foreign keys"),
         ),
-        "system" => DerefMem::SysMem(vec![0; fk.len()]),
-        _ => panic!("This type of memory isn't specified, sorry."),
+        ArgMemType::System => DerefMem::SysMem(vec![0; fk.len()]),
     };
 
     pk_gpu
@@ -129,11 +185,12 @@ fn main() {
     };
 
     // Run experiment
-    measure("hash_join_kim", repeat, dp, || hjb.full_hash_join())
-        .expect("Failure: hash join benchmark");
+    measure("hash_join_kim", cmd.repeat, cmd.out_dir, dp, || {
+        hjb.full_hash_join()
+    }).expect("Failure: hash join benchmark");
 }
 
-fn measure<F>(name: &str, repeat: u32, template: DataPoint, func: F) -> Result<()>
+fn measure<F>(name: &str, repeat: u32, out_dir: PathBuf, template: DataPoint, func: F) -> Result<()>
 where
     F: Fn() -> Result<f32>,
 {
@@ -150,7 +207,7 @@ where
             })
         }).collect::<Result<Vec<_>>>()?;
 
-    let csv_path = PathBuf::from(name).with_extension("csv");
+    let csv_path = out_dir.with_file_name(name).with_extension("csv");
 
     let csv_file = std::fs::File::create(csv_path)?;
 
