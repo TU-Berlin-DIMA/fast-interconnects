@@ -22,9 +22,30 @@ use self::cuda_sys::cudart::cudaMemset;
 use std::mem::size_of;
 use std::os::raw::c_void;
 use std::path::Path;
+use std::sync::Arc;
 
 use error::Result;
 use runtime::memory::*;
+
+extern "C" {
+    fn cpu_ht_build(
+        num_elements: u64,
+        result_size: *mut u64,
+        selection_column_data: *const i64,
+        join_column_data: *const i64,
+        ht_RT1_RT_XT1_build_mode_length: u64,
+        ht_RT1_RT_XT1_build_mode: *mut i64, // FIXME: replace i64 with atomic_i64
+    );
+
+    fn cpu_ht_probe_aggregate(
+        num_elements: u64,
+        array_ST1_ST_BT1: *const i64,
+        array_ST1_ST_YT1: *const i64,
+        hash_table: *const i64,
+        hash_table_length: u64,
+        COUNT_OF_ST_BT1_COUNT: *mut u64,
+    );
+}
 
 #[derive(Debug)]
 pub struct CudaHashJoin {
@@ -36,7 +57,14 @@ pub struct CudaHashJoin {
 }
 
 #[derive(Debug)]
+pub struct CpuHashJoin {
+    hash_table: Arc<HashTable>,
+    build_result: DerefMem<u64>,
+}
+
+#[derive(Debug)]
 pub struct HashTable {
+    // FIXME: replace i64 with atomic_i64 when the type is added to Rust stable
     mem: Mem<i64>,
     size: usize,
 }
@@ -46,6 +74,11 @@ pub struct CudaHashJoinBuilder {
     hash_table_i: Option<HashTable>,
     build_dim_i: (u32, u32),
     probe_dim_i: (u32, u32),
+}
+
+#[derive(Debug)]
+pub struct CpuHashJoinBuilder {
+    hash_table_i: Arc<HashTable>,
 }
 
 impl CudaHashJoin {
@@ -109,6 +142,63 @@ impl CudaHashJoin {
                     *result_set.as_any()
                 )
         )?;
+
+        Ok(())
+    }
+}
+
+impl CpuHashJoin {
+    pub fn build(&mut self, join_attr: &[i64], filter_attr: &[i64]) -> Result<&mut Self> {
+        ensure!(
+            join_attr.len() == filter_attr.len(),
+            "Join and filter attributes have different sizes"
+        );
+        ensure!(
+            join_attr.len() <= self.hash_table.mem.len(),
+            "Hash table is too small for the build data"
+        );
+
+        let join_attr_len = join_attr.len() as u64;
+        let hash_table_size = self.hash_table.size as u64;
+
+        unsafe {
+            cpu_ht_build(
+                join_attr_len,
+                self.build_result.as_mut_ptr(),
+                filter_attr.as_ptr(),
+                join_attr.as_ptr(),
+                hash_table_size,
+                self.hash_table.mem.as_ptr() as *mut i64,
+            )
+        };
+
+        Ok(self)
+    }
+
+    pub fn probe_count(
+        &mut self,
+        join_attr: &[i64],
+        filter_attr: &[i64],
+        join_count: &mut u64,
+    ) -> Result<()> {
+        ensure!(
+            join_attr.len() == filter_attr.len(),
+            "Join and filter attributes have different sizes"
+        );
+
+        let join_attr_len = join_attr.len() as u64;
+        let hash_table_size = self.hash_table.size as u64;
+
+        unsafe {
+            cpu_ht_probe_aggregate(
+                join_attr_len,
+                filter_attr.as_ptr(),
+                join_attr.as_ptr(),
+                self.hash_table.mem.as_ptr(),
+                hash_table_size,
+                join_count,
+            )
+        };
 
         Ok(())
     }
@@ -196,6 +286,21 @@ impl CudaHashJoinBuilder {
             build_dim: self.build_dim_i,
             probe_dim: self.probe_dim_i,
         })
+    }
+}
+
+impl CpuHashJoinBuilder {
+    pub fn new_with_ht(hash_table: Arc<HashTable>) -> Self {
+        Self {
+            hash_table_i: hash_table,
+        }
+    }
+
+    pub fn build(&self) -> CpuHashJoin {
+        CpuHashJoin {
+            hash_table: self.hash_table_i.clone(),
+            build_result: DerefMem::SysMem(vec![0]),
+        }
     }
 }
 

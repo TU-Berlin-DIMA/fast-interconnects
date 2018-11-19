@@ -8,6 +8,8 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
+extern crate cc;
+
 use std::env;
 use std::path::Path;
 use std::process::Command;
@@ -17,6 +19,7 @@ fn main() {
 
     let out_dir = env::var("OUT_DIR").unwrap();
 
+    // Add CUDA utils
     let args = vec![
         "cudautils/operators.cu",
         "-fatbin",
@@ -55,4 +58,18 @@ fn main() {
     println!("cargo:rustc-link-search=native=/opt/cuda/lib64");
     println!("cargo:rustc-link-search=native=/usr/local/cuda/lib64");
     println!("cargo:rustc-link-lib=cudart");
+
+    // Add CPP utils
+    cc::Build::new()
+        .include(include_path)
+        // Note: -march not supported by GCC-7 on Power9, use -mcpu instead
+        .flag("-std=c++11")
+        .flag_if_supported("-mcpu=native")
+        .flag_if_supported("-march=native")
+        .flag("-mtune=native")
+        // .flag("-fopenmp")
+        // .flag("-lnuma")
+        .pic(true)
+        .file("cpputils/operators.cpp")
+        .compile("libcpputils.a");
 }

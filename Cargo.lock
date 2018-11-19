@@ -315,6 +315,7 @@ dependencies = [
  "accel 0.2.1-alpha.0 (git+https://github.com/LutzCle/accel.git)",
  "accel-native 0.1.0 (git+https://github.com/lutzcle/accel-native)",
  "average 0.9.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cc 1.0.25 (registry+https://github.com/rust-lang/crates.io-index)",
  "clap 2.32.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "csv 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "cuda-sys 0.2.1-alpha.0 (git+https://github.com/LutzCle/accel.git)",

@@ -14,6 +14,9 @@ cuda-sys = { git = "https://github.com/LutzCle/accel.git" }
 error-chain = "~0.12.0"
 mchj-generator = { git = "https://github.com/LutzCle/mchj-generator.git" }
 
+[build-dependencies]
+cc = "~1.0.25"
+
 [dev-dependencies]
 average = "~0.9.2"
 clap = "*"
