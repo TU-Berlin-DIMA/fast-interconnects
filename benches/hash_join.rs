@@ -137,7 +137,8 @@ pub struct DataPoint<'h, 'd> {
     pub probe_tuples: usize,
     pub probe_bytes: usize,
     pub join_selectivity: f64,
-    pub gpu_ms: f32,
+    pub build_ns: f64,
+    pub probe_ns: f64,
 }
 
 fn main() {
@@ -204,6 +205,7 @@ fn main() {
         probe_dim: (grid_size, block_size),
     };
 
+    // FIXME: hard-coded unit sizes
     let dev_type_str = cmd.device_type.to_string();
     let dp = DataPoint {
         hostname: "",
@@ -215,7 +217,8 @@ fn main() {
         probe_tuples: hjb.probe_relation.len(),
         probe_bytes: hjb.probe_relation.len() * 8,
         join_selectivity: 1.0,
-        gpu_ms: 0.0,
+        build_ns: 0.0,
+        probe_ns: 0.0,
     };
 
     // Decide which closure to run
@@ -232,17 +235,17 @@ fn main() {
 
 fn measure<F>(name: &str, repeat: u32, out_dir: PathBuf, template: DataPoint, func: F) -> Result<()>
 where
-    F: Fn() -> Result<f32>,
+    F: Fn() -> Result<(f64, f64)>,
 {
     let hostname = &hostname::get_hostname().ok_or_else(|| "Couldn't get hostname")?;
 
-    // FIXME: hard-coded unit sizes
     let measurements = (0..repeat)
         .map(|_| {
-            func().map(|gpu_ms| DataPoint {
+            func().map(|(build_ns, probe_ns)| DataPoint {
                 hostname,
                 warm_up: false,
-                gpu_ms,
+                build_ns,
+                probe_ns,
                 ..template
             })
         }).collect::<Result<Vec<_>>>()?;
@@ -268,12 +271,12 @@ where
         [Max, max, max]
     );
 
-    let time_stats: Estimator = measurements.iter().map(|row| row.gpu_ms as f64).collect();
+    let time_stats: Estimator = measurements.iter().map(|row| row.probe_ns / 10_f64.powf(6.0)).collect();
 
     let tput_stats: Estimator = measurements
         .iter()
-        .map(|row| (row.probe_bytes as f64, row.gpu_ms as f64))
-        .map(|(bytes, ms)| bytes / ms / 2.0_f64.powf(30.0) * 10.0_f64.powf(3.0))
+        .map(|row| (row.probe_bytes as f64, row.probe_ns))
+        .map(|(bytes, ms)| bytes / ms / 2.0_f64.powf(30.0) * 10.0_f64.powf(9.0))
         .collect();
 
     println!(
@@ -313,7 +316,7 @@ struct HashJoinBench {
 }
 
 impl HashJoinBench {
-    fn cuda_hash_join(&self) -> Result<f32> {
+    fn cuda_hash_join(&self) -> Result<(f64, f64)> {
         let hash_table_mem = CudaDevMem(MVec::<i64>::new(self.hash_table_size)?);
         let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_size)?;
         let mut build_selection_attr = CudaUniMem(UVec::<i64>::new(self.build_relation.len())?);
@@ -347,9 +350,14 @@ impl HashJoinBench {
         let stop_event = Event::new()?;
 
         start_event.record()?;
-
         hj_op
-            .build(&self.build_relation, &build_selection_attr)?
+            .build(&self.build_relation, &build_selection_attr)?;
+
+        stop_event.record().and_then(|e| e.synchronize())?;
+        let build_millis = stop_event.elapsed_time(&start_event)?;
+
+        start_event.record()?;
+        hj_op
             .probe_count(
                 &self.probe_relation,
                 &probe_selection_attr,
@@ -357,13 +365,13 @@ impl HashJoinBench {
             )?;
 
         stop_event.record().and_then(|e| e.synchronize())?;
-        let millis = stop_event.elapsed_time(&start_event)?;
+        let probe_millis = stop_event.elapsed_time(&start_event)?;
 
         sync()?;
-        Ok(millis)
+        Ok((build_millis as f64 * 10_f64.powf(6.0), probe_millis as f64 * 10_f64.powf(6.0)))
     }
 
-    fn cpu_hash_join(&self) -> Result<f32> {
+    fn cpu_hash_join(&self) -> Result<(f64, f64)> {
         let hash_table_mem = DerefMem::SysMem(vec![0; self.hash_table_size]);
         let hash_table = hash_join::HashTable::new_on_cpu(hash_table_mem, self.hash_table_size)?;
         let mut result_counts = vec![0; (self.probe_dim.0 * self.probe_dim.1) as usize];
@@ -372,8 +380,7 @@ impl HashJoinBench {
 
         let mut hj_op = hash_join::CpuHashJoinBuilder::new_with_ht(Arc::new(hash_table)).build();
 
-        let timer = Instant::now();
-
+        let mut timer = Instant::now();
         hj_op
             .build(
                 match self.build_relation {
@@ -382,7 +389,13 @@ impl HashJoinBench {
                     Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
                 },
                 build_selection_attr.as_slice(),
-            )?.probe_count(
+            )?;
+        let mut dur = timer.elapsed();
+        let build_nanos = dur.as_secs() * 10_u64.pow(9) + dur.subsec_nanos() as u64;
+
+        timer = Instant::now();
+        hj_op
+        .probe_count(
                 match self.probe_relation {
                     Mem::CudaUniMem(ref m) => m.as_slice(),
                     Mem::SysMem(ref m) => m.as_slice(),
@@ -391,9 +404,9 @@ impl HashJoinBench {
                 probe_selection_attr.as_slice(),
                 &mut result_counts[0],
             )?;
+        dur = timer.elapsed();
+        let probe_nanos = dur.as_secs() * 10_u64.pow(9) + dur.subsec_nanos() as u64;
 
-        let dur = timer.elapsed();
-        let millis = dur.as_secs() * 1000 + dur.subsec_millis() as u64;
-        Ok(millis as f32)
+        Ok((build_nanos as f64, probe_nanos as f64))
     }
 }
