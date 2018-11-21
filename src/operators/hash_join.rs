@@ -207,7 +207,22 @@ impl CpuHashJoin {
 impl HashTable {
     const NULL_KEY: i64 = -1;
 
-    pub fn new(mem: Mem<i64>, size: usize) -> Result<Self> {
+    pub fn new_on_cpu(mut mem: DerefMem<i64>, size: usize) -> Result<Self> {
+        ensure!(
+            size.is_power_of_two(),
+            "Hash table size must be a power of two"
+        );
+        ensure!(
+            mem.len() >= size,
+            "Provided memory must be larger than hash table size"
+        );
+
+        mem.iter_mut().by_ref().for_each(|x| *x = Self::NULL_KEY );
+
+        Ok(Self { mem: mem.into(), size })
+    }
+
+    pub fn new_on_gpu(mem: Mem<i64>, size: usize) -> Result<Self> {
         ensure!(
             size.is_power_of_two(),
             "Hash table size must be a power of two"

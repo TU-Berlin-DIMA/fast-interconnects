@@ -314,7 +314,7 @@ struct HashJoinBench {
 impl HashJoinBench {
     fn cuda_hash_join(&self) -> Result<f32> {
         let hash_table_mem = CudaDevMem(MVec::<i64>::new(self.hash_table_size)?);
-        let hash_table = hash_join::HashTable::new(hash_table_mem, self.hash_table_size)?;
+        let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_size)?;
         let mut build_selection_attr = CudaUniMem(UVec::<i64>::new(self.build_relation.len())?);
         let mut result_counts = CudaUniMem(UVec::<u64>::new(
             (self.probe_dim.0 * self.probe_dim.1) as usize,
@@ -363,8 +363,8 @@ impl HashJoinBench {
     }
 
     fn cpu_hash_join(&self) -> Result<f32> {
-        let hash_table_mem = SysMem(vec![0; self.hash_table_size]);
-        let hash_table = hash_join::HashTable::new(hash_table_mem, self.hash_table_size)?;
+        let hash_table_mem = DerefMem::SysMem(vec![0; self.hash_table_size]);
+        let hash_table = hash_join::HashTable::new_on_cpu(hash_table_mem, self.hash_table_size)?;
         let mut result_counts = vec![0; (self.probe_dim.0 * self.probe_dim.1) as usize];
         let build_selection_attr: Vec<_> = (2_i64..).take(self.build_relation.len()).collect();
         let probe_selection_attr: Vec<_> = (2_i64..).take(self.probe_relation.len()).collect();
