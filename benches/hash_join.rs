@@ -109,7 +109,9 @@ pub struct DataPoint<'h> {
     pub hostname: &'h str,
     pub warm_up: bool,
     pub hash_table_bytes: usize,
+    pub build_tuples: usize,
     pub build_bytes: usize,
+    pub probe_tuples: usize,
     pub probe_bytes: usize,
     pub join_selectivity: f64,
     pub gpu_ms: f32,
@@ -182,7 +184,9 @@ fn main() {
         hostname: "",
         warm_up: false,
         hash_table_bytes: hjb.hash_table_size * 16,
+        build_tuples: hjb.build_relation.len(),
         build_bytes: hjb.build_relation.len() * 8,
+        probe_tuples: hjb.probe_relation.len(),
         probe_bytes: hjb.probe_relation.len() * 8,
         join_selectivity: 1.0,
         gpu_ms: 0.0,
@@ -306,8 +310,6 @@ impl HashJoinBench {
             .probe_dim(self.probe_dim.0, self.probe_dim.1)
             .hash_table(hash_table)
             .build()?;
-
-        // println!("{:#?}", hj_op);
 
         let start_event = Event::new()?;
         let stop_event = Event::new()?;
