@@ -38,11 +38,13 @@ use numa_gpu::operators::hash_join;
 use numa_gpu::runtime::memory::*;
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Instant;
 
 use structopt::StructOpt;
 
 arg_enum! {
-    #[derive(Debug)]
+    #[derive(Copy, Clone, Debug)]
     enum ArgDataSet {
         Alb,
         Kim,
@@ -50,10 +52,18 @@ arg_enum! {
 }
 
 arg_enum! {
-    #[derive(Debug)]
+    #[derive(Copy, Clone, Debug)]
     enum ArgMemType {
         Unified,
         System,
+    }
+}
+
+arg_enum! {
+    #[derive(Copy, Clone, Debug)]
+    enum ArgDeviceType {
+        CPU,
+        GPU,
     }
 }
 
@@ -76,7 +86,7 @@ struct CmdOpt {
     )]
     out_dir: PathBuf,
 
-    /// Memory type to allocate data with. Options are:
+    /// Memory type with which to allocate data.
     //   unified: CUDA Unified memory (default)
     //   system: System memory allocated with std::vec::Vec
     #[structopt(
@@ -90,11 +100,11 @@ struct CmdOpt {
     )]
     mem_type: ArgMemType,
 
-    /// Use pre-defined data set.
+    /// Use a pre-defined data set.
     //   alb: Albutiu et al. Massively parallel sort-merge joins"
     //   kim: Kim et al. "Sort vs. hash revisited"
     #[structopt(
-        short = "d",
+        short = "s",
         long = "data-set",
         raw(
             possible_values = "&ArgDataSet::variants()",
@@ -102,11 +112,24 @@ struct CmdOpt {
         )
     )]
     data_set: Option<ArgDataSet>,
+
+    /// Type of the device.
+    #[structopt(
+        short = "d",
+        long = "device-type",
+        default_value = "CPU",
+        raw(
+            possible_values = "&ArgDeviceType::variants()",
+            case_insensitive = "true"
+        )
+    )]
+    device_type: ArgDeviceType,
 }
 
 #[derive(Debug, Serialize)]
-pub struct DataPoint<'h> {
+pub struct DataPoint<'h, 'd> {
     pub hostname: &'h str,
+    pub device_type: &'d str,
     pub warm_up: bool,
     pub hash_table_bytes: usize,
     pub build_tuples: usize,
@@ -180,8 +203,10 @@ fn main() {
         probe_dim: (grid_size, block_size),
     };
 
+    let dev_type_str = cmd.device_type.to_string();
     let dp = DataPoint {
         hostname: "",
+        device_type: dev_type_str.as_str(),
         warm_up: false,
         hash_table_bytes: hjb.hash_table_size * 16,
         build_tuples: hjb.build_relation.len(),
@@ -192,10 +217,16 @@ fn main() {
         gpu_ms: 0.0,
     };
 
+    // Decide which closure to run
+    let dev_type = cmd.device_type.clone();
+    let hjc = || match dev_type {
+        ArgDeviceType::CPU => hjb.cpu_hash_join(),
+        ArgDeviceType::GPU => hjb.cuda_hash_join(),
+    };
+
     // Run experiment
-    measure("hash_join_kim", cmd.repeat, cmd.out_dir, dp, || {
-        hjb.full_hash_join()
-    }).expect("Failure: hash join benchmark");
+    measure("hash_join_kim", cmd.repeat, cmd.out_dir, dp, hjc)
+        .expect("Failure: hash join benchmark");
 }
 
 fn measure<F>(name: &str, repeat: u32, out_dir: PathBuf, template: DataPoint, func: F) -> Result<()>
@@ -281,7 +312,7 @@ struct HashJoinBench {
 }
 
 impl HashJoinBench {
-    fn full_hash_join(&self) -> Result<f32> {
+    fn cuda_hash_join(&self) -> Result<f32> {
         let hash_table_mem = CudaDevMem(MVec::<i64>::new(self.hash_table_size)?);
         let hash_table = hash_join::HashTable::new(hash_table_mem, self.hash_table_size)?;
         let mut build_selection_attr = CudaUniMem(UVec::<i64>::new(self.build_relation.len())?);
@@ -329,5 +360,39 @@ impl HashJoinBench {
 
         sync()?;
         Ok(millis)
+    }
+
+    fn cpu_hash_join(&self) -> Result<f32> {
+        let hash_table_mem = SysMem(vec![0; self.hash_table_size]);
+        let hash_table = hash_join::HashTable::new(hash_table_mem, self.hash_table_size)?;
+        let mut result_counts = vec![0; (self.probe_dim.0 * self.probe_dim.1) as usize];
+        let build_selection_attr: Vec<_> = (2_i64..).take(self.build_relation.len()).collect();
+        let probe_selection_attr: Vec<_> = (2_i64..).take(self.probe_relation.len()).collect();
+
+        let mut hj_op = hash_join::CpuHashJoinBuilder::new_with_ht(Arc::new(hash_table)).build();
+
+        let timer = Instant::now();
+
+        hj_op
+            .build(
+                match self.build_relation {
+                    Mem::CudaUniMem(ref m) => m.as_slice(),
+                    Mem::SysMem(ref m) => m.as_slice(),
+                    Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
+                },
+                build_selection_attr.as_slice(),
+            )?.probe_count(
+                match self.probe_relation {
+                    Mem::CudaUniMem(ref m) => m.as_slice(),
+                    Mem::SysMem(ref m) => m.as_slice(),
+                    Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
+                },
+                probe_selection_attr.as_slice(),
+                &mut result_counts[0],
+            )?;
+
+        let dur = timer.elapsed();
+        let millis = dur.as_secs() * 1000 + dur.subsec_millis() as u64;
+        Ok(millis as f32)
     }
 }
