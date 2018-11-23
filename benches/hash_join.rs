@@ -21,6 +21,7 @@ extern crate error_chain;
 extern crate hostname;
 extern crate mchj_generator;
 extern crate numa_gpu;
+extern crate rayon;
 #[macro_use]
 extern crate serde_derive;
 extern crate serde;
@@ -44,7 +45,7 @@ use std::time::Instant;
 use structopt::StructOpt;
 
 arg_enum! {
-    #[derive(Copy, Clone, Debug)]
+    #[derive(Copy, Clone, Debug, PartialEq)]
     enum ArgDataSet {
         Alb,
         Kim,
@@ -52,7 +53,7 @@ arg_enum! {
 }
 
 arg_enum! {
-    #[derive(Copy, Clone, Debug)]
+    #[derive(Copy, Clone, Debug, PartialEq)]
     enum ArgMemType {
         Unified,
         System,
@@ -60,7 +61,7 @@ arg_enum! {
 }
 
 arg_enum! {
-    #[derive(Copy, Clone, Debug)]
+    #[derive(Copy, Clone, Debug, PartialEq)]
     enum ArgDeviceType {
         CPU,
         GPU,
@@ -124,12 +125,16 @@ struct CmdOpt {
         )
     )]
     device_type: ArgDeviceType,
+
+    #[structopt(short = "t", long = "threads", default_value = "1")]
+    threads: usize,
 }
 
 #[derive(Debug, Serialize)]
 pub struct DataPoint<'h, 'd> {
     pub hostname: &'h str,
     pub device_type: &'d str,
+    pub threads: Option<usize>,
     pub warm_up: bool,
     pub hash_table_bytes: usize,
     pub build_tuples: usize,
@@ -210,6 +215,7 @@ fn main() {
     let dp = DataPoint {
         hostname: "",
         device_type: dev_type_str.as_str(),
+        threads: if cmd.device_type == ArgDeviceType::CPU { Some(cmd.threads) } else { None },
         warm_up: false,
         hash_table_bytes: hjb.hash_table_size * 16,
         build_tuples: hjb.build_relation.len(),
@@ -223,8 +229,9 @@ fn main() {
 
     // Decide which closure to run
     let dev_type = cmd.device_type.clone();
+    let threads = cmd.threads;
     let hjc = || match dev_type {
-        ArgDeviceType::CPU => hjb.cpu_hash_join(),
+        ArgDeviceType::CPU => hjb.cpu_hash_join(threads),
         ArgDeviceType::GPU => hjb.cuda_hash_join(),
     };
 
@@ -271,7 +278,10 @@ where
         [Max, max, max]
     );
 
-    let time_stats: Estimator = measurements.iter().map(|row| row.probe_ns / 10_f64.powf(6.0)).collect();
+    let time_stats: Estimator = measurements
+        .iter()
+        .map(|row| row.probe_ns / 10_f64.powf(6.0))
+        .collect();
 
     let tput_stats: Estimator = measurements
         .iter()
@@ -350,60 +360,88 @@ impl HashJoinBench {
         let stop_event = Event::new()?;
 
         start_event.record()?;
-        hj_op
-            .build(&self.build_relation, &build_selection_attr)?;
+        hj_op.build(&self.build_relation, &build_selection_attr)?;
 
         stop_event.record().and_then(|e| e.synchronize())?;
         let build_millis = stop_event.elapsed_time(&start_event)?;
 
         start_event.record()?;
-        hj_op
-            .probe_count(
-                &self.probe_relation,
-                &probe_selection_attr,
-                &mut result_counts,
-            )?;
+        hj_op.probe_count(
+            &self.probe_relation,
+            &probe_selection_attr,
+            &mut result_counts,
+        )?;
 
         stop_event.record().and_then(|e| e.synchronize())?;
         let probe_millis = stop_event.elapsed_time(&start_event)?;
 
         sync()?;
-        Ok((build_millis as f64 * 10_f64.powf(6.0), probe_millis as f64 * 10_f64.powf(6.0)))
+        Ok((
+            build_millis as f64 * 10_f64.powf(6.0),
+            probe_millis as f64 * 10_f64.powf(6.0),
+        ))
     }
 
-    fn cpu_hash_join(&self) -> Result<(f64, f64)> {
+    fn cpu_hash_join(&self, threads: usize) -> Result<(f64, f64)> {
         let hash_table_mem = DerefMem::SysMem(vec![0; self.hash_table_size]);
         let hash_table = hash_join::HashTable::new_on_cpu(hash_table_mem, self.hash_table_size)?;
         let mut result_counts = vec![0; (self.probe_dim.0 * self.probe_dim.1) as usize];
         let build_selection_attr: Vec<_> = (2_i64..).take(self.build_relation.len()).collect();
         let probe_selection_attr: Vec<_> = (2_i64..).take(self.probe_relation.len()).collect();
 
-        let mut hj_op = hash_join::CpuHashJoinBuilder::new_with_ht(Arc::new(hash_table)).build();
+        let thread_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("Couldn't create thread pool");
+        let build_chunk_size = (self.build_relation.len() + threads - 1) / threads;
+        let probe_chunk_size = (self.probe_relation.len() + threads - 1) / threads;
+        let build_rel_chunks: Vec<_> = match self.build_relation {
+            Mem::CudaUniMem(ref m) => m.chunks(build_chunk_size),
+            Mem::SysMem(ref m) => m.chunks(build_chunk_size),
+            Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
+        }.collect();
+        let build_sel_chunks: Vec<_> = build_selection_attr.chunks(build_chunk_size).collect();
+        let probe_rel_chunks: Vec<_> = match self.probe_relation {
+            Mem::CudaUniMem(ref m) => m.chunks(probe_chunk_size),
+            Mem::SysMem(ref m) => m.chunks(probe_chunk_size),
+            Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
+        }.collect();
+        let probe_sel_chunks: Vec<_> = probe_selection_attr.chunks(probe_chunk_size).collect();
+        let result_count_chunks: Vec<_> = result_counts.chunks_mut(threads).collect();
+
+        let hj_builder = hash_join::CpuHashJoinBuilder::new_with_ht(Arc::new(hash_table));
 
         let mut timer = Instant::now();
-        hj_op
-            .build(
-                match self.build_relation {
-                    Mem::CudaUniMem(ref m) => m.as_slice(),
-                    Mem::SysMem(ref m) => m.as_slice(),
-                    Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
-                },
-                build_selection_attr.as_slice(),
-            )?;
+
+        thread_pool.scope(|s| {
+            for ((_tid, rel), sel) in (0..threads).zip(build_rel_chunks).zip(build_sel_chunks) {
+                let mut hj_op = hj_builder.build();
+                s.spawn(move |_| {
+                    hj_op.build(rel, sel).expect("Couldn't build hash table");
+                });
+            }
+        });
+
         let mut dur = timer.elapsed();
         let build_nanos = dur.as_secs() * 10_u64.pow(9) + dur.subsec_nanos() as u64;
 
         timer = Instant::now();
-        hj_op
-        .probe_count(
-                match self.probe_relation {
-                    Mem::CudaUniMem(ref m) => m.as_slice(),
-                    Mem::SysMem(ref m) => m.as_slice(),
-                    Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
-                },
-                probe_selection_attr.as_slice(),
-                &mut result_counts[0],
-            )?;
+
+        thread_pool.scope(|s| {
+            for (((_tid, rel), sel), res) in (0..threads)
+                .zip(probe_rel_chunks)
+                .zip(probe_sel_chunks)
+                .zip(result_count_chunks)
+            {
+                let mut hj_op = hj_builder.build();
+                s.spawn(move |_| {
+                    hj_op
+                        .probe_count(rel, sel, &mut res[0])
+                        .expect("Couldn't execute hash table probe");
+                });
+            }
+        });
+
         dur = timer.elapsed();
         let probe_nanos = dur.as_secs() * 10_u64.pow(9) + dur.subsec_nanos() as u64;
 
