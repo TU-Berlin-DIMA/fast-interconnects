@@ -312,7 +312,7 @@ dependencies = [
 [[package]]
 name = "mchj-generator"
 version = "0.1.0"
-source = "git+https://github.com/LutzCle/mchj-generator.git#e6af51d7c339ac01c0b52291de55352d30aeb5b9"
+source = "git+https://github.com/LutzCle/mchj-generator.git#2406a9fd5519a780a926a81458fbb724408d7724"
 dependencies = [
  "bindgen 0.43.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "cmake 0.1.35 (registry+https://github.com/rust-lang/crates.io-index)",
