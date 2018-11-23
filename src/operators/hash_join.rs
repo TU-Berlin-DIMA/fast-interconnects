@@ -217,9 +217,12 @@ impl HashTable {
             "Provided memory must be larger than hash table size"
         );
 
-        mem.iter_mut().by_ref().for_each(|x| *x = Self::NULL_KEY );
+        mem.iter_mut().by_ref().for_each(|x| *x = Self::NULL_KEY);
 
-        Ok(Self { mem: mem.into(), size })
+        Ok(Self {
+            mem: mem.into(),
+            size,
+        })
     }
 
     pub fn new_on_gpu(mem: Mem<i64>, size: usize) -> Result<Self> {
