@@ -10,7 +10,7 @@ dependencies = [
 [[package]]
 name = "accel-native"
 version = "0.1.0"
-source = "git+https://github.com/lutzcle/accel-native#0c08ef86f6b28994b9d73c70b29034cb41a188ca"
+source = "git+https://github.com/lutzcle/accel-native#07c68dd184ff40cc994e332d20e18fdb4a294844"
 
 [[package]]
 name = "aho-corasick"
