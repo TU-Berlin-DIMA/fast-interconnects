@@ -22,6 +22,7 @@ fn main() {
     // Add CUDA utils
     let args = vec![
         "cudautils/operators.cu",
+        "-std=c++11",
         "-fatbin",
         "-gencode",
         "arch=compute_30,code=sm_30", // Tesla K40
