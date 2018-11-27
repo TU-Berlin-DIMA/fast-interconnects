@@ -40,6 +40,7 @@ use cuda_sys::cudart::cudaMemPrefetchAsync;
 use numa_gpu::error::Result;
 use numa_gpu::operators::hash_join;
 use numa_gpu::runtime::memory::*;
+use numa_gpu::runtime::utils::cpu_codename;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -134,9 +135,10 @@ struct CmdOpt {
 }
 
 #[derive(Debug, Serialize)]
-pub struct DataPoint<'h, 'd> {
+pub struct DataPoint<'h, 'd, 'c> {
     pub hostname: &'h str,
     pub device_type: &'d str,
+    pub device_codename: &'c str,
     pub threads: Option<usize>,
     pub warm_up: bool,
     pub hash_table_bytes: usize,
@@ -215,9 +217,17 @@ fn main() {
 
     // FIXME: hard-coded unit sizes
     let dev_type_str = cmd.device_type.to_string();
+    let dev_codename_str = match cmd.device_type {
+        ArgDeviceType::CPU => cpu_codename(),
+        ArgDeviceType::GPU => Device::current()
+            .expect("Couldn't get current device")
+            .name()
+            .expect("Couldn't get device code name"),
+    };
     let dp = DataPoint {
         hostname: "",
         device_type: dev_type_str.as_str(),
+        device_codename: dev_codename_str.as_str(),
         threads: if cmd.device_type == ArgDeviceType::CPU {
             Some(cmd.threads)
         } else {
