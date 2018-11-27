@@ -8,11 +8,10 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-extern crate raw_cpuid;
-
 #[cfg(target_arch = "x86_64")]
 pub fn cpu_codename() -> String {
-    let cpuid = self::raw_cpuid::CpuId::new();
+    extern crate raw_cpuid;
+    let cpuid = raw_cpuid::CpuId::new();
     cpuid
         .get_extended_function_info()
         .as_ref()

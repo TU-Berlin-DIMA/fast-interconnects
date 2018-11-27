@@ -13,6 +13,8 @@ accel-native = { git = "https://github.com/lutzcle/accel-native" }
 cuda-sys = { git = "https://github.com/LutzCle/accel.git" }
 error-chain = "~0.12.0"
 mchj-generator = { git = "https://github.com/LutzCle/mchj-generator.git" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
 raw-cpuid = "~6.1.0"
 
 [build-dependencies]
