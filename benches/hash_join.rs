@@ -28,10 +28,10 @@ extern crate serde;
 extern crate structopt;
 
 use accel::device::{sync, Device};
+use accel::error::Check;
 use accel::event::Event;
 use accel::mvec::MVec;
 use accel::uvec::UVec;
-use accel::error::Check;
 
 use average::{Estimate, Max, Min, Quantile, Variance};
 
@@ -218,7 +218,11 @@ fn main() {
     let dp = DataPoint {
         hostname: "",
         device_type: dev_type_str.as_str(),
-        threads: if cmd.device_type == ArgDeviceType::CPU { Some(cmd.threads) } else { None },
+        threads: if cmd.device_type == ArgDeviceType::CPU {
+            Some(cmd.threads)
+        } else {
+            None
+        },
         warm_up: false,
         hash_table_bytes: hjb.hash_table_size * 16,
         build_tuples: hjb.build_relation.len(),
@@ -361,7 +365,7 @@ impl HashJoinBench {
                     r.len() * std::mem::size_of::<i64>(),
                     0,
                     std::mem::zeroed(),
-                    )
+                )
             }.check()?;
         }
 
@@ -372,7 +376,7 @@ impl HashJoinBench {
                     r.len() * std::mem::size_of::<i64>(),
                     0,
                     std::mem::zeroed(),
-                    )
+                )
             }.check()?;
         }
 
@@ -383,7 +387,7 @@ impl HashJoinBench {
                     a.len() * std::mem::size_of::<i64>(),
                     0,
                     std::mem::zeroed(),
-                    )
+                )
             }.check()?;
         }
 
@@ -394,7 +398,7 @@ impl HashJoinBench {
                     a.len() * std::mem::size_of::<i64>(),
                     0,
                     std::mem::zeroed(),
-                    )
+                )
             }.check()?;
         }
 
