@@ -31,8 +31,11 @@ use accel::device::{sync, Device};
 use accel::event::Event;
 use accel::mvec::MVec;
 use accel::uvec::UVec;
+use accel::error::Check;
 
 use average::{Estimate, Max, Min, Quantile, Variance};
+
+use cuda_sys::cudart::cudaMemPrefetchAsync;
 
 use numa_gpu::error::Result;
 use numa_gpu::operators::hash_join;
@@ -349,6 +352,53 @@ impl HashJoinBench {
         if let CudaUniMem(ref mut a) = probe_selection_attr {
             a.iter_mut().map(|x| *x = 2).collect::<()>();
         }
+
+        // Tune memory locations
+        if let CudaUniMem(ref r) = self.build_relation {
+            unsafe {
+                cudaMemPrefetchAsync(
+                    r.as_ptr() as *const std::ffi::c_void,
+                    r.len() * std::mem::size_of::<i64>(),
+                    0,
+                    std::mem::zeroed(),
+                    )
+            }.check()?;
+        }
+
+        if let CudaUniMem(ref r) = self.probe_relation {
+            unsafe {
+                cudaMemPrefetchAsync(
+                    r.as_ptr() as *const std::ffi::c_void,
+                    r.len() * std::mem::size_of::<i64>(),
+                    0,
+                    std::mem::zeroed(),
+                    )
+            }.check()?;
+        }
+
+        if let CudaUniMem(ref a) = build_selection_attr {
+            unsafe {
+                cudaMemPrefetchAsync(
+                    a.as_ptr() as *const std::ffi::c_void,
+                    a.len() * std::mem::size_of::<i64>(),
+                    0,
+                    std::mem::zeroed(),
+                    )
+            }.check()?;
+        }
+
+        if let CudaUniMem(ref a) = probe_selection_attr {
+            unsafe {
+                cudaMemPrefetchAsync(
+                    a.as_ptr() as *const std::ffi::c_void,
+                    a.len() * std::mem::size_of::<i64>(),
+                    0,
+                    std::mem::zeroed(),
+                    )
+            }.check()?;
+        }
+
+        sync()?;
 
         let mut hj_op = hash_join::CudaHashJoinBuilder::default()
             .build_dim(self.build_dim.0, self.build_dim.1)
