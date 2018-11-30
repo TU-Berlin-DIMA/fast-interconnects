@@ -34,8 +34,6 @@ fn main() {
         "arch=compute_61,code=sm_61", // GTX 1080
         "-gencode",
         "arch=compute_70,code=sm_70", // Tesla V100
-        "-g",
-        "-G",
         "-o",
     ];
 
