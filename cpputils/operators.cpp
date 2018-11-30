@@ -22,6 +22,14 @@
  * Hash table is initialized with all entries set to -1
  */
 
+/* See Richter et al., Seven-Dimensional Analysis of Hashing Methods
+ * Multiply-shift hash function
+ * Requirement: hash factor is an odd 64-bit integer
+*/
+#define HASH_FACTOR 123456789123456789ull
+
+#define NULL_KEY ((long)0xFFFFFFFFFFFFFFFFL)
+
 #include <atomic>
 #include <cstdint>
 
@@ -35,15 +43,14 @@ void cpu_ht_insert_linearprobing(
     uint32_t index = 0;
     index = key;
 
-    index *= 123456789123456789ul;
+    index *= HASH_FACTOR;
     for (uint32_t i = 0; i < hash_table_mask + 1; ++i, index += 2) {
         index &= hash_table_mask;
         index &= ~1ul;
 
-        int64_t null_key = 0xFFFFFFFFFFFFFFFF;
         int64_t old = hash_table[index];
-        if (old == null_key) {
-            uint64_t expected = (uint64_t) null_key;
+        if (old == NULL_KEY) {
+            uint64_t expected = (uint64_t) NULL_KEY;
             bool is_inserted = std::atomic_compare_exchange_strong(
                     (std::atomic<uint64_t>*) &hash_table[index],
                     &expected,
@@ -58,13 +65,13 @@ void cpu_ht_insert_linearprobing(
 }
 
 extern "C"
-void cpu_ht_build(
+void cpu_ht_build_linearprobing(
         uint64_t const num_elements,
         uint64_t * __restrict__ result_size,
         const int64_t *const __restrict__ selection_column_data,
         const int64_t *const __restrict__ join_column_data,
-        uint64_t const ht_RT1_RT_XT1_build_mode_length,
-        std::atomic<int64_t> * __restrict__ ht_RT1_RT_XT1_build_mode
+        uint64_t const hash_table_size,
+        std::atomic<int64_t> * __restrict__ hash_table
         )
 {
     int64_t write_pos = 0;
@@ -77,8 +84,8 @@ void cpu_ht_build(
     {
         if (selection_column_data[tuple_id_RT1] > 1) {
             cpu_ht_insert_linearprobing(
-                    ht_RT1_RT_XT1_build_mode,
-                    ht_RT1_RT_XT1_build_mode_length - 1,
+                    hash_table,
+                    hash_table_size - 1,
                     join_column_data[tuple_id_RT1],
                     write_pos
                     );
@@ -105,10 +112,9 @@ bool cpu_ht_findkey_linearprobing(
         index += 2;
     } else {
         index = key;
-        index *= 123456789123456789ul;
+        index *= HASH_FACTOR;
     }
 
-    int64_t null_key = 0xFFFFFFFFFFFFFFFF;
     for (uint32_t i = 0; i < hash_table_mask + 1; ++i, index += 2) {
         index &= hash_table_mask;
         index &= ~1ul;
@@ -117,7 +123,7 @@ bool cpu_ht_findkey_linearprobing(
             *found_payload = &hash_table[index + 1];
             *last_index = index;
             return true;
-        } else if (hash_table[index] == null_key) {
+        } else if (hash_table[index] == NULL_KEY) {
             return false;
         }
     }
@@ -126,13 +132,13 @@ bool cpu_ht_findkey_linearprobing(
 }
 
 extern "C"
-void cpu_ht_probe_aggregate(
+void cpu_ht_probe_aggregate_linearprobing(
         uint64_t const num_elements,
-        const int64_t *const __restrict__ array_ST1_ST_BT1,
-        const int64_t *const __restrict__ array_ST1_ST_YT1,
+        const int64_t *const __restrict__ filter_attribute_data,
+        const int64_t *const __restrict__ join_attribute_data,
         const int64_t *const __restrict__ hash_table,
         uint64_t const hash_table_length,
-        uint64_t *COUNT_OF_ST_BT1_COUNT
+        uint64_t *aggregation_result
         )
 {
     for (
@@ -141,18 +147,18 @@ void cpu_ht_probe_aggregate(
             ++tuple_id_ST1
         )
     {
-        if (((array_ST1_ST_BT1[tuple_id_ST1] > 1))) {
+        if (((filter_attribute_data[tuple_id_ST1] > 1))) {
             int64_t const *hash_table_payload = nullptr;
             uint32_t hash_table_last_index = 0;
             bool hash_table_use_last_index = false;
             while (cpu_ht_findkey_linearprobing(
                         hash_table, hash_table_length - 1,
-                        array_ST1_ST_YT1[tuple_id_ST1], &hash_table_payload,
+                        join_attribute_data[tuple_id_ST1], &hash_table_payload,
                         &hash_table_last_index,
                         hash_table_use_last_index)) {
 
                 hash_table_use_last_index = true;
-                *COUNT_OF_ST_BT1_COUNT += 1;
+                *aggregation_result += 1;
             }
         }
     }

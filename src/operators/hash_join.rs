@@ -28,22 +28,22 @@ use error::Result;
 use runtime::memory::*;
 
 extern "C" {
-    fn cpu_ht_build(
+    fn cpu_ht_build_linearprobing(
         num_elements: u64,
         result_size: *mut u64,
-        selection_column_data: *const i64,
-        join_column_data: *const i64,
-        ht_RT1_RT_XT1_build_mode_length: u64,
-        ht_RT1_RT_XT1_build_mode: *mut i64, // FIXME: replace i64 with atomic_i64
+        filter_attr_data: *const i64,
+        join_attr_data: *const i64,
+        hash_table_length: u64,
+        hash_table: *mut i64, // FIXME: replace i64 with atomic_i64
     );
 
-    fn cpu_ht_probe_aggregate(
+    fn cpu_ht_probe_aggregate_linearprobing(
         num_elements: u64,
-        array_ST1_ST_BT1: *const i64,
-        array_ST1_ST_YT1: *const i64,
-        hash_table: *const i64,
+        filter_attr_data: *const i64,
+        join_attr_data: *const i64,
+        hash_table: *const i64, // FIXME: replace i64 with atomic_i64
         hash_table_length: u64,
-        COUNT_OF_ST_BT1_COUNT: *mut u64,
+        aggregation_result: *mut u64,
     );
 }
 
@@ -98,7 +98,7 @@ impl CudaHashJoin {
         let hash_table_size = self.hash_table.size as u64;
 
         cuda!(
-            build_pipeline_kernel << [&self.ops, Grid::x(grid), Block::x(block)]
+            gpu_ht_build_linearprobing << [&self.ops, Grid::x(grid), Block::x(block)]
                 >> (
                     join_attr_len,
                     self.build_result,
@@ -132,7 +132,7 @@ impl CudaHashJoin {
         let hash_table_size = self.hash_table.size as u64;
 
         cuda!(
-            aggregation_kernel << [&self.ops, Grid::x(grid), Block::x(block)]
+            gpu_ht_probe_aggregate_linearprobing << [&self.ops, Grid::x(grid), Block::x(block)]
                 >> (
                     join_attr_len,
                     *filter_attr.as_any(),
@@ -162,7 +162,7 @@ impl CpuHashJoin {
         let hash_table_size = self.hash_table.size as u64;
 
         unsafe {
-            cpu_ht_build(
+            cpu_ht_build_linearprobing(
                 join_attr_len,
                 self.build_result.as_mut_ptr(),
                 filter_attr.as_ptr(),
@@ -190,7 +190,7 @@ impl CpuHashJoin {
         let hash_table_size = self.hash_table.size as u64;
 
         unsafe {
-            cpu_ht_probe_aggregate(
+            cpu_ht_probe_aggregate_linearprobing(
                 join_attr_len,
                 filter_attr.as_ptr(),
                 join_attr.as_ptr(),

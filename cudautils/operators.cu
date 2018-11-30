@@ -22,39 +22,26 @@
  * Hash table is initialized with all entries set to -1
  *
  * TODO:
- * - put constants into #define statements
  * - use HtEntry struct for key/payload pairs and adjust insert/probe logic
  */
 
-typedef unsigned char uint8_t;
-typedef unsigned short int uint16_t;
+/* See Richter et al., Seven-Dimensional Analysis of Hashing Methods
+ * Multiply-shift hash function
+ * Requirement: hash factor is an odd 64-bit integer
+*/
+#define HASH_FACTOR 123456789123456789ull
+
+#define NULL_KEY 0xFFFFFFFFFFFFFFFFll
+
+/*
+ * Note: uint64_t in cstdint header doesn't match atomicCAS()
+ */
 typedef unsigned int uint32_t;
 typedef unsigned long long int uint64_t;
-typedef unsigned long long int TID;
-/* typedef char int8_t; */
-typedef short int int16_t;
-typedef int int32_t;
-/* typedef long long int int64_t; */
-/* #define C_MIN(a, b) (a = (a < b ? a : b)) */
-/* #define C_MIN_uint32t(a, b) C_MIN(a, b) */
-/* #define C_MIN_uint64t(a, b) C_MIN(a, b) */
-/* #define C_MIN_double(a, b) C_MIN(a, b) */
-/* #define C_MAX(a, b) (a = (a > b ? a : b)) */
-/* #define C_MAX_uint32_t(a, b) C_MAX(a, b) */
-/* #define C_MAX_uint64_t(a, b) C_MAX(a, b) */
-/* #define C_MAX_double(a, b) C_MAX(a, b) */
-/* #define C_SUM(a, b) (a += b) */
-/* #define C_SUM_uint32_t(a, b) C_SUM(a, b) */
-/* #define C_SUM_uint64_t(a, b) C_SUM(a, b) */
-/* #define C_SUM_float(a, b) C_SUM(a, b) */
-/* #define C_SUM_double(a, b) C_SUM(a, b) */
-/* #ifndef NULL */
-/* #define NULL 0 */
-/* #endif */
 
 /* __inline__ */
 __device__
-void insertIntoLinearProbingHTht_RT1_RT_XT1_build_mode(
+void gpu_ht_insert_linearprobing(
         int64_t * __restrict__ hash_table,
         uint64_t hash_table_mask,
         int64_t key,
@@ -64,35 +51,20 @@ void insertIntoLinearProbingHTht_RT1_RT_XT1_build_mode(
     uint32_t index = 0;
     index = key;
 
-    // Question: What makes a good hash value?
-    index *= 123456789123456789ul;
+    index *= HASH_FACTOR;
     for (uint32_t i = 0; i < hash_table_mask + 1; ++i, index += 2) {
-        // effectively index = index % ht_size
+        // Effectively index = index % ht_size
         index &= hash_table_mask;
 
-        // ensures index is a multiple of 2, i.e., index = index - (index % 2)
+        // Effectively a index = index % 2
         // This is done because each key/payload pair occupies 2 slots in ht array
-        // Question: does this lead to unnecessary hash conflicts?
-        //   Answer: yes, but only for 1 entry. Multiple entries are on same probe chain anyways
         index &= ~1ul;
 
-        //    int64_t null_key = 0xFFFFFFFFFFFFFFFF;
-        //    int64_t old = hash_table[index];
-        //    if (old == key) {
-        //      return;
-        //    } else if (old == null_key) {
-        //      old = atom_cmpxchg(&hash_table[index], null_key, key);
-        //      if (old == null_key || old == key) {
-        //        hash_table[index + 1] = payload;
-        //        return;
-        //      }
-        //    }
-
-        int64_t null_key = 0xFFFFFFFFFFFFFFFF;
+        unsigned long long int null_key = NULL_KEY;
         int64_t old = hash_table[index];
-        if (old == null_key) {
-            old = (int64_t)atomicCAS((uint64_t*)&hash_table[index], (uint64_t)null_key, (uint64_t)key);
-            if (old == null_key) {
+        if (old == NULL_KEY) {
+            old = (int64_t)atomicCAS((unsigned long long int*)&hash_table[index], null_key, (unsigned long long int)key);
+            if (old == NULL_KEY) {
                 hash_table[index + 1] = payload;
                 return;
             }
@@ -102,13 +74,13 @@ void insertIntoLinearProbingHTht_RT1_RT_XT1_build_mode(
 
 extern "C"
 __global__
-void build_pipeline_kernel(
+void gpu_ht_build_linearprobing(
         uint64_t const num_elements,
         uint64_t * __restrict__ result_size,
         const int64_t *const __restrict__ selection_column_data,
         const int64_t *const __restrict__ join_column_data,
-        uint64_t const ht_RT1_RT_XT1_build_mode_length,
-        int64_t * __restrict__ ht_RT1_RT_XT1_build_mode
+        uint64_t const hash_table_size,
+        int64_t * __restrict__ hash_table
         )
 {
     const uint32_t global_idx = blockIdx.x *blockDim.x + threadIdx.x;
@@ -118,9 +90,9 @@ void build_pipeline_kernel(
     uint32_t tuple_id_RT1 = global_idx;
     while (tuple_id_RT1 < num_elements) {
         if (selection_column_data[tuple_id_RT1] > 1) {
-            insertIntoLinearProbingHTht_RT1_RT_XT1_build_mode(
-                    ht_RT1_RT_XT1_build_mode,
-                    ht_RT1_RT_XT1_build_mode_length - 1,
+            gpu_ht_insert_linearprobing(
+                    hash_table,
+                    hash_table_size - 1,
                     join_column_data[tuple_id_RT1],
                     write_pos
                     );
@@ -134,7 +106,7 @@ void build_pipeline_kernel(
 }
 
 __device__
-bool findKeyLinearProbingHThash_table(
+bool gpu_ht_findkey_linearprobing(
         int64_t const *const __restrict__ hash_table,
         uint64_t hash_table_mask,
         int64_t key,
@@ -152,7 +124,6 @@ bool findKeyLinearProbingHThash_table(
         index *= 123456789123456789ul;
     }
 
-    int64_t null_key = 0xFFFFFFFFFFFFFFFF;
     for (uint32_t i = 0; i < hash_table_mask + 1; ++i, index += 2) {
         index &= hash_table_mask;
         index &= ~1ul;
@@ -162,7 +133,7 @@ bool findKeyLinearProbingHThash_table(
             *found_payload = &hash_table[index + 1];
             *last_index = index;
             return true;
-        } else if (hash_table[index] == null_key) {
+        } else if (hash_table[index] == NULL_KEY) {
             return false;
         }
     }
@@ -172,13 +143,13 @@ bool findKeyLinearProbingHThash_table(
 
 extern "C"
 __global__
-void aggregation_kernel(
+void gpu_ht_probe_aggregate_linearprobing(
         uint64_t const num_elements,
-        const int64_t *const __restrict__ array_ST1_ST_BT1,
-        const int64_t *const __restrict__ array_ST1_ST_YT1,
+        const int64_t *const __restrict__ filter_attribute_data,
+        const int64_t *const __restrict__ join_attribute_data,
         const int64_t *const __restrict__ hash_table,
         uint64_t const hash_table_length,
-        uint64_t * __restrict__ COUNT_OF_ST_BT1_COUNT
+        uint64_t * __restrict__ aggregation_result
         )
 {
     const uint32_t global_idx = blockIdx.x *blockDim.x + threadIdx.x;
@@ -186,19 +157,22 @@ void aggregation_kernel(
     uint32_t tuple_id_ST1 = global_idx;
 
     while (tuple_id_ST1 < num_elements) {
-        if (((array_ST1_ST_BT1[tuple_id_ST1] > 1))) {
-            /* TID tuple_id_RT = 0; */
+        if (((filter_attribute_data[tuple_id_ST1] > 1))) {
             int64_t const *hash_table_payload = nullptr;
             uint32_t hash_table_last_index = 0;
             bool hash_table_use_last_index = false;
-            while (findKeyLinearProbingHThash_table(
-                        hash_table, hash_table_length - 1,
-                        array_ST1_ST_YT1[tuple_id_ST1], &hash_table_payload,
+            while (
+                    gpu_ht_findkey_linearprobing(
+                        hash_table,
+                        hash_table_length - 1,
+                        join_attribute_data[tuple_id_ST1],
+                        &hash_table_payload,
                         &hash_table_last_index,
-                        hash_table_use_last_index)) {
-
+                        hash_table_use_last_index)
+                  )
+            {
                 hash_table_use_last_index = true;
-                COUNT_OF_ST_BT1_COUNT[global_idx] += 1;
+                aggregation_result[global_idx] += 1;
             }
         }
         tuple_id_ST1 += number_of_threads;
