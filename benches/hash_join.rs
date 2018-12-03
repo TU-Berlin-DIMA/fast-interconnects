@@ -207,7 +207,7 @@ fn main() {
     let grid_size = cuda_cores * grid_overcommit_factor;
 
     let hjb = HashJoinBench {
-        hash_table_size: 2 * 128 * 2_usize.pow(20),
+        hash_table_size: 4 * 128 * 2_usize.pow(20),
         build_relation: pk_gpu.into(),
         probe_relation: fk_gpu.into(),
         join_selectivity: 1.0,
