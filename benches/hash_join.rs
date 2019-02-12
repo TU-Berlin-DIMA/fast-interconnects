@@ -116,6 +116,7 @@ struct CmdOpt {
             case_insensitive = "true"
         )
     )]
+    #[allow(dead_code)]
     data_set: Option<ArgDataSet>,
 
     /// Type of the device.
@@ -182,7 +183,7 @@ fn main() {
         .zip(pk.iter())
         .map(|(gpu, origin)| {
             *gpu = origin.key as i64;
-        }).collect::<()>();
+        }).for_each(drop);
 
     fk_gpu
         .iter_mut()
@@ -190,7 +191,7 @@ fn main() {
         .zip(fk.iter())
         .map(|(gpu, origin)| {
             *gpu = origin.key as i64;
-        }).collect::<()>();
+        }).for_each(drop);
 
     // Device tuning
     let dev = Device::current().expect("Couldn't get CUDA device");
@@ -333,6 +334,7 @@ Max:           {:6.2}          {:6.2}"#,
     Ok(())
 }
 
+#[allow(dead_code)]
 struct HashJoinBench {
     hash_table_size: usize,
     build_relation: Mem<i64>,
@@ -354,17 +356,17 @@ impl HashJoinBench {
 
         // Initialize counts
         if let CudaUniMem(ref mut c) = result_counts {
-            c.iter_mut().map(|count| *count = 0).collect::<()>();
+            c.iter_mut().map(|count| *count = 0).for_each(drop);
         }
 
         // Set build selection attributes to 100% selectivity
         if let CudaUniMem(ref mut a) = build_selection_attr {
-            a.iter_mut().map(|x| *x = 2).collect::<()>();
+            a.iter_mut().map(|x| *x = 2).for_each(drop);
         }
 
         // Set probe selection attributes to 100% selectivity
         if let CudaUniMem(ref mut a) = probe_selection_attr {
-            a.iter_mut().map(|x| *x = 2).collect::<()>();
+            a.iter_mut().map(|x| *x = 2).for_each(drop);
         }
 
         // Tune memory locations

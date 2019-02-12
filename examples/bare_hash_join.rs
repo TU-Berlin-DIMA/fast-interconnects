@@ -44,14 +44,14 @@ fn main() {
         .iter_mut()
         .by_ref()
         .map(|x| *x = 2)
-        .collect::<()>();
+        .for_each(drop);
 
     // Initialize hash table
     hash_table
         .iter_mut()
         .by_ref()
         .map(|entry| *entry = null_key)
-        .collect::<()>();
+        .for_each(drop);
 
     print!("[");
     for s in build_join_attr.iter() {
@@ -110,14 +110,14 @@ fn main() {
         .iter_mut()
         .by_ref()
         .map(|x| *x = 2)
-        .collect::<()>();
+        .for_each(drop);
 
     // Initialize counts
     counts_result
         .iter_mut()
         .by_ref()
         .map(|count| *count = 0)
-        .collect::<()>();
+        .for_each(drop);
 
     let probe_attr_len = probe_join_attr.len() as u64;
 

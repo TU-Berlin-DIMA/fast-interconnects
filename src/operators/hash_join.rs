@@ -24,8 +24,8 @@ use std::os::raw::c_void;
 use std::path::Path;
 use std::sync::Arc;
 
-use error::Result;
-use runtime::memory::*;
+use crate::error::Result;
+use crate::runtime::memory::*;
 
 extern "C" {
     fn cpu_ht_build_linearprobing(
