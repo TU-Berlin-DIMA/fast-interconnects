@@ -17,10 +17,13 @@ use std::any::Any;
 use std::ops::Deref;
 use std::ops::DerefMut;
 
+use crate::runtime::backend::NumaMemory;
+
 pub use self::Mem::*;
 #[derive(Debug)]
 pub enum Mem<T> {
     SysMem(Vec<T>),
+    NumaMem(NumaMemory<T>),
     CudaDevMem(MVec<T>),
     CudaUniMem(UVec<T>),
 }
@@ -29,6 +32,7 @@ impl<T: Any + Copy> Mem<T> {
     pub fn len(&self) -> usize {
         match self {
             SysMem(ref m) => m.len(),
+            NumaMem(ref m) => m.len(),
             CudaDevMem(ref m) => m.len(),
             CudaUniMem(ref m) => m.len(),
         }
@@ -37,6 +41,7 @@ impl<T: Any + Copy> Mem<T> {
     pub fn as_any(&self) -> &Any {
         match self {
             SysMem(ref m) => m as &Any,
+            NumaMem(ref m) => m as &Any,
             CudaDevMem(ref m) => m as &Any,
             CudaUniMem(ref m) => m as &Any,
         }
@@ -45,6 +50,7 @@ impl<T: Any + Copy> Mem<T> {
     pub fn as_ptr(&self) -> *const T {
         match self {
             SysMem(m) => m.as_ptr(),
+            NumaMem(m) => m.as_ptr(),
             CudaDevMem(m) => m.as_ptr(),
             CudaUniMem(m) => m.as_ptr(),
         }
@@ -53,6 +59,7 @@ impl<T: Any + Copy> Mem<T> {
     pub fn as_mut_ptr(&mut self) -> *mut T {
         match self {
             SysMem(m) => m.as_mut_ptr(),
+            NumaMem(m) => m.as_mut_ptr(),
             CudaDevMem(m) => m.as_mut_ptr(),
             CudaUniMem(m) => m.as_mut_ptr(),
         }
@@ -63,6 +70,7 @@ impl<T> From<DerefMem<T>> for Mem<T> {
     fn from(demem: DerefMem<T>) -> Mem<T> {
         match demem {
             DerefMem::SysMem(m) => Mem::SysMem(m),
+            DerefMem::NumaMem(m) => Mem::NumaMem(m),
             DerefMem::CudaUniMem(m) => Mem::CudaUniMem(m),
         }
     }
@@ -71,7 +79,26 @@ impl<T> From<DerefMem<T>> for Mem<T> {
 #[derive(Debug)]
 pub enum DerefMem<T> {
     SysMem(Vec<T>),
+    NumaMem(NumaMemory<T>),
     CudaUniMem(UVec<T>),
+}
+
+impl<T> DerefMem<T> {
+    pub fn as_slice(&self) -> &[T] {
+        match self {
+            DerefMem::SysMem(m) => m.as_slice(),
+            DerefMem::NumaMem(m) => m.as_slice(),
+            DerefMem::CudaUniMem(m) => m.as_slice(),
+        }
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        match self {
+            DerefMem::SysMem(m) => m.as_mut_slice(),
+            DerefMem::NumaMem(m) => m.as_mut_slice(),
+            DerefMem::CudaUniMem(m) => m.as_slice_mut(),
+        }
+    }
 }
 
 impl<T> Deref for DerefMem<T> {
@@ -80,6 +107,7 @@ impl<T> Deref for DerefMem<T> {
     fn deref(&self) -> &[T] {
         match self {
             DerefMem::SysMem(m) => m.as_slice(),
+            DerefMem::NumaMem(m) => m.as_slice(),
             DerefMem::CudaUniMem(m) => m.as_slice(),
         }
     }
@@ -89,6 +117,7 @@ impl<T> DerefMut for DerefMem<T> {
     fn deref_mut(&mut self) -> &mut [T] {
         match self {
             DerefMem::SysMem(m) => m.as_mut_slice(),
+            DerefMem::NumaMem(m) => m.as_mut_slice(),
             DerefMem::CudaUniMem(m) => m.as_slice_mut(),
         }
     }

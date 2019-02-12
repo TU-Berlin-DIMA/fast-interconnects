@@ -10,9 +10,11 @@
 
 mod cuda;
 mod numa;
+mod hw_info;
 
 // Re-exports
 pub use self::cuda::Cuda;
-pub use self::numa::Numa;
+pub use self::numa::*;
+pub use self::hw_info::*;
 
 pub trait Backend {}
