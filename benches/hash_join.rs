@@ -39,8 +39,9 @@ use cuda_sys::cudart::cudaMemPrefetchAsync;
 
 use numa_gpu::error::Result;
 use numa_gpu::operators::hash_join;
+use numa_gpu::runtime::backend::*;
 use numa_gpu::runtime::memory::*;
-use numa_gpu::runtime::utils::cpu_codename;
+use numa_gpu::runtime::utils::ensure_physically_backed;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -154,6 +155,7 @@ pub struct DataPoint<'h, 'd, 'c> {
 
 fn main() {
     let cmd = CmdOpt::from_args();
+    let numa_node = 0;
 
     // Generate Kim dataset
     mchj_generator::seed_generator(100);
@@ -167,14 +169,14 @@ fn main() {
         ArgMemType::Unified => DerefMem::CudaUniMem(
             UVec::<i64>::new(pk.len()).expect("Couldn't allocate GPU primary keys"),
         ),
-        ArgMemType::System => DerefMem::SysMem(vec![0; pk.len()]),
+        ArgMemType::System => DerefMem::NumaMem(NumaMemory::alloc_on_node(pk.len(), numa_node)),
     };
 
     let mut fk_gpu = match cmd.mem_type {
         ArgMemType::Unified => DerefMem::CudaUniMem(
             UVec::<i64>::new(fk.len()).expect("Couldn't allocate GPU foreign keys"),
         ),
-        ArgMemType::System => DerefMem::SysMem(vec![0; fk.len()]),
+        ArgMemType::System => DerefMem::NumaMem(NumaMemory::alloc_on_node(pk.len(), numa_node)),
     };
 
     pk_gpu
@@ -449,7 +451,10 @@ impl HashJoinBench {
     }
 
     fn cpu_hash_join(&self, threads: usize) -> Result<(f64, f64)> {
-        let hash_table_mem = DerefMem::SysMem(vec![0; self.hash_table_size]);
+        let numa_node = 0;
+        let mut hash_table_mem =
+            DerefMem::NumaMem(NumaMemory::alloc_on_node(self.hash_table_size, numa_node));
+        ensure_physically_backed(&mut hash_table_mem);
         let hash_table = hash_join::HashTable::new_on_cpu(hash_table_mem, self.hash_table_size)?;
         let mut result_counts = vec![0; (self.probe_dim.0 * self.probe_dim.1) as usize];
         let build_selection_attr: Vec<_> = (2_i64..).take(self.build_relation.len()).collect();
@@ -464,12 +469,14 @@ impl HashJoinBench {
         let build_rel_chunks: Vec<_> = match self.build_relation {
             Mem::CudaUniMem(ref m) => m.chunks(build_chunk_size),
             Mem::SysMem(ref m) => m.chunks(build_chunk_size),
+            Mem::NumaMem(ref m) => m.as_slice().chunks(build_chunk_size),
             Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
         }.collect();
         let build_sel_chunks: Vec<_> = build_selection_attr.chunks(build_chunk_size).collect();
         let probe_rel_chunks: Vec<_> = match self.probe_relation {
             Mem::CudaUniMem(ref m) => m.chunks(probe_chunk_size),
             Mem::SysMem(ref m) => m.chunks(probe_chunk_size),
+            Mem::NumaMem(ref m) => m.as_slice().chunks(probe_chunk_size),
             Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
         }.collect();
         let probe_sel_chunks: Vec<_> = probe_selection_attr.chunks(probe_chunk_size).collect();
