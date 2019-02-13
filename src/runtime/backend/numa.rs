@@ -100,6 +100,7 @@ impl<T> Drop for NumaMemory<T> {
 }
 
 unsafe impl<T> Send for NumaMemory<T> {}
+unsafe impl<T> Sync for NumaMemory<T> {}
 
 pub fn run_on_node(node: u16) {
     let c_node = node as c_int;
