@@ -8,18 +8,20 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-#[cfg(target_arch = "x86_64")]
-pub fn cpu_codename() -> String {
-    extern crate raw_cpuid;
-    let cpuid = raw_cpuid::CpuId::new();
-    cpuid
-        .get_extended_function_info()
-        .as_ref()
-        .and_then(|i| i.processor_brand_string())
-        .map_or_else(|| String::from("unknown x86-64"), |s| String::from(s))
-}
-
-#[cfg(target_arch = "powerpc64")]
-pub fn cpu_codename() -> String {
-    String::from("POWER9")
+/// Ensure that memory is backed by physical pages
+///
+/// Operating systems (such as Linux) sometimes do not back memory filled with
+/// identical data with physical pages. Instead, the OS allocates only a single
+/// page and replicates it in virtual memory. Thus, in benchmarks the page is
+/// cached in L1, which leads to unrealistically high performance. This effect
+/// can be observed by profiling, e.g., with Linux perf or Intel VTune.
+///
+/// This function forces the OS to back all pages with physical memory by
+/// writing non-uniform data into each page.
+#[inline(never)]
+pub fn ensure_physically_backed<T: std::convert::From<u16>>(data: &mut [T]) {
+    data.iter_mut()
+        .by_ref()
+        .enumerate()
+        .for_each(|(i, x)| *x = (i as u16).into());
 }
