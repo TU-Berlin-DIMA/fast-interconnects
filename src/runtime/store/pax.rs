@@ -229,15 +229,17 @@ impl<'p> PageBuilder<'p> {
             .map(|t| match t {
                 AttrType::Fixed(size) => *size as usize,
                 AttrType::Variable(size) => *size as usize,
-            }).sum();
+            })
+            .sum();
         let max_records = (page.payload.len() / record_size) as u32;
 
         let mut sum = 0;
         for (i, t) in self.attrs.iter().enumerate() {
-            sum += max_records * match t {
-                AttrType::Fixed(size) => *size as u32,
-                AttrType::Variable(size) => *size as u32,
-            };
+            sum += max_records
+                * match t {
+                    AttrType::Fixed(size) => *size as u32,
+                    AttrType::Variable(size) => *size as u32,
+                };
 
             page.header.h.offset[i] = sum;
         }

@@ -242,7 +242,8 @@ impl HashTable {
                 Self::NULL_KEY as i32,
                 mem.len() * size_of::<i64>(),
             )
-        }.check()?;
+        }
+        .check()?;
 
         Ok(Self { mem, size })
     }
@@ -332,7 +333,8 @@ impl ::std::fmt::Display for HashTable {
                 SysMem(ref m) => m.as_slice(),
                 CudaUniMem(ref m) => m.as_slice(),
                 _ => &[],
-            }.iter()
+            }
+            .iter()
             .take(self.size)
             .map(|entry| write!(f, "{},", entry))
             .collect::<::std::fmt::Result>()?;

@@ -72,7 +72,8 @@ fn main() {
                 hash_table_len,
                 hash_table
             )
-    ).expect("Cannot launch build kernel");
+    )
+    .expect("Cannot launch build kernel");
     sync().unwrap();
 
     print!("[");
@@ -131,7 +132,8 @@ fn main() {
                 hash_table_len,
                 counts_result // size == global_size)
             )
-    ).expect("Cannot launch probe kernel");
+    )
+    .expect("Cannot launch probe kernel");
 
     sync().unwrap();
 

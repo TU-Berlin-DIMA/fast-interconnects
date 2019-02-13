@@ -12,7 +12,7 @@ extern crate accel;
 
 use self::accel::error::Error as AccelError;
 
-error_chain!{
+error_chain! {
     errors {
         Cuda(msg: String) {
             description("A CUDA error occured")

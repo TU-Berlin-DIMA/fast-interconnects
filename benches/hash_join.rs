@@ -74,22 +74,14 @@ arg_enum! {
 }
 
 #[derive(StructOpt)]
-#[structopt(
-    name = "hash_join",
-    about = "A benchmark for the hash join operator"
-)]
+#[structopt(name = "hash_join", about = "A benchmark for the hash join operator")]
 struct CmdOpt {
     /// Number of times to repeat benchmark
     #[structopt(short = "r", long = "repeat", default_value = "30")]
     repeat: u32,
 
     /// Output path for measurement files (defaults to current directory)
-    #[structopt(
-        short = "o",
-        long = "out-dir",
-        parse(from_os_str),
-        default_value = "."
-    )]
+    #[structopt(short = "o", long = "out-dir", parse(from_os_str), default_value = ".")]
     out_dir: PathBuf,
 
     /// Memory type with which to allocate data.
@@ -99,10 +91,7 @@ struct CmdOpt {
         short = "m",
         long = "mem-type",
         default_value = "Unified",
-        raw(
-            possible_values = "&ArgMemType::variants()",
-            case_insensitive = "true"
-        )
+        raw(possible_values = "&ArgMemType::variants()", case_insensitive = "true")
     )]
     mem_type: ArgMemType,
 
@@ -112,10 +101,7 @@ struct CmdOpt {
     #[structopt(
         short = "s",
         long = "data-set",
-        raw(
-            possible_values = "&ArgDataSet::variants()",
-            case_insensitive = "true"
-        )
+        raw(possible_values = "&ArgDataSet::variants()", case_insensitive = "true")
     )]
     #[allow(dead_code)]
     data_set: Option<ArgDataSet>,
@@ -185,7 +171,8 @@ fn main() {
         .zip(pk.iter())
         .map(|(gpu, origin)| {
             *gpu = origin.key as i64;
-        }).for_each(drop);
+        })
+        .for_each(drop);
 
     fk_gpu
         .iter_mut()
@@ -193,7 +180,8 @@ fn main() {
         .zip(fk.iter())
         .map(|(gpu, origin)| {
             *gpu = origin.key as i64;
-        }).for_each(drop);
+        })
+        .for_each(drop);
 
     // Device tuning
     let dev = Device::current().expect("Couldn't get CUDA device");
@@ -275,7 +263,8 @@ where
                 probe_ns,
                 ..template
             })
-        }).collect::<Result<Vec<_>>>()?;
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     let csv_path = out_dir.with_file_name(name).with_extension("csv");
 
@@ -380,7 +369,8 @@ impl HashJoinBench {
                     0,
                     std::mem::zeroed(),
                 )
-            }.check()?;
+            }
+            .check()?;
         }
 
         if let CudaUniMem(ref r) = self.probe_relation {
@@ -391,7 +381,8 @@ impl HashJoinBench {
                     0,
                     std::mem::zeroed(),
                 )
-            }.check()?;
+            }
+            .check()?;
         }
 
         if let CudaUniMem(ref a) = build_selection_attr {
@@ -402,7 +393,8 @@ impl HashJoinBench {
                     0,
                     std::mem::zeroed(),
                 )
-            }.check()?;
+            }
+            .check()?;
         }
 
         if let CudaUniMem(ref a) = probe_selection_attr {
@@ -413,7 +405,8 @@ impl HashJoinBench {
                     0,
                     std::mem::zeroed(),
                 )
-            }.check()?;
+            }
+            .check()?;
         }
 
         sync()?;
@@ -471,14 +464,16 @@ impl HashJoinBench {
             Mem::SysMem(ref m) => m.chunks(build_chunk_size),
             Mem::NumaMem(ref m) => m.as_slice().chunks(build_chunk_size),
             Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
-        }.collect();
+        }
+        .collect();
         let build_sel_chunks: Vec<_> = build_selection_attr.chunks(build_chunk_size).collect();
         let probe_rel_chunks: Vec<_> = match self.probe_relation {
             Mem::CudaUniMem(ref m) => m.chunks(probe_chunk_size),
             Mem::SysMem(ref m) => m.chunks(probe_chunk_size),
             Mem::NumaMem(ref m) => m.as_slice().chunks(probe_chunk_size),
             Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
-        }.collect();
+        }
+        .collect();
         let probe_sel_chunks: Vec<_> = probe_selection_attr.chunks(probe_chunk_size).collect();
         let result_count_chunks: Vec<_> = result_counts.chunks_mut(threads).collect();
 
