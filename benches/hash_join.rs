@@ -95,6 +95,18 @@ struct CmdOpt {
     )]
     mem_type: ArgMemType,
 
+    #[structopt(long = "hash-table-location", default_value = "0")]
+    /// Allocate memory for hash table on CPU or GPU (See numactl -H and CUDA device list)
+    hash_table_location: u16,
+
+    #[structopt(long = "inner-rel-location", default_value = "0")]
+    /// Allocate memory for inner relation on CPU or GPU (See numactl -H and CUDA device list)
+    inner_rel_location: u16,
+
+    #[structopt(long = "outer-rel-location", default_value = "0")]
+    /// Allocate memory for outer relation on CPU or GPU (See numactl -H and CUDA device list)
+    outer_rel_location: u16,
+
     /// Use a pre-defined data set.
     //   alb: Albutiu et al. Massively parallel sort-merge joins"
     //   kim: Kim et al. "Sort vs. hash revisited"
@@ -141,7 +153,6 @@ pub struct DataPoint<'h, 'd, 'c> {
 
 fn main() {
     let cmd = CmdOpt::from_args();
-    let numa_node = 0;
 
     // Generate Kim dataset
     mchj_generator::seed_generator(100);
@@ -155,14 +166,18 @@ fn main() {
         ArgMemType::Unified => DerefMem::CudaUniMem(
             UVec::<i64>::new(pk.len()).expect("Couldn't allocate GPU primary keys"),
         ),
-        ArgMemType::System => DerefMem::NumaMem(NumaMemory::alloc_on_node(pk.len(), numa_node)),
+        ArgMemType::System => {
+            DerefMem::NumaMem(NumaMemory::alloc_on_node(pk.len(), cmd.inner_rel_location))
+        }
     };
 
     let mut fk_gpu = match cmd.mem_type {
         ArgMemType::Unified => DerefMem::CudaUniMem(
             UVec::<i64>::new(fk.len()).expect("Couldn't allocate GPU foreign keys"),
         ),
-        ArgMemType::System => DerefMem::NumaMem(NumaMemory::alloc_on_node(pk.len(), numa_node)),
+        ArgMemType::System => {
+            DerefMem::NumaMem(NumaMemory::alloc_on_node(pk.len(), cmd.outer_rel_location))
+        }
     };
 
     pk_gpu
@@ -237,9 +252,10 @@ fn main() {
 
     // Decide which closure to run
     let dev_type = cmd.device_type.clone();
+    let hash_table_location = cmd.hash_table_location;
     let threads = cmd.threads;
     let hjc = || match dev_type {
-        ArgDeviceType::CPU => hjb.cpu_hash_join(threads),
+        ArgDeviceType::CPU => hjb.cpu_hash_join(threads, hash_table_location),
         ArgDeviceType::GPU => hjb.cuda_hash_join(),
     };
 
@@ -443,10 +459,11 @@ impl HashJoinBench {
         ))
     }
 
-    fn cpu_hash_join(&self, threads: usize) -> Result<(f64, f64)> {
-        let numa_node = 0;
-        let mut hash_table_mem =
-            DerefMem::NumaMem(NumaMemory::alloc_on_node(self.hash_table_size, numa_node));
+    fn cpu_hash_join(&self, threads: usize, hash_table_location: u16) -> Result<(f64, f64)> {
+        let mut hash_table_mem = DerefMem::NumaMem(NumaMemory::alloc_on_node(
+            self.hash_table_size,
+            hash_table_location,
+        ));
         ensure_physically_backed(&mut hash_table_mem);
         let hash_table = hash_join::HashTable::new_on_cpu(hash_table_mem, self.hash_table_size)?;
         let mut result_counts = vec![0; (self.probe_dim.0 * self.probe_dim.1) as usize];
