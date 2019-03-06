@@ -26,6 +26,14 @@ error_chain! {
             description("A CUDA error occured")
             display("Aborted with: {}", msg)
         }
+        InvalidArgument(msg: String) {
+            description("Invalid argument error")
+            display("Aborted with: {}", msg)
+        }
+        IntegerOverflow(msg: String) {
+            description("Integer overflow error")
+            display("Aborted with: {}", msg)
+        }
     }
 
     foreign_links {

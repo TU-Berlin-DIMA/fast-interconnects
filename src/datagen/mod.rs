@@ -4,16 +4,9 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018 German Research Center for Artificial Intelligence (DFKI)
+ * Copyright 2019 German Research Center for Artificial Intelligence (DFKI)
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-#[macro_use]
-extern crate accel_native;
-#[macro_use]
-extern crate error_chain;
-
-pub mod datagen;
-pub mod error;
-pub mod operators;
-pub mod runtime;
+pub mod popular;
+pub mod relation;

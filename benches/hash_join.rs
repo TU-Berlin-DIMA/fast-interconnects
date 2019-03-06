@@ -19,7 +19,6 @@ extern crate cuda_sys;
 #[macro_use]
 extern crate error_chain;
 extern crate hostname;
-extern crate mchj_generator;
 extern crate numa_gpu;
 extern crate rayon;
 #[macro_use]
@@ -37,6 +36,7 @@ use average::{Estimate, Max, Min, Quantile, Variance};
 
 use cuda_sys::cudart::cudaMemPrefetchAsync;
 
+use numa_gpu::datagen;
 use numa_gpu::error::Result;
 use numa_gpu::operators::hash_join;
 use numa_gpu::runtime::backend::*;
@@ -154,49 +154,32 @@ pub struct DataPoint<'h, 'd, 'c> {
 fn main() {
     let cmd = CmdOpt::from_args();
 
-    // Generate Kim dataset
-    mchj_generator::seed_generator(100);
-    let pk = mchj_generator::Relation::new_pk(128 * 10_i32.pow(6), mchj_generator::BuildMode::Seq)
-        .expect("Couldn't generate primary keys");
-    let fk = mchj_generator::Relation::new_fk_from_pk(&pk, 128 * 10_i32.pow(6))
-        .expect("Couldn't generate foreign keys");
-
     // FIXME: Convert i64 to (i32, i32) key, value pair and support this in hash table
     let mut pk_gpu = match cmd.mem_type {
         ArgMemType::Unified => DerefMem::CudaUniMem(
-            UVec::<i64>::new(pk.len()).expect("Couldn't allocate GPU primary keys"),
+            UVec::<i64>::new(datagen::popular::Kim::primary_key_len())
+                .expect("Couldn't allocate GPU primary keys"),
         ),
-        ArgMemType::System => {
-            DerefMem::NumaMem(NumaMemory::alloc_on_node(pk.len(), cmd.inner_rel_location))
-        }
+        ArgMemType::System => DerefMem::NumaMem(NumaMemory::alloc_on_node(
+            datagen::popular::Kim::primary_key_len(),
+            cmd.inner_rel_location,
+        )),
     };
 
     let mut fk_gpu = match cmd.mem_type {
         ArgMemType::Unified => DerefMem::CudaUniMem(
-            UVec::<i64>::new(fk.len()).expect("Couldn't allocate GPU foreign keys"),
+            UVec::<i64>::new(datagen::popular::Kim::foreign_key_len())
+                .expect("Couldn't allocate GPU foreign keys"),
         ),
-        ArgMemType::System => {
-            DerefMem::NumaMem(NumaMemory::alloc_on_node(pk.len(), cmd.outer_rel_location))
-        }
+        ArgMemType::System => DerefMem::NumaMem(NumaMemory::alloc_on_node(
+            datagen::popular::Kim::foreign_key_len(),
+            cmd.outer_rel_location,
+        )),
     };
 
-    pk_gpu
-        .iter_mut()
-        .by_ref()
-        .zip(pk.iter())
-        .map(|(gpu, origin)| {
-            *gpu = origin.key as i64;
-        })
-        .for_each(drop);
-
-    fk_gpu
-        .iter_mut()
-        .by_ref()
-        .zip(fk.iter())
-        .map(|(gpu, origin)| {
-            *gpu = origin.key as i64;
-        })
-        .for_each(drop);
+    // Generate Kim dataset
+    datagen::popular::Kim::gen(pk_gpu.as_mut_slice(), fk_gpu.as_mut_slice())
+        .expect("Failed to generate Kim data set");
 
     // Device tuning
     let dev = Device::current().expect("Couldn't get CUDA device");
