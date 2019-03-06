@@ -189,8 +189,8 @@ fn main() {
     let sm_cores = dev.cores().expect("Couldn't get number of GPU cores");
     let cuda_cores = sm_cores * dev_props.multiProcessorCount as u32;
     let warp_size = dev_props.warpSize as u32;
-    let warp_overcommit_factor = 4;
-    let grid_overcommit_factor = 8;
+    let warp_overcommit_factor = 2;
+    let grid_overcommit_factor = 32;
 
     let block_size = warp_size * warp_overcommit_factor;
     let grid_size = cuda_cores * grid_overcommit_factor;
