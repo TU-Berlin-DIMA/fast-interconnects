@@ -152,3 +152,39 @@ void cpu_ht_probe_aggregate_linearprobing(
         }
     }
 }
+
+extern "C"
+void cpu_ht_build_perfect(
+        int64_t *const __restrict__ hash_table,
+        uint64_t const /* hash_table_entries */,
+        const int64_t *const __restrict__ join_attribute_data,
+        const int64_t *const __restrict__ payload_attributed_data,
+        uint64_t const data_length
+        )
+{
+    for (uint64_t tuple_id = 0; tuple_id < data_length; ++tuple_id) {
+        int64_t key = join_attribute_data[tuple_id];
+        int64_t val = payload_attributed_data[tuple_id];
+        hash_table[key] = key;
+        hash_table[key + 1] = val;
+    }
+}
+
+extern "C"
+void cpu_ht_probe_aggregate_perfect(
+        const int64_t *const __restrict__ hash_table,
+        uint64_t const /* hash_table_entries */,
+        const int64_t *const __restrict__ join_attribute_data,
+        const int64_t *const __restrict__ /* payload_attributed_data */,
+        uint64_t const data_length,
+        uint64_t * __restrict__ aggregation_result
+        )
+{
+    for (uint64_t tuple_id = 0; tuple_id < data_length; ++tuple_id) {
+        int64_t key = join_attribute_data[tuple_id];
+        if (hash_table[key] != NULL_KEY) {
+            *aggregation_result += 1;
+        }
+    }
+}
+

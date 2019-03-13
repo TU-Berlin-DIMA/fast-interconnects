@@ -467,7 +467,7 @@ impl HashJoinBench {
         let probe_pay_chunks: Vec<_> = probe_payload_attr.chunks(probe_chunk_size).collect();
         let result_count_chunks: Vec<_> = result_counts.chunks_mut(threads).collect();
 
-        let hj_builder = hash_join::CpuHashJoinBuilder::new_with_ht(Arc::new(hash_table));
+        let hj_builder = hash_join::CpuHashJoinBuilder::default().hash_table(Arc::new(hash_table));
 
         let mut timer = Instant::now();
 

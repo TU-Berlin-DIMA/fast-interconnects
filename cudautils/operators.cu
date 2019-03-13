@@ -174,3 +174,46 @@ void gpu_ht_probe_aggregate_linearprobing(
         }
     }
 }
+
+extern "C"
+__global__
+void gpu_ht_build_perfect(
+        int64_t *const __restrict__ hash_table,
+        uint64_t const /* hash_table_entries */,
+        const int64_t *const __restrict__ join_attribute_data,
+        const int64_t *const __restrict__ payload_attributed_data,
+        uint64_t const data_length
+        )
+{
+    const uint32_t global_idx = blockIdx.x *blockDim.x + threadIdx.x;
+    const uint32_t global_threads = blockDim.x * gridDim.x;
+
+    for (uint64_t i = global_idx; i < data_length; i += global_threads) {
+        int64_t key = join_attribute_data[i];
+        int64_t val = payload_attributed_data[i];
+        hash_table[key] = key;
+        hash_table[key + 1] = val;
+    }
+}
+
+extern "C"
+__global__
+void gpu_ht_probe_aggregate_perfect(
+        const int64_t *const __restrict__ hash_table,
+        uint64_t const /* hash_table_entries */,
+        const int64_t *const __restrict__ join_attribute_data,
+        const int64_t *const __restrict__ /* payload_attributed_data */,
+        uint64_t const data_length,
+        uint64_t * __restrict__ aggregation_result
+        )
+{
+    const uint32_t global_idx = blockIdx.x *blockDim.x + threadIdx.x;
+    const uint32_t global_threads = blockDim.x * gridDim.x;
+
+    for (uint64_t i = global_idx; i < data_length; i += global_threads) {
+        int64_t key = join_attribute_data[i];
+        if (hash_table[key] != NULL_KEY) {
+            aggregation_result[global_idx] += 1;
+        }
+    }
+}

@@ -44,11 +44,35 @@ extern "C" {
         data_length: u64,
         aggregation_result: *mut u64,
     );
+
+    fn cpu_ht_build_perfect(
+        hash_table: *mut i64, // FIXME: replace i64 with atomic_i64
+        hash_table_entries: u64,
+        join_attr_data: *const i64,
+        payload_attr_data: *const i64,
+        data_length: u64,
+    );
+
+    fn cpu_ht_probe_aggregate_perfect(
+        hash_table: *const i64, // FIXME: replace i64 with atomic_i64
+        hash_table_entries: u64,
+        join_attr_data: *const i64,
+        payload_attr_data: *const i64,
+        data_length: u64,
+        aggregation_result: *mut u64,
+    );
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum HashingScheme {
+    Perfect,
+    LinearProbing,
 }
 
 #[derive(Debug)]
 pub struct CudaHashJoin {
     ops: Module,
+    hashing_scheme: HashingScheme,
     hash_table: HashTable,
     build_dim: (u32, u32),
     probe_dim: (u32, u32),
@@ -56,6 +80,7 @@ pub struct CudaHashJoin {
 
 #[derive(Debug)]
 pub struct CpuHashJoin {
+    hashing_scheme: HashingScheme,
     hash_table: Arc<HashTable>,
 }
 
@@ -68,6 +93,7 @@ pub struct HashTable {
 
 #[derive(Debug)]
 pub struct CudaHashJoinBuilder {
+    hashing_scheme: HashingScheme,
     hash_table_i: Option<HashTable>,
     build_dim_i: (u32, u32),
     probe_dim_i: (u32, u32),
@@ -75,7 +101,8 @@ pub struct CudaHashJoinBuilder {
 
 #[derive(Debug)]
 pub struct CpuHashJoinBuilder {
-    hash_table_i: Arc<HashTable>,
+    hashing_scheme: HashingScheme,
+    hash_table_i: Option<Arc<HashTable>>,
 }
 
 impl CudaHashJoin {
@@ -94,16 +121,28 @@ impl CudaHashJoin {
         let join_attr_len = join_attr.len() as u64;
         let hash_table_size = self.hash_table.size as u64;
 
-        cuda!(
-            gpu_ht_build_linearprobing << [&self.ops, Grid::x(grid), Block::x(block)]
-                >> (
-                    *self.hash_table.mem.as_any(),
-                    hash_table_size,
-                    *join_attr.as_any(),
-                    *payload_attr.as_any(),
-                    join_attr_len
-                )
-        )?;
+        match &self.hashing_scheme {
+            HashingScheme::Perfect => cuda!(
+                gpu_ht_build_perfect << [&self.ops, Grid::x(grid), Block::x(block)]
+                    >> (
+                        *self.hash_table.mem.as_any(),
+                        hash_table_size,
+                        *join_attr.as_any(),
+                        *payload_attr.as_any(),
+                        join_attr_len
+                    )
+            )?,
+            HashingScheme::LinearProbing => cuda!(
+                gpu_ht_build_linearprobing << [&self.ops, Grid::x(grid), Block::x(block)]
+                    >> (
+                        *self.hash_table.mem.as_any(),
+                        hash_table_size,
+                        *join_attr.as_any(),
+                        *payload_attr.as_any(),
+                        join_attr_len
+                    )
+            )?,
+        };
 
         Ok(self)
     }
@@ -127,17 +166,30 @@ impl CudaHashJoin {
         let join_attr_len = join_attr.len() as u64;
         let hash_table_size = self.hash_table.size as u64;
 
-        cuda!(
-            gpu_ht_probe_aggregate_linearprobing << [&self.ops, Grid::x(grid), Block::x(block)]
-                >> (
-                    *self.hash_table.mem.as_any(),
-                    hash_table_size,
-                    *join_attr.as_any(),
-                    *payload_attr.as_any(),
-                    join_attr_len,
-                    *result_set.as_any()
-                )
-        )?;
+        match &self.hashing_scheme {
+            HashingScheme::Perfect => cuda!(
+                gpu_ht_probe_aggregate_perfect << [&self.ops, Grid::x(grid), Block::x(block)]
+                    >> (
+                        *self.hash_table.mem.as_any(),
+                        hash_table_size,
+                        *join_attr.as_any(),
+                        *payload_attr.as_any(),
+                        join_attr_len,
+                        *result_set.as_any()
+                    )
+            )?,
+            HashingScheme::LinearProbing => cuda!(
+                gpu_ht_probe_aggregate_linearprobing << [&self.ops, Grid::x(grid), Block::x(block)]
+                    >> (
+                        *self.hash_table.mem.as_any(),
+                        hash_table_size,
+                        *join_attr.as_any(),
+                        *payload_attr.as_any(),
+                        join_attr_len,
+                        *result_set.as_any()
+                    )
+            )?,
+        };
 
         Ok(())
     }
@@ -157,14 +209,25 @@ impl CpuHashJoin {
         let join_attr_len = join_attr.len() as u64;
         let hash_table_size = self.hash_table.size as u64;
 
-        unsafe {
-            cpu_ht_build_linearprobing(
-                self.hash_table.mem.as_ptr() as *mut i64,
-                hash_table_size,
-                join_attr.as_ptr(),
-                payload_attr.as_ptr(),
-                join_attr_len,
-            )
+        match &self.hashing_scheme {
+            HashingScheme::Perfect => unsafe {
+                cpu_ht_build_perfect(
+                    self.hash_table.mem.as_ptr() as *mut i64,
+                    hash_table_size,
+                    join_attr.as_ptr(),
+                    payload_attr.as_ptr(),
+                    join_attr_len,
+                )
+            },
+            HashingScheme::LinearProbing => unsafe {
+                cpu_ht_build_linearprobing(
+                    self.hash_table.mem.as_ptr() as *mut i64,
+                    hash_table_size,
+                    join_attr.as_ptr(),
+                    payload_attr.as_ptr(),
+                    join_attr_len,
+                )
+            },
         };
 
         Ok(self)
@@ -184,15 +247,27 @@ impl CpuHashJoin {
         let join_attr_len = join_attr.len() as u64;
         let hash_table_size = self.hash_table.size as u64;
 
-        unsafe {
-            cpu_ht_probe_aggregate_linearprobing(
-                self.hash_table.mem.as_ptr(),
-                hash_table_size,
-                join_attr.as_ptr(),
-                payload_attr.as_ptr(),
-                join_attr_len,
-                join_count,
-            )
+        match &self.hashing_scheme {
+            HashingScheme::Perfect => unsafe {
+                cpu_ht_probe_aggregate_perfect(
+                    self.hash_table.mem.as_ptr(),
+                    hash_table_size,
+                    join_attr.as_ptr(),
+                    payload_attr.as_ptr(),
+                    join_attr_len,
+                    join_count,
+                )
+            },
+            HashingScheme::LinearProbing => unsafe {
+                cpu_ht_probe_aggregate_linearprobing(
+                    self.hash_table.mem.as_ptr(),
+                    hash_table_size,
+                    join_attr.as_ptr(),
+                    payload_attr.as_ptr(),
+                    join_attr_len,
+                    join_count,
+                )
+            },
         };
 
         Ok(())
@@ -244,15 +319,23 @@ impl HashTable {
     }
 }
 
-impl CudaHashJoinBuilder {
-    const DEFAULT_HT_SIZE: usize = 1024;
-
-    pub fn default() -> Self {
+impl ::std::default::Default for CudaHashJoinBuilder {
+    fn default() -> Self {
         Self {
+            hashing_scheme: HashingScheme::default(),
             hash_table_i: None,
             build_dim_i: (1, 1),
             probe_dim_i: (1, 1),
         }
+    }
+}
+
+impl CudaHashJoinBuilder {
+    const DEFAULT_HT_SIZE: usize = 1024;
+
+    pub fn hashing_scheme(mut self, hashing_scheme: HashingScheme) -> Self {
+        self.hashing_scheme = hashing_scheme;
+        self
     }
 
     pub fn hash_table(mut self, ht: HashTable) -> Self {
@@ -291,6 +374,7 @@ impl CudaHashJoinBuilder {
 
         Ok(CudaHashJoin {
             ops,
+            hashing_scheme: self.hashing_scheme,
             hash_table,
             build_dim: self.build_dim_i,
             probe_dim: self.probe_dim_i,
@@ -298,16 +382,40 @@ impl CudaHashJoinBuilder {
     }
 }
 
-impl CpuHashJoinBuilder {
-    pub fn new_with_ht(hash_table: Arc<HashTable>) -> Self {
+impl ::std::default::Default for CpuHashJoinBuilder {
+    fn default() -> Self {
         Self {
-            hash_table_i: hash_table,
+            hashing_scheme: HashingScheme::default(),
+            hash_table_i: None,
         }
+    }
+}
+
+impl CpuHashJoinBuilder {
+    const DEFAULT_HT_SIZE: usize = 1024;
+
+    pub fn hashing_scheme(mut self, hashing_scheme: HashingScheme) -> Self {
+        self.hashing_scheme = hashing_scheme;
+        self
+    }
+
+    pub fn hash_table(mut self, hash_table: Arc<HashTable>) -> Self {
+        self.hash_table_i = Some(hash_table);
+        self
     }
 
     pub fn build(&self) -> CpuHashJoin {
+        let hash_table = match &self.hash_table_i {
+            Some(ht) => ht.clone(),
+            None => Arc::new(HashTable {
+                mem: SysMem(Vec::<i64>::with_capacity(Self::DEFAULT_HT_SIZE)),
+                size: Self::DEFAULT_HT_SIZE,
+            }),
+        };
+
         CpuHashJoin {
-            hash_table: self.hash_table_i.clone(),
+            hashing_scheme: self.hashing_scheme,
+            hash_table,
         }
     }
 }
@@ -331,5 +439,11 @@ impl ::std::fmt::Display for HashTable {
         }
 
         Ok(())
+    }
+}
+
+impl ::std::default::Default for HashingScheme {
+    fn default() -> Self {
+        HashingScheme::LinearProbing
     }
 }
