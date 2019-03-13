@@ -73,6 +73,14 @@ arg_enum! {
     }
 }
 
+arg_enum! {
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+    pub enum ArgHashingScheme {
+        Perfect,
+        LinearProbing,
+    }
+}
+
 #[derive(StructOpt)]
 #[structopt(name = "hash_join", about = "A benchmark for the hash join operator")]
 struct CmdOpt {
@@ -94,6 +102,19 @@ struct CmdOpt {
         raw(possible_values = "&ArgMemType::variants()", case_insensitive = "true")
     )]
     mem_type: ArgMemType,
+
+    /// Hashing scheme to use in hash table.
+    //   linearprobing: Linear probing (default)
+    //   perfect: Perfect hashing for unique primary keys
+    #[structopt(
+        long = "hashing-scheme",
+        default_value = "LinearProbing",
+        raw(
+            possible_values = "&ArgHashingScheme::variants()",
+            case_insensitive = "true"
+        )
+    )]
+    hashing_scheme: ArgHashingScheme,
 
     #[structopt(long = "hash-table-location", default_value = "0")]
     /// Allocate memory for hash table on CPU or GPU (See numactl -H and CUDA device list)
@@ -140,6 +161,7 @@ pub struct DataPoint<'h, 'd, 'c> {
     pub device_type: &'d str,
     pub device_codename: &'c str,
     pub threads: Option<usize>,
+    pub hashing_scheme: ArgHashingScheme,
     pub warm_up: bool,
     pub hash_table_bytes: usize,
     pub build_tuples: usize,
@@ -177,6 +199,12 @@ fn main() {
         )),
     };
 
+    // Convert ArgHashingScheme to HashingScheme
+    let hashing_scheme = match cmd.hashing_scheme {
+        ArgHashingScheme::Perfect => hash_join::HashingScheme::Perfect,
+        ArgHashingScheme::LinearProbing => hash_join::HashingScheme::LinearProbing,
+    };
+
     // Generate Kim dataset
     datagen::popular::Kim::gen(pk_gpu.as_mut_slice(), fk_gpu.as_mut_slice())
         .expect("Failed to generate Kim data set");
@@ -196,6 +224,7 @@ fn main() {
     let grid_size = cuda_cores * grid_overcommit_factor;
 
     let hjb = HashJoinBench {
+        hashing_scheme,
         hash_table_size: 4 * 128 * 2_usize.pow(20),
         build_relation: pk_gpu.into(),
         probe_relation: fk_gpu.into(),
@@ -204,7 +233,6 @@ fn main() {
         probe_dim: (grid_size, block_size),
     };
 
-    // FIXME: hard-coded unit sizes
     let dev_type_str = cmd.device_type.to_string();
     let dev_codename_str = match cmd.device_type {
         ArgDeviceType::CPU => cpu_codename(),
@@ -213,6 +241,7 @@ fn main() {
             .name()
             .expect("Couldn't get device code name"),
     };
+    // FIXME: hard-coded unit sizes
     let dp = DataPoint {
         hostname: "",
         device_type: dev_type_str.as_str(),
@@ -222,6 +251,7 @@ fn main() {
         } else {
             None
         },
+        hashing_scheme: cmd.hashing_scheme,
         warm_up: false,
         hash_table_bytes: hjb.hash_table_size * 16,
         build_tuples: hjb.build_relation.len(),
@@ -326,6 +356,7 @@ Max:           {:6.2}          {:6.2}"#,
 
 #[allow(dead_code)]
 struct HashJoinBench {
+    hashing_scheme: hash_join::HashingScheme,
     hash_table_size: usize,
     build_relation: Mem<i64>,
     probe_relation: Mem<i64>,
@@ -401,6 +432,7 @@ impl HashJoinBench {
         sync()?;
 
         let mut hj_op = hash_join::CudaHashJoinBuilder::default()
+            .hashing_scheme(self.hashing_scheme)
             .build_dim(self.build_dim.0, self.build_dim.1)
             .probe_dim(self.probe_dim.0, self.probe_dim.1)
             .hash_table(hash_table)
@@ -467,7 +499,9 @@ impl HashJoinBench {
         let probe_pay_chunks: Vec<_> = probe_payload_attr.chunks(probe_chunk_size).collect();
         let result_count_chunks: Vec<_> = result_counts.chunks_mut(threads).collect();
 
-        let hj_builder = hash_join::CpuHashJoinBuilder::default().hash_table(Arc::new(hash_table));
+        let hj_builder = hash_join::CpuHashJoinBuilder::default()
+            .hashing_scheme(self.hashing_scheme)
+            .hash_table(Arc::new(hash_table));
 
         let mut timer = Instant::now();
 
