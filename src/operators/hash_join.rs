@@ -29,20 +29,19 @@ use crate::runtime::memory::*;
 
 extern "C" {
     fn cpu_ht_build_linearprobing(
-        num_elements: u64,
-        result_size: *mut u64,
-        filter_attr_data: *const i64,
-        join_attr_data: *const i64,
-        hash_table_length: u64,
         hash_table: *mut i64, // FIXME: replace i64 with atomic_i64
+        hash_table_entries: u64,
+        join_attr_data: *const i64,
+        payload_attr_data: *const i64,
+        data_length: u64,
     );
 
     fn cpu_ht_probe_aggregate_linearprobing(
-        num_elements: u64,
-        filter_attr_data: *const i64,
-        join_attr_data: *const i64,
         hash_table: *const i64, // FIXME: replace i64 with atomic_i64
-        hash_table_length: u64,
+        hash_table_entries: u64,
+        join_attr_data: *const i64,
+        payload_attr_data: *const i64,
+        data_length: u64,
         aggregation_result: *mut u64,
     );
 }
@@ -51,7 +50,6 @@ extern "C" {
 pub struct CudaHashJoin {
     ops: Module,
     hash_table: HashTable,
-    build_result: UVec<u64>,
     build_dim: (u32, u32),
     probe_dim: (u32, u32),
 }
@@ -59,7 +57,6 @@ pub struct CudaHashJoin {
 #[derive(Debug)]
 pub struct CpuHashJoin {
     hash_table: Arc<HashTable>,
-    build_result: DerefMem<u64>,
 }
 
 #[derive(Debug)]
@@ -82,10 +79,10 @@ pub struct CpuHashJoinBuilder {
 }
 
 impl CudaHashJoin {
-    pub fn build(&mut self, join_attr: &Mem<i64>, filter_attr: &Mem<i64>) -> Result<&mut Self> {
+    pub fn build(&mut self, join_attr: &Mem<i64>, payload_attr: &Mem<i64>) -> Result<&mut Self> {
         ensure!(
-            join_attr.len() == filter_attr.len(),
-            "Join and filter attributes have different sizes"
+            join_attr.len() == payload_attr.len(),
+            "Join and payload attributes have different sizes"
         );
         ensure!(
             join_attr.len() <= self.hash_table.mem.len(),
@@ -100,12 +97,11 @@ impl CudaHashJoin {
         cuda!(
             gpu_ht_build_linearprobing << [&self.ops, Grid::x(grid), Block::x(block)]
                 >> (
-                    join_attr_len,
-                    self.build_result,
-                    *filter_attr.as_any(),
-                    *join_attr.as_any(),
+                    *self.hash_table.mem.as_any(),
                     hash_table_size,
-                    *self.hash_table.mem.as_any()
+                    *join_attr.as_any(),
+                    *payload_attr.as_any(),
+                    join_attr_len
                 )
         )?;
 
@@ -115,7 +111,7 @@ impl CudaHashJoin {
     pub fn probe_count(
         &mut self,
         join_attr: &Mem<i64>,
-        filter_attr: &Mem<i64>,
+        payload_attr: &Mem<i64>,
         result_set: &mut Mem<u64>,
     ) -> Result<()> {
         let (grid, block) = self.probe_dim;
@@ -124,8 +120,8 @@ impl CudaHashJoin {
             "Result set size is too small, must be at least grid * block size"
         );
         ensure!(
-            join_attr.len() == filter_attr.len(),
-            "Join and filter attributes have different sizes"
+            join_attr.len() == payload_attr.len(),
+            "Join and payload attributes have different sizes"
         );
 
         let join_attr_len = join_attr.len() as u64;
@@ -134,11 +130,11 @@ impl CudaHashJoin {
         cuda!(
             gpu_ht_probe_aggregate_linearprobing << [&self.ops, Grid::x(grid), Block::x(block)]
                 >> (
-                    join_attr_len,
-                    *filter_attr.as_any(),
-                    *join_attr.as_any(),
                     *self.hash_table.mem.as_any(),
                     hash_table_size,
+                    *join_attr.as_any(),
+                    *payload_attr.as_any(),
+                    join_attr_len,
                     *result_set.as_any()
                 )
         )?;
@@ -148,10 +144,10 @@ impl CudaHashJoin {
 }
 
 impl CpuHashJoin {
-    pub fn build(&mut self, join_attr: &[i64], filter_attr: &[i64]) -> Result<&mut Self> {
+    pub fn build(&mut self, join_attr: &[i64], payload_attr: &[i64]) -> Result<&mut Self> {
         ensure!(
-            join_attr.len() == filter_attr.len(),
-            "Join and filter attributes have different sizes"
+            join_attr.len() == payload_attr.len(),
+            "Join and payload attributes have different sizes"
         );
         ensure!(
             join_attr.len() <= self.hash_table.mem.len(),
@@ -163,12 +159,11 @@ impl CpuHashJoin {
 
         unsafe {
             cpu_ht_build_linearprobing(
-                join_attr_len,
-                self.build_result.as_mut_ptr(),
-                filter_attr.as_ptr(),
-                join_attr.as_ptr(),
-                hash_table_size,
                 self.hash_table.mem.as_ptr() as *mut i64,
+                hash_table_size,
+                join_attr.as_ptr(),
+                payload_attr.as_ptr(),
+                join_attr_len,
             )
         };
 
@@ -178,12 +173,12 @@ impl CpuHashJoin {
     pub fn probe_count(
         &mut self,
         join_attr: &[i64],
-        filter_attr: &[i64],
+        payload_attr: &[i64],
         join_count: &mut u64,
     ) -> Result<()> {
         ensure!(
-            join_attr.len() == filter_attr.len(),
-            "Join and filter attributes have different sizes"
+            join_attr.len() == payload_attr.len(),
+            "Join and payload attributes have different sizes"
         );
 
         let join_attr_len = join_attr.len() as u64;
@@ -191,11 +186,11 @@ impl CpuHashJoin {
 
         unsafe {
             cpu_ht_probe_aggregate_linearprobing(
-                join_attr_len,
-                filter_attr.as_ptr(),
-                join_attr.as_ptr(),
                 self.hash_table.mem.as_ptr(),
                 hash_table_size,
+                join_attr.as_ptr(),
+                payload_attr.as_ptr(),
+                join_attr_len,
                 join_count,
             )
         };
@@ -285,10 +280,6 @@ impl CudaHashJoinBuilder {
 
         let ops = Module::load_file(module_path)?;
 
-        let (build_grid, build_block) = self.build_dim_i;
-        let build_result_size = build_grid as usize * build_block as usize;
-        let build_result: UVec<u64> = UVec::new(build_result_size)?;
-
         let hash_table = if let Some(ht) = self.hash_table_i {
             ht
         } else {
@@ -301,7 +292,6 @@ impl CudaHashJoinBuilder {
         Ok(CudaHashJoin {
             ops,
             hash_table,
-            build_result,
             build_dim: self.build_dim_i,
             probe_dim: self.probe_dim_i,
         })
@@ -318,7 +308,6 @@ impl CpuHashJoinBuilder {
     pub fn build(&self) -> CpuHashJoin {
         CpuHashJoin {
             hash_table: self.hash_table_i.clone(),
-            build_result: DerefMem::SysMem(vec![0]),
         }
     }
 }

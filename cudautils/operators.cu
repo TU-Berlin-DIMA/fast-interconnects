@@ -48,11 +48,11 @@ void gpu_ht_insert_linearprobing(
         int64_t payload
         )
 {
-    uint32_t index = 0;
+    uint64_t index = 0;
     index = key;
 
     index *= HASH_FACTOR;
-    for (uint32_t i = 0; i < hash_table_mask + 1; ++i, index += 2) {
+    for (uint64_t i = 0; i < hash_table_mask + 1; ++i, index += 2) {
         // Effectively index = index % ht_size
         index &= hash_table_mask;
 
@@ -75,34 +75,29 @@ void gpu_ht_insert_linearprobing(
 extern "C"
 __global__
 void gpu_ht_build_linearprobing(
-        uint64_t const num_elements,
-        uint64_t * __restrict__ result_size,
-        const int64_t *const __restrict__ selection_column_data,
-        const int64_t *const __restrict__ join_column_data,
-        uint64_t const hash_table_size,
-        int64_t * __restrict__ hash_table
+        int64_t *const __restrict__ hash_table,
+        uint64_t const hash_table_entries,
+        const int64_t *const __restrict__ join_attr_data,
+        const int64_t *const __restrict__ payload_attr_data,
+        uint64_t const data_length
         )
 {
     const uint32_t global_idx = blockIdx.x *blockDim.x + threadIdx.x;
-    const uint32_t number_of_threads = blockDim.x * gridDim.x;
+    const uint32_t global_threads = blockDim.x * gridDim.x;
 
-    int64_t write_pos = 0;
-    uint32_t tuple_id_RT1 = global_idx;
-    while (tuple_id_RT1 < num_elements) {
-        if (selection_column_data[tuple_id_RT1] > 1) {
-            gpu_ht_insert_linearprobing(
-                    hash_table,
-                    hash_table_size - 1,
-                    join_column_data[tuple_id_RT1],
-                    write_pos
-                    );
-
-            write_pos++;
-        }
-        tuple_id_RT1 += number_of_threads;
+    for (
+            uint64_t tuple_id = global_idx;
+            tuple_id < data_length;
+            tuple_id += global_threads
+        )
+    {
+        gpu_ht_insert_linearprobing(
+                hash_table,
+                hash_table_entries - 1,
+                join_attr_data[tuple_id],
+                payload_attr_data[tuple_id]
+                );
     }
-
-    result_size[0] = write_pos;
 }
 
 __device__
@@ -111,11 +106,11 @@ bool gpu_ht_findkey_linearprobing(
         uint64_t hash_table_mask,
         int64_t key,
         int64_t const **found_payload,
-        uint32_t * __restrict__ last_index,
+        uint64_t * __restrict__ last_index,
         bool use_last_index
         )
 {
-    uint32_t index = 0;
+    uint64_t index = 0;
     if (use_last_index) {
         index = *last_index;
         index += 2;
@@ -124,7 +119,7 @@ bool gpu_ht_findkey_linearprobing(
         index *= 123456789123456789ul;
     }
 
-    for (uint32_t i = 0; i < hash_table_mask + 1; ++i, index += 2) {
+    for (uint64_t i = 0; i < hash_table_mask + 1; ++i, index += 2) {
         index &= hash_table_mask;
         index &= ~1ul;
         //printf("Key: %ld  Hash Table Bucket: %ld\n", key, hash_table[index]);
@@ -144,37 +139,38 @@ bool gpu_ht_findkey_linearprobing(
 extern "C"
 __global__
 void gpu_ht_probe_aggregate_linearprobing(
-        uint64_t const num_elements,
-        const int64_t *const __restrict__ filter_attribute_data,
-        const int64_t *const __restrict__ join_attribute_data,
-        const int64_t *const __restrict__ hash_table,
-        uint64_t const hash_table_length,
+        int64_t const *const __restrict__ hash_table,
+        uint64_t const hash_table_entries,
+        const int64_t *const __restrict__ join_attr_data,
+        const int64_t *const __restrict__ /* payload_attr_data */,
+        uint64_t const data_length,
         uint64_t * __restrict__ aggregation_result
         )
 {
     const uint32_t global_idx = blockIdx.x *blockDim.x + threadIdx.x;
-    const uint32_t number_of_threads = blockDim.x * gridDim.x;
-    uint32_t tuple_id_ST1 = global_idx;
+    const uint32_t global_threads = blockDim.x * gridDim.x;
 
-    while (tuple_id_ST1 < num_elements) {
-        if (((filter_attribute_data[tuple_id_ST1] > 1))) {
-            int64_t const *hash_table_payload = nullptr;
-            uint32_t hash_table_last_index = 0;
-            bool hash_table_use_last_index = false;
-            while (
-                    gpu_ht_findkey_linearprobing(
-                        hash_table,
-                        hash_table_length - 1,
-                        join_attribute_data[tuple_id_ST1],
-                        &hash_table_payload,
-                        &hash_table_last_index,
-                        hash_table_use_last_index)
-                  )
-            {
-                hash_table_use_last_index = true;
-                aggregation_result[global_idx] += 1;
-            }
+    for (
+            uint64_t tuple_id = global_idx;
+            tuple_id < data_length;
+            tuple_id += global_threads
+        )
+    {
+        int64_t const *hash_table_payload = nullptr;
+        uint64_t hash_table_last_index = 0;
+        bool hash_table_use_last_index = false;
+        while (
+                gpu_ht_findkey_linearprobing(
+                    hash_table,
+                    hash_table_entries - 1,
+                    join_attr_data[tuple_id],
+                    &hash_table_payload,
+                    &hash_table_last_index,
+                    hash_table_use_last_index)
+              )
+        {
+            hash_table_use_last_index = true;
+            aggregation_result[global_idx] += 1;
         }
-        tuple_id_ST1 += number_of_threads;
     }
 }

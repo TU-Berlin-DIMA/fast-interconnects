@@ -338,25 +338,15 @@ impl HashJoinBench {
     fn cuda_hash_join(&self) -> Result<(f64, f64)> {
         let hash_table_mem = CudaDevMem(MVec::<i64>::new(self.hash_table_size)?);
         let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_size)?;
-        let mut build_selection_attr = CudaUniMem(UVec::<i64>::new(self.build_relation.len())?);
+        let build_payload_attr = CudaUniMem(UVec::<i64>::new(self.build_relation.len())?);
         let mut result_counts = CudaUniMem(UVec::<u64>::new(
             (self.probe_dim.0 * self.probe_dim.1) as usize,
         )?);
-        let mut probe_selection_attr = CudaUniMem(UVec::<i64>::new(self.probe_relation.len())?);
+        let probe_payload_attr = CudaUniMem(UVec::<i64>::new(self.probe_relation.len())?);
 
         // Initialize counts
         if let CudaUniMem(ref mut c) = result_counts {
             c.iter_mut().map(|count| *count = 0).for_each(drop);
-        }
-
-        // Set build selection attributes to 100% selectivity
-        if let CudaUniMem(ref mut a) = build_selection_attr {
-            a.iter_mut().map(|x| *x = 2).for_each(drop);
-        }
-
-        // Set probe selection attributes to 100% selectivity
-        if let CudaUniMem(ref mut a) = probe_selection_attr {
-            a.iter_mut().map(|x| *x = 2).for_each(drop);
         }
 
         // Tune memory locations
@@ -384,7 +374,7 @@ impl HashJoinBench {
             .check()?;
         }
 
-        if let CudaUniMem(ref a) = build_selection_attr {
+        if let CudaUniMem(ref a) = build_payload_attr {
             unsafe {
                 cudaMemPrefetchAsync(
                     a.as_ptr() as *const std::ffi::c_void,
@@ -396,7 +386,7 @@ impl HashJoinBench {
             .check()?;
         }
 
-        if let CudaUniMem(ref a) = probe_selection_attr {
+        if let CudaUniMem(ref a) = probe_payload_attr {
             unsafe {
                 cudaMemPrefetchAsync(
                     a.as_ptr() as *const std::ffi::c_void,
@@ -420,7 +410,7 @@ impl HashJoinBench {
         let stop_event = Event::new()?;
 
         start_event.record()?;
-        hj_op.build(&self.build_relation, &build_selection_attr)?;
+        hj_op.build(&self.build_relation, &build_payload_attr)?;
 
         stop_event.record().and_then(|e| e.synchronize())?;
         let build_millis = stop_event.elapsed_time(&start_event)?;
@@ -428,7 +418,7 @@ impl HashJoinBench {
         start_event.record()?;
         hj_op.probe_count(
             &self.probe_relation,
-            &probe_selection_attr,
+            &probe_payload_attr,
             &mut result_counts,
         )?;
 
@@ -450,8 +440,8 @@ impl HashJoinBench {
         ensure_physically_backed(&mut hash_table_mem);
         let hash_table = hash_join::HashTable::new_on_cpu(hash_table_mem, self.hash_table_size)?;
         let mut result_counts = vec![0; (self.probe_dim.0 * self.probe_dim.1) as usize];
-        let build_selection_attr: Vec<_> = (2_i64..).take(self.build_relation.len()).collect();
-        let probe_selection_attr: Vec<_> = (2_i64..).take(self.probe_relation.len()).collect();
+        let build_payload_attr: Vec<_> = (2_i64..).take(self.build_relation.len()).collect();
+        let probe_payload_attr: Vec<_> = (2_i64..).take(self.probe_relation.len()).collect();
 
         let thread_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
@@ -466,7 +456,7 @@ impl HashJoinBench {
             Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
         }
         .collect();
-        let build_sel_chunks: Vec<_> = build_selection_attr.chunks(build_chunk_size).collect();
+        let build_pay_chunks: Vec<_> = build_payload_attr.chunks(build_chunk_size).collect();
         let probe_rel_chunks: Vec<_> = match self.probe_relation {
             Mem::CudaUniMem(ref m) => m.chunks(probe_chunk_size),
             Mem::SysMem(ref m) => m.chunks(probe_chunk_size),
@@ -474,7 +464,7 @@ impl HashJoinBench {
             Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
         }
         .collect();
-        let probe_sel_chunks: Vec<_> = probe_selection_attr.chunks(probe_chunk_size).collect();
+        let probe_pay_chunks: Vec<_> = probe_payload_attr.chunks(probe_chunk_size).collect();
         let result_count_chunks: Vec<_> = result_counts.chunks_mut(threads).collect();
 
         let hj_builder = hash_join::CpuHashJoinBuilder::new_with_ht(Arc::new(hash_table));
@@ -482,10 +472,10 @@ impl HashJoinBench {
         let mut timer = Instant::now();
 
         thread_pool.scope(|s| {
-            for ((_tid, rel), sel) in (0..threads).zip(build_rel_chunks).zip(build_sel_chunks) {
+            for ((_tid, rel), pay) in (0..threads).zip(build_rel_chunks).zip(build_pay_chunks) {
                 let mut hj_op = hj_builder.build();
                 s.spawn(move |_| {
-                    hj_op.build(rel, sel).expect("Couldn't build hash table");
+                    hj_op.build(rel, pay).expect("Couldn't build hash table");
                 });
             }
         });
@@ -496,15 +486,15 @@ impl HashJoinBench {
         timer = Instant::now();
 
         thread_pool.scope(|s| {
-            for (((_tid, rel), sel), res) in (0..threads)
+            for (((_tid, rel), pay), res) in (0..threads)
                 .zip(probe_rel_chunks)
-                .zip(probe_sel_chunks)
+                .zip(probe_pay_chunks)
                 .zip(result_count_chunks)
             {
                 let mut hj_op = hj_builder.build();
                 s.spawn(move |_| {
                     hj_op
-                        .probe_count(rel, sel, &mut res[0])
+                        .probe_count(rel, pay, &mut res[0])
                         .expect("Couldn't execute hash table probe");
                 });
             }

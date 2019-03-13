@@ -40,11 +40,11 @@ void cpu_ht_insert_linearprobing(
         int64_t payload
         )
 {
-    uint32_t index = 0;
+    uint64_t index = 0;
     index = key;
 
     index *= HASH_FACTOR;
-    for (uint32_t i = 0; i < hash_table_mask + 1; ++i, index += 2) {
+    for (uint64_t i = 0; i < hash_table_mask + 1; ++i, index += 2) {
         index &= hash_table_mask;
         index &= ~1ul;
 
@@ -66,35 +66,26 @@ void cpu_ht_insert_linearprobing(
 
 extern "C"
 void cpu_ht_build_linearprobing(
-        uint64_t const num_elements,
-        uint64_t * __restrict__ result_size,
-        const int64_t *const __restrict__ selection_column_data,
-        const int64_t *const __restrict__ join_column_data,
-        uint64_t const hash_table_size,
-        std::atomic<int64_t> * __restrict__ hash_table
+        std::atomic<int64_t> *const __restrict__ hash_table,
+        uint64_t const hash_table_entries,
+        const int64_t *const __restrict__ join_attr_data,
+        const int64_t *const __restrict__ payload_attr_data,
+        uint64_t const data_length
         )
 {
-    int64_t write_pos = 0;
-
     for (
-            uint32_t tuple_id_RT1 = 0;
-            tuple_id_RT1 < num_elements;
-            ++tuple_id_RT1
+            uint64_t tuple_id = 0;
+            tuple_id < data_length;
+            ++tuple_id
         )
     {
-        if (selection_column_data[tuple_id_RT1] > 1) {
-            cpu_ht_insert_linearprobing(
-                    hash_table,
-                    hash_table_size - 1,
-                    join_column_data[tuple_id_RT1],
-                    write_pos
-                    );
-
-            write_pos++;
-        }
+        cpu_ht_insert_linearprobing(
+                hash_table,
+                hash_table_entries - 1,
+                join_attr_data[tuple_id],
+                payload_attr_data[tuple_id]
+                );
     }
-
-    result_size[0] = write_pos;
 }
 
 bool cpu_ht_findkey_linearprobing(
@@ -102,11 +93,11 @@ bool cpu_ht_findkey_linearprobing(
         uint64_t hash_table_mask,
         int64_t key,
         int64_t const **found_payload,
-        uint32_t * __restrict__ last_index,
+        uint64_t * __restrict__ last_index,
         bool use_last_index
         )
 {
-    uint32_t index = 0;
+    uint64_t index = 0;
     if (use_last_index) {
         index = *last_index;
         index += 2;
@@ -115,7 +106,7 @@ bool cpu_ht_findkey_linearprobing(
         index *= HASH_FACTOR;
     }
 
-    for (uint32_t i = 0; i < hash_table_mask + 1; ++i, index += 2) {
+    for (uint64_t i = 0; i < hash_table_mask + 1; ++i, index += 2) {
         index &= hash_table_mask;
         index &= ~1ul;
 
@@ -133,33 +124,31 @@ bool cpu_ht_findkey_linearprobing(
 
 extern "C"
 void cpu_ht_probe_aggregate_linearprobing(
-        uint64_t const num_elements,
-        const int64_t *const __restrict__ filter_attribute_data,
-        const int64_t *const __restrict__ join_attribute_data,
-        const int64_t *const __restrict__ hash_table,
-        uint64_t const hash_table_length,
-        uint64_t *aggregation_result
+        int64_t const *const __restrict__ hash_table,
+        uint64_t const hash_table_entries,
+        const int64_t *const __restrict__ join_attr_data,
+        const int64_t *const __restrict__ /* payload_attr_data */,
+        uint64_t const data_length,
+        uint64_t *const __restrict__ aggregation_result
         )
 {
     for (
-            uint32_t tuple_id_ST1 = 0;
-            tuple_id_ST1 < num_elements;
-            ++tuple_id_ST1
+            uint64_t tuple_id = 0;
+            tuple_id < data_length;
+            ++tuple_id
         )
     {
-        if (((filter_attribute_data[tuple_id_ST1] > 1))) {
-            int64_t const *hash_table_payload = nullptr;
-            uint32_t hash_table_last_index = 0;
-            bool hash_table_use_last_index = false;
-            while (cpu_ht_findkey_linearprobing(
-                        hash_table, hash_table_length - 1,
-                        join_attribute_data[tuple_id_ST1], &hash_table_payload,
-                        &hash_table_last_index,
-                        hash_table_use_last_index)) {
+        int64_t const *hash_table_payload = nullptr;
+        uint64_t hash_table_last_index = 0;
+        bool hash_table_use_last_index = false;
+        while (cpu_ht_findkey_linearprobing(
+                    hash_table, hash_table_entries - 1,
+                    join_attr_data[tuple_id], &hash_table_payload,
+                    &hash_table_last_index,
+                    hash_table_use_last_index)) {
 
-                hash_table_use_last_index = true;
-                *aggregation_result += 1;
-            }
+            hash_table_use_last_index = true;
+            *aggregation_result += 1;
         }
     }
 }
