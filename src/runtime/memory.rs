@@ -17,7 +17,21 @@ use std::any::Any;
 use std::ops::Deref;
 use std::ops::DerefMut;
 
-use crate::runtime::backend::NumaMemory;
+use super::backend::NumaMemory;
+use crate::error::Result;
+
+/// A trait for memory that can be page-locked by CUDA.
+///
+/// Page-locked memory can be copied to the GPU more efficiently.
+///
+/// # Invariant
+///
+/// A page-locked memory range must be page-unlocked before it is freed. Thus,
+/// the drop() method of the implementation target must call page_unlock().
+pub trait PageLock {
+    fn page_lock(&mut self) -> Result<()>;
+    fn page_unlock(&mut self) -> Result<()>;
+}
 
 pub use self::Mem::*;
 #[derive(Debug)]

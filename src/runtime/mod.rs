@@ -8,7 +8,9 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
+pub mod allocator;
 pub mod backend;
+pub mod cuda_wrapper;
 pub mod memory;
 pub mod store;
 pub mod utils;
