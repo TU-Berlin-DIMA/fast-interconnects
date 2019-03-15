@@ -1,4 +1,11 @@
 //! Heterogeneous memory allocator.
+//!
+//! Presents a consistent interface for allocating memory with specific
+//! properties. Examples include allocating NUMA-local memory, or allocating
+//! CUDA device memory.
+//!
+//! The allocated memory is of type Mem, and specialized to DerefMem whenever
+//! possible.
 
 extern crate accel;
 
@@ -12,42 +19,33 @@ use super::backend::NumaMemory;
 use super::memory::{DerefMem, Mem};
 
 /// Heterogeneous memory allocator.
-///
-/// Presents a consistent interface for allocating memory with specific
-/// properties. Examples include allocating NUMA-local memory, or allocating
-/// CUDA device memory.
-///
-/// The allocated memory is of type Mem, and specialized to DerefMem whenever
-/// possible.
 pub struct Allocator;
 
 /// Memory type specifier
 ///
-/// - SysMem:     System memory allocated with Rust's global allocator
-/// - NumaMem:    NUMA memory allocated on the specified NUMA node
-/// - CudaDevMem: CUDA device memory
-/// - CudaUniMem: CUDA unified memory
-///
 /// Some memory types cannot be directly accessed on the host, e.g., CudaDevMem.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MemType {
+    /// System memory allocated with Rust's global allocator
     SysMem,
+    /// NUMA memory allocated on the specified NUMA node
     NumaMem(u16),
+    /// CUDA device memory
     CudaDevMem,
+    /// CUDA unified memory
     CudaUniMem,
 }
 
 /// Dereferencable memory type specifier
 ///
-/// - SysMem:     System memory allocated with Rust's global allocator
-/// - NumaMem:    NUMA memory allocated on the specified NUMA node
-/// - CudaUniMem: CUDA unified memory
-///
 /// These memory types can be directly accessed on the host.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DerefMemType {
+    /// System memory allocated with Rust's global allocator
     SysMem,
+    /// NUMA memory allocated on the specified NUMA node
     NumaMem(u16),
+    /// CUDA unified memory
     CudaUniMem,
 }
 
