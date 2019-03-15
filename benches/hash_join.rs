@@ -15,7 +15,6 @@ extern crate average;
 extern crate clap;
 extern crate core; // Required by average::concatenate!{} macro
 extern crate csv;
-extern crate cuda_sys;
 #[macro_use]
 extern crate error_chain;
 extern crate hostname;
@@ -27,22 +26,20 @@ extern crate serde;
 extern crate structopt;
 
 use accel::device::{sync, Device};
-use accel::error::Check;
 use accel::event::Event;
-use accel::mvec::MVec;
-use accel::uvec::UVec;
 
 use average::{Estimate, Max, Min, Quantile, Variance};
-
-use cuda_sys::cudart::cudaMemPrefetchAsync;
 
 use numa_gpu::datagen;
 use numa_gpu::error::Result;
 use numa_gpu::operators::hash_join;
+use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::backend::*;
+use numa_gpu::runtime::cuda_wrapper::prefetch_async;
 use numa_gpu::runtime::memory::*;
 use numa_gpu::runtime::utils::ensure_physically_backed;
 
+use std::mem::size_of;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -58,16 +55,18 @@ arg_enum! {
 }
 
 arg_enum! {
-    #[derive(Copy, Clone, Debug, PartialEq)]
-    enum ArgMemType {
-        Unified,
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+    pub enum ArgMemType {
         System,
+        Numa,
+        Unified,
+        Device,
     }
 }
 
 arg_enum! {
-    #[derive(Copy, Clone, Debug, PartialEq)]
-    enum ArgDeviceType {
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+    pub enum ArgDeviceType {
         CPU,
         GPU,
     }
@@ -78,6 +77,43 @@ arg_enum! {
     pub enum ArgHashingScheme {
         Perfect,
         LinearProbing,
+    }
+}
+
+#[derive(Debug)]
+pub struct ArgMemTypeHelper {
+    mem_type: ArgMemType,
+    location: u16,
+}
+
+impl From<ArgMemTypeHelper> for allocator::MemType {
+    fn from(ArgMemTypeHelper { mem_type, location }: ArgMemTypeHelper) -> Self {
+        match mem_type {
+            ArgMemType::System => allocator::MemType::SysMem,
+            ArgMemType::Numa => allocator::MemType::NumaMem(location),
+            ArgMemType::Unified => allocator::MemType::CudaUniMem,
+            ArgMemType::Device => allocator::MemType::CudaDevMem,
+        }
+    }
+}
+
+impl From<ArgMemTypeHelper> for allocator::DerefMemType {
+    fn from(ArgMemTypeHelper { mem_type, location }: ArgMemTypeHelper) -> Self {
+        match mem_type {
+            ArgMemType::System => allocator::DerefMemType::SysMem,
+            ArgMemType::Numa => allocator::DerefMemType::NumaMem(location),
+            ArgMemType::Unified => allocator::DerefMemType::CudaUniMem,
+            ArgMemType::Device => panic!("Error: Device memory not supported in this context!"),
+        }
+    }
+}
+
+impl From<ArgHashingScheme> for hash_join::HashingScheme {
+    fn from(ahs: ArgHashingScheme) -> Self {
+        match ahs {
+            ArgHashingScheme::Perfect => hash_join::HashingScheme::Perfect,
+            ArgHashingScheme::LinearProbing => hash_join::HashingScheme::LinearProbing,
+        }
     }
 }
 
@@ -94,7 +130,7 @@ struct CmdOpt {
 
     /// Memory type with which to allocate data.
     //   unified: CUDA Unified memory (default)
-    //   system: System memory allocated with std::vec::Vec
+    //   numa: NUMA-local memory on node specified with [inner,outer]-rel-location
     #[structopt(
         short = "m",
         long = "mem-type",
@@ -115,6 +151,17 @@ struct CmdOpt {
         )
     )]
     hashing_scheme: ArgHashingScheme,
+
+    /// Memory type with which to allocate hash table.
+    //   unified: CUDA Unified memory (default)
+    //   numa: NUMA-local memory on node specified with hash-table-location
+    #[structopt(
+        short = "m",
+        long = "mem-type",
+        default_value = "Unified",
+        raw(possible_values = "&ArgMemType::variants()", case_insensitive = "true")
+    )]
+    hash_table_mem_type: ArgMemType,
 
     #[structopt(long = "hash-table-location", default_value = "0")]
     /// Allocate memory for hash table on CPU or GPU (See numactl -H and CUDA device list)
@@ -151,53 +198,76 @@ struct CmdOpt {
     )]
     device_type: ArgDeviceType,
 
+    #[structopt(short = "i", long = "device-id", default_value = "0")]
+    /// Execute on GPU (See CUDA device list)
+    device_id: u16,
+
     #[structopt(short = "t", long = "threads", default_value = "1")]
     threads: usize,
 }
 
 #[derive(Debug, Serialize)]
-pub struct DataPoint<'h, 'd, 'c> {
+pub struct DataPoint<'h, 'c> {
     pub hostname: &'h str,
-    pub device_type: &'d str,
+    pub device_type: ArgDeviceType,
     pub device_codename: &'c str,
     pub threads: Option<usize>,
     pub hashing_scheme: ArgHashingScheme,
-    pub warm_up: bool,
+    pub hash_table_memory_type: ArgMemType,
+    pub hash_table_memory_node: u16,
     pub hash_table_bytes: usize,
+    pub relation_memory_type: ArgMemType,
+    pub inner_relation_memory_location: u16,
+    pub outer_relation_memory_location: u16,
     pub build_tuples: usize,
     pub build_bytes: usize,
     pub probe_tuples: usize,
     pub probe_bytes: usize,
-    pub join_selectivity: f64,
+    pub warm_up: bool,
     pub build_ns: f64,
     pub probe_ns: f64,
 }
 
+// FIXME: Support for i32 data type
 fn main() {
     let cmd = CmdOpt::from_args();
 
-    // FIXME: Convert i64 to (i32, i32) key, value pair and support this in hash table
-    let mut pk_gpu = match cmd.mem_type {
-        ArgMemType::Unified => DerefMem::CudaUniMem(
-            UVec::<i64>::new(datagen::popular::Kim::primary_key_len())
-                .expect("Couldn't allocate GPU primary keys"),
-        ),
-        ArgMemType::System => DerefMem::NumaMem(NumaMemory::alloc_on_node(
+    // Allocate memory for data sets
+    let mut memory: Vec<_> = [
+        (
             datagen::popular::Kim::primary_key_len(),
+            cmd.mem_type,
             cmd.inner_rel_location,
-        )),
-    };
-
-    let mut fk_gpu = match cmd.mem_type {
-        ArgMemType::Unified => DerefMem::CudaUniMem(
-            UVec::<i64>::new(datagen::popular::Kim::foreign_key_len())
-                .expect("Couldn't allocate GPU foreign keys"),
         ),
-        ArgMemType::System => DerefMem::NumaMem(NumaMemory::alloc_on_node(
+        (
+            datagen::popular::Kim::primary_key_len(),
+            cmd.mem_type,
+            cmd.inner_rel_location,
+        ),
+        (
             datagen::popular::Kim::foreign_key_len(),
+            cmd.mem_type,
             cmd.outer_rel_location,
-        )),
-    };
+        ),
+        (
+            datagen::popular::Kim::foreign_key_len(),
+            cmd.mem_type,
+            cmd.outer_rel_location,
+        ),
+    ]
+    .iter()
+    .map(|&(len, mem_type, location)| {
+        allocator::Allocator::alloc_deref_mem(ArgMemTypeHelper { mem_type, location }.into(), len)
+    })
+    .collect();
+    let mut rel_pk_key = memory.remove(0);
+    let rel_pk_payload = memory.remove(1);
+    let mut rel_fk_key = memory.remove(2);
+    let rel_fk_payload = memory.remove(3);
+
+    // Generate Kim dataset
+    datagen::popular::Kim::gen(rel_pk_key.as_mut_slice(), rel_fk_key.as_mut_slice())
+        .expect("Failed to generate Kim data set");
 
     // Convert ArgHashingScheme to HashingScheme
     let hashing_scheme = match cmd.hashing_scheme {
@@ -205,12 +275,8 @@ fn main() {
         ArgHashingScheme::LinearProbing => hash_join::HashingScheme::LinearProbing,
     };
 
-    // Generate Kim dataset
-    datagen::popular::Kim::gen(pk_gpu.as_mut_slice(), fk_gpu.as_mut_slice())
-        .expect("Failed to generate Kim data set");
-
     // Device tuning
-    let dev = Device::current().expect("Couldn't get CUDA device");
+    let dev = Device::set(cmd.device_id.into()).expect("Couldn't set CUDA device");
     let dev_props = dev
         .get_property()
         .expect("Couldn't get CUDA device property map");
@@ -223,17 +289,19 @@ fn main() {
     let block_size = warp_size * warp_overcommit_factor;
     let grid_size = cuda_cores * grid_overcommit_factor;
 
+    // Construct benchmark
     let hjb = HashJoinBench {
         hashing_scheme,
-        hash_table_size: 4 * 128 * 2_usize.pow(20),
-        build_relation: pk_gpu.into(),
-        probe_relation: fk_gpu.into(),
-        join_selectivity: 1.0,
+        hash_table_len: 4 * 128 * 2_usize.pow(20),
+        build_relation_key: rel_pk_key.into(),
+        build_relation_payload: rel_pk_payload.into(),
+        probe_relation_key: rel_fk_key.into(),
+        probe_relation_payload: rel_fk_payload.into(),
         build_dim: (grid_size, block_size),
         probe_dim: (grid_size, block_size),
     };
 
-    let dev_type_str = cmd.device_type.to_string();
+    // Get device information
     let dev_codename_str = match cmd.device_type {
         ArgDeviceType::CPU => cpu_codename(),
         ArgDeviceType::GPU => Device::current()
@@ -241,10 +309,12 @@ fn main() {
             .name()
             .expect("Couldn't get device code name"),
     };
-    // FIXME: hard-coded unit sizes
+
+    // Construct data point template for CSV
+    // FIXME: add memory types and locations
     let dp = DataPoint {
         hostname: "",
-        device_type: dev_type_str.as_str(),
+        device_type: cmd.device_type,
         device_codename: dev_codename_str.as_str(),
         threads: if cmd.device_type == ArgDeviceType::CPU {
             Some(cmd.threads)
@@ -252,24 +322,39 @@ fn main() {
             None
         },
         hashing_scheme: cmd.hashing_scheme,
+        hash_table_memory_type: cmd.hash_table_mem_type,
+        hash_table_memory_node: cmd.hash_table_location,
+        hash_table_bytes: hjb.hash_table_len * size_of::<i64>(),
+        relation_memory_type: cmd.mem_type,
+        inner_relation_memory_location: cmd.inner_rel_location,
+        outer_relation_memory_location: cmd.outer_rel_location,
+        build_tuples: hjb.build_relation_key.len(),
+        build_bytes: hjb.build_relation_key.len() * size_of::<i64>(),
+        probe_tuples: hjb.probe_relation_key.len(),
+        probe_bytes: hjb.probe_relation_key.len() * size_of::<i64>(),
         warm_up: false,
-        hash_table_bytes: hjb.hash_table_size * 16,
-        build_tuples: hjb.build_relation.len(),
-        build_bytes: hjb.build_relation.len() * 8,
-        probe_tuples: hjb.probe_relation.len(),
-        probe_bytes: hjb.probe_relation.len() * 8,
-        join_selectivity: 1.0,
         build_ns: 0.0,
         probe_ns: 0.0,
     };
 
-    // Decide which closure to run
+    // Select the operator to run, depending on the device type
     let dev_type = cmd.device_type.clone();
-    let hash_table_location = cmd.hash_table_location;
+    let mem_type = cmd.hash_table_mem_type;
+    let location = cmd.hash_table_location;
     let threads = cmd.threads;
     let hjc = || match dev_type {
-        ArgDeviceType::CPU => hjb.cpu_hash_join(threads, hash_table_location),
-        ArgDeviceType::GPU => hjb.cuda_hash_join(),
+        ArgDeviceType::CPU => {
+            let ht_alloc = allocator::Allocator::deref_mem_alloc_fn::<i64>(
+                ArgMemTypeHelper { mem_type, location }.into(),
+            );
+            hjb.cpu_hash_join(threads, ht_alloc)
+        }
+        ArgDeviceType::GPU => {
+            let ht_alloc = allocator::Allocator::mem_alloc_fn::<i64>(
+                ArgMemTypeHelper { mem_type, location }.into(),
+            );
+            hjb.cuda_hash_join(ht_alloc)
+        }
     };
 
     // Run experiment
@@ -357,23 +442,24 @@ Max:           {:6.2}          {:6.2}"#,
 #[allow(dead_code)]
 struct HashJoinBench {
     hashing_scheme: hash_join::HashingScheme,
-    hash_table_size: usize,
-    build_relation: Mem<i64>,
-    probe_relation: Mem<i64>,
-    join_selectivity: f64,
+    hash_table_len: usize,
+    build_relation_key: Mem<i64>,
+    build_relation_payload: Mem<i64>,
+    probe_relation_key: Mem<i64>,
+    probe_relation_payload: Mem<i64>,
     build_dim: (u32, u32),
     probe_dim: (u32, u32),
 }
 
 impl HashJoinBench {
-    fn cuda_hash_join(&self) -> Result<(f64, f64)> {
-        let hash_table_mem = CudaDevMem(MVec::<i64>::new(self.hash_table_size)?);
-        let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_size)?;
-        let build_payload_attr = CudaUniMem(UVec::<i64>::new(self.build_relation.len())?);
-        let mut result_counts = CudaUniMem(UVec::<u64>::new(
+    fn cuda_hash_join(&self, hash_table_alloc: allocator::MemAllocFn<i64>) -> Result<(f64, f64)> {
+        // FIXME: specify load factor as argument
+        let hash_table_mem = hash_table_alloc(self.hash_table_len);
+        let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
+        let mut result_counts = allocator::Allocator::alloc_mem(
+            allocator::MemType::CudaUniMem,
             (self.probe_dim.0 * self.probe_dim.1) as usize,
-        )?);
-        let probe_payload_attr = CudaUniMem(UVec::<i64>::new(self.probe_relation.len())?);
+        );
 
         // Initialize counts
         if let CudaUniMem(ref mut c) = result_counts {
@@ -381,53 +467,22 @@ impl HashJoinBench {
         }
 
         // Tune memory locations
-        if let CudaUniMem(ref r) = self.build_relation {
-            unsafe {
-                cudaMemPrefetchAsync(
-                    r.as_ptr() as *const std::ffi::c_void,
-                    r.len() * std::mem::size_of::<i64>(),
-                    0,
-                    std::mem::zeroed(),
-                )
+        [
+            &self.build_relation_key,
+            &self.probe_relation_key,
+            &self.build_relation_payload,
+            &self.probe_relation_payload,
+        ]
+        .iter()
+        .filter_map(|mem| {
+            if let CudaUniMem(m) = mem {
+                Some(m)
+            } else {
+                None
             }
-            .check()?;
-        }
-
-        if let CudaUniMem(ref r) = self.probe_relation {
-            unsafe {
-                cudaMemPrefetchAsync(
-                    r.as_ptr() as *const std::ffi::c_void,
-                    r.len() * std::mem::size_of::<i64>(),
-                    0,
-                    std::mem::zeroed(),
-                )
-            }
-            .check()?;
-        }
-
-        if let CudaUniMem(ref a) = build_payload_attr {
-            unsafe {
-                cudaMemPrefetchAsync(
-                    a.as_ptr() as *const std::ffi::c_void,
-                    a.len() * std::mem::size_of::<i64>(),
-                    0,
-                    std::mem::zeroed(),
-                )
-            }
-            .check()?;
-        }
-
-        if let CudaUniMem(ref a) = probe_payload_attr {
-            unsafe {
-                cudaMemPrefetchAsync(
-                    a.as_ptr() as *const std::ffi::c_void,
-                    a.len() * std::mem::size_of::<i64>(),
-                    0,
-                    std::mem::zeroed(),
-                )
-            }
-            .check()?;
-        }
+        })
+        .map(|mem| prefetch_async(mem, 0, unsafe { std::mem::zeroed() }))
+        .collect::<Result<()>>()?;
 
         sync()?;
 
@@ -442,15 +497,15 @@ impl HashJoinBench {
         let stop_event = Event::new()?;
 
         start_event.record()?;
-        hj_op.build(&self.build_relation, &build_payload_attr)?;
+        hj_op.build(&self.build_relation_key, &self.build_relation_payload)?;
 
         stop_event.record().and_then(|e| e.synchronize())?;
         let build_millis = stop_event.elapsed_time(&start_event)?;
 
         start_event.record()?;
         hj_op.probe_count(
-            &self.probe_relation,
-            &probe_payload_attr,
+            &self.probe_relation_key,
+            &self.probe_relation_payload,
             &mut result_counts,
         )?;
 
@@ -464,39 +519,50 @@ impl HashJoinBench {
         ))
     }
 
-    fn cpu_hash_join(&self, threads: usize, hash_table_location: u16) -> Result<(f64, f64)> {
-        let mut hash_table_mem = DerefMem::NumaMem(NumaMemory::alloc_on_node(
-            self.hash_table_size,
-            hash_table_location,
-        ));
+    fn cpu_hash_join(
+        &self,
+        threads: usize,
+        hash_table_alloc: allocator::DerefMemAllocFn<i64>,
+    ) -> Result<(f64, f64)> {
+        let mut hash_table_mem = hash_table_alloc(self.hash_table_len);
         ensure_physically_backed(&mut hash_table_mem);
-        let hash_table = hash_join::HashTable::new_on_cpu(hash_table_mem, self.hash_table_size)?;
+        let hash_table = hash_join::HashTable::new_on_cpu(hash_table_mem, self.hash_table_len)?;
         let mut result_counts = vec![0; (self.probe_dim.0 * self.probe_dim.1) as usize];
-        let build_payload_attr: Vec<_> = (2_i64..).take(self.build_relation.len()).collect();
-        let probe_payload_attr: Vec<_> = (2_i64..).take(self.probe_relation.len()).collect();
 
         let thread_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
             .expect("Couldn't create thread pool");
-        let build_chunk_size = (self.build_relation.len() + threads - 1) / threads;
-        let probe_chunk_size = (self.probe_relation.len() + threads - 1) / threads;
-        let build_rel_chunks: Vec<_> = match self.build_relation {
+        let build_chunk_size = (self.build_relation_key.len() + threads - 1) / threads;
+        let probe_chunk_size = (self.probe_relation_key.len() + threads - 1) / threads;
+        let build_rel_chunks: Vec<_> = match self.build_relation_key {
             Mem::CudaUniMem(ref m) => m.chunks(build_chunk_size),
             Mem::SysMem(ref m) => m.chunks(build_chunk_size),
             Mem::NumaMem(ref m) => m.as_slice().chunks(build_chunk_size),
             Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
         }
         .collect();
-        let build_pay_chunks: Vec<_> = build_payload_attr.chunks(build_chunk_size).collect();
-        let probe_rel_chunks: Vec<_> = match self.probe_relation {
+        let build_pay_chunks: Vec<_> = match self.build_relation_payload {
+            Mem::CudaUniMem(ref m) => m.chunks(build_chunk_size),
+            Mem::SysMem(ref m) => m.chunks(build_chunk_size),
+            Mem::NumaMem(ref m) => m.as_slice().chunks(build_chunk_size),
+            Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
+        }
+        .collect();
+        let probe_rel_chunks: Vec<_> = match self.probe_relation_key {
             Mem::CudaUniMem(ref m) => m.chunks(probe_chunk_size),
             Mem::SysMem(ref m) => m.chunks(probe_chunk_size),
             Mem::NumaMem(ref m) => m.as_slice().chunks(probe_chunk_size),
             Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
         }
         .collect();
-        let probe_pay_chunks: Vec<_> = probe_payload_attr.chunks(probe_chunk_size).collect();
+        let probe_pay_chunks: Vec<_> = match self.probe_relation_payload {
+            Mem::CudaUniMem(ref m) => m.chunks(probe_chunk_size),
+            Mem::SysMem(ref m) => m.chunks(probe_chunk_size),
+            Mem::NumaMem(ref m) => m.as_slice().chunks(probe_chunk_size),
+            Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
+        }
+        .collect();
         let result_count_chunks: Vec<_> = result_counts.chunks_mut(threads).collect();
 
         let hj_builder = hash_join::CpuHashJoinBuilder::default()
