@@ -51,7 +51,7 @@ pub unsafe fn host_unregister<T>(mem: &mut [T]) -> Result<()> {
 ///
 /// GPU device must have non-zero identifier. If device is zero, then the memory
 /// range will be prefetched to main-memory.
-pub fn prefetch_async<T>(mem: UVec<T>, device: u16, stream: cudaStream_t) -> Result<()> {
+pub fn prefetch_async<T>(mem: &UVec<T>, device: u16, stream: cudaStream_t) -> Result<()> {
     unsafe {
         cudaMemPrefetchAsync(
             mem.as_ptr() as *const c_void,
