@@ -30,10 +30,12 @@ pub enum MemType {
     SysMem,
     /// NUMA memory allocated on the specified NUMA node
     NumaMem(u16),
-    /// CUDA device memory
-    CudaDevMem,
+    /// CUDA pinned memory (using cudaHostAlloc())
+    CudaPinnedMem,
     /// CUDA unified memory
     CudaUniMem,
+    /// CUDA device memory
+    CudaDevMem,
 }
 
 /// Dereferencable memory type specifier
@@ -45,6 +47,8 @@ pub enum DerefMemType {
     SysMem,
     /// NUMA memory allocated on the specified NUMA node
     NumaMem(u16),
+    /// CUDA pinned memory (using cudaHostAlloc())
+    CudaPinnedMem,
     /// CUDA unified memory
     CudaUniMem,
 }
@@ -54,6 +58,7 @@ impl From<DerefMemType> for MemType {
         match dmt {
             DerefMemType::SysMem => MemType::SysMem,
             DerefMemType::NumaMem(node) => MemType::NumaMem(node),
+            DerefMemType::CudaPinnedMem => MemType::CudaPinnedMem,
             DerefMemType::CudaUniMem => MemType::CudaUniMem,
         }
     }
@@ -79,8 +84,9 @@ impl Allocator {
         match mem_type {
             MemType::SysMem => Self::alloc_system(len).into(),
             MemType::NumaMem(node) => Self::alloc_numa(len, node).into(),
-            MemType::CudaDevMem => Self::alloc_cuda_device(len),
+            MemType::CudaPinnedMem => Self::alloc_cuda_pinned(len).into(),
             MemType::CudaUniMem => Self::alloc_cuda_unified(len).into(),
+            MemType::CudaDevMem => Self::alloc_cuda_device(len),
         }
     }
 
@@ -89,6 +95,7 @@ impl Allocator {
         match mem_type {
             DerefMemType::SysMem => Self::alloc_system(len),
             DerefMemType::NumaMem(node) => Self::alloc_numa(len, node),
+            DerefMemType::CudaPinnedMem => Self::alloc_cuda_pinned(len),
             DerefMemType::CudaUniMem => Self::alloc_cuda_unified(len),
         }
     }
@@ -99,8 +106,9 @@ impl Allocator {
         match mem_type {
             MemType::SysMem => Box::new(|len| Self::alloc_system(len).into()),
             MemType::NumaMem(node) => Box::new(move |len| Self::alloc_numa(len, node).into()),
-            MemType::CudaDevMem => Box::new(|len| Self::alloc_cuda_device(len)),
+            MemType::CudaPinnedMem => Box::new(|len| Self::alloc_cuda_pinned(len).into()),
             MemType::CudaUniMem => Box::new(|len| Self::alloc_cuda_unified(len).into()),
+            MemType::CudaDevMem => Box::new(|len| Self::alloc_cuda_device(len)),
         }
     }
 
@@ -110,6 +118,7 @@ impl Allocator {
         match mem_type {
             DerefMemType::SysMem => Box::new(|len| Self::alloc_system(len)),
             DerefMemType::NumaMem(node) => Box::new(move |len| Self::alloc_numa(len, node)),
+            DerefMemType::CudaPinnedMem => Box::new(|len| Self::alloc_cuda_pinned(len)),
             DerefMemType::CudaUniMem => Box::new(|len| Self::alloc_cuda_unified(len)),
         }
     }
@@ -122,6 +131,11 @@ impl Allocator {
     /// Allocates memory on the specified NUMA node.
     fn alloc_numa<T>(len: usize, node: u16) -> DerefMem<T> {
         DerefMem::NumaMem(NumaMemory::alloc_on_node(len, node))
+    }
+
+    fn alloc_cuda_pinned<T>(_len: usize) -> DerefMem<T> {
+        // FIXME: implement using cudaAllocHost()
+        unimplemented!();
     }
 
     /// Allocates CUDA unified memory.

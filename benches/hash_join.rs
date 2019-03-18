@@ -59,6 +59,8 @@ arg_enum! {
     pub enum ArgMemType {
         System,
         Numa,
+        NumaLazyPinned,
+        Pinned,
         Unified,
         Device,
     }
@@ -91,6 +93,8 @@ impl From<ArgMemTypeHelper> for allocator::MemType {
         match mem_type {
             ArgMemType::System => allocator::MemType::SysMem,
             ArgMemType::Numa => allocator::MemType::NumaMem(location),
+            ArgMemType::NumaLazyPinned => allocator::MemType::NumaMem(location),
+            ArgMemType::Pinned => allocator::MemType::CudaPinnedMem,
             ArgMemType::Unified => allocator::MemType::CudaUniMem,
             ArgMemType::Device => allocator::MemType::CudaDevMem,
         }
@@ -102,6 +106,8 @@ impl From<ArgMemTypeHelper> for allocator::DerefMemType {
         match mem_type {
             ArgMemType::System => allocator::DerefMemType::SysMem,
             ArgMemType::Numa => allocator::DerefMemType::NumaMem(location),
+            ArgMemType::NumaLazyPinned => allocator::DerefMemType::NumaMem(location),
+            ArgMemType::Pinned => allocator::DerefMemType::CudaPinnedMem,
             ArgMemType::Unified => allocator::DerefMemType::CudaUniMem,
             ArgMemType::Device => panic!("Error: Device memory not supported in this context!"),
         }
@@ -257,7 +263,17 @@ fn main() {
     ]
     .iter()
     .map(|&(len, mem_type, location)| {
-        allocator::Allocator::alloc_deref_mem(ArgMemTypeHelper { mem_type, location }.into(), len)
+        let mut mem = allocator::Allocator::alloc_deref_mem(
+            ArgMemTypeHelper { mem_type, location }.into(),
+            len,
+        );
+        match (mem_type, &mut mem) {
+            (ArgMemType::NumaLazyPinned, DerefMem::NumaMem(lazy_pinned_mem)) => lazy_pinned_mem
+                .page_lock()
+                .expect("Failed to lazily pin memory"),
+            _ => {}
+        };
+        mem
     })
     .collect();
     let mut rel_pk_key = memory.remove(0);
@@ -311,7 +327,6 @@ fn main() {
     };
 
     // Construct data point template for CSV
-    // FIXME: add memory types and locations
     let dp = DataPoint {
         hostname: "",
         device_type: cmd.device_type,
@@ -539,6 +554,7 @@ impl HashJoinBench {
             Mem::CudaUniMem(ref m) => m.chunks(build_chunk_size),
             Mem::SysMem(ref m) => m.chunks(build_chunk_size),
             Mem::NumaMem(ref m) => m.as_slice().chunks(build_chunk_size),
+            Mem::CudaPinnedMem(ref m) => m.chunks(build_chunk_size),
             Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
         }
         .collect();
@@ -546,6 +562,7 @@ impl HashJoinBench {
             Mem::CudaUniMem(ref m) => m.chunks(build_chunk_size),
             Mem::SysMem(ref m) => m.chunks(build_chunk_size),
             Mem::NumaMem(ref m) => m.as_slice().chunks(build_chunk_size),
+            Mem::CudaPinnedMem(ref m) => m.chunks(build_chunk_size),
             Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
         }
         .collect();
@@ -553,6 +570,7 @@ impl HashJoinBench {
             Mem::CudaUniMem(ref m) => m.chunks(probe_chunk_size),
             Mem::SysMem(ref m) => m.chunks(probe_chunk_size),
             Mem::NumaMem(ref m) => m.as_slice().chunks(probe_chunk_size),
+            Mem::CudaPinnedMem(ref m) => m.chunks(probe_chunk_size),
             Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
         }
         .collect();
@@ -560,6 +578,7 @@ impl HashJoinBench {
             Mem::CudaUniMem(ref m) => m.chunks(probe_chunk_size),
             Mem::SysMem(ref m) => m.chunks(probe_chunk_size),
             Mem::NumaMem(ref m) => m.as_slice().chunks(probe_chunk_size),
+            Mem::CudaPinnedMem(ref m) => m.chunks(probe_chunk_size),
             Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
         }
         .collect();
