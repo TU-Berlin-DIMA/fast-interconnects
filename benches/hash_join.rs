@@ -244,6 +244,8 @@ fn main() -> Result<()> {
 
     // Initialize CUDA
     rustacuda::init(CudaFlags::empty())?;
+    let device = Device::get_device(cmd.device_id.into())?;
+    let _context = Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
 
     // Allocate memory for data sets
     let mut memory: VecDeque<_> = [
@@ -299,7 +301,6 @@ fn main() -> Result<()> {
     };
 
     // Device tuning
-    let device = Device::get_device(cmd.device_id.into())?;
     let cuda_cores = device.cores()?;
     let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
     let warp_overcommit_factor = 2;
@@ -368,7 +369,7 @@ fn main() -> Result<()> {
             let ht_alloc = allocator::Allocator::mem_alloc_fn::<i64>(
                 ArgMemTypeHelper { mem_type, location }.into(),
             );
-            hjb.cuda_hash_join(device, ht_alloc)
+            hjb.cuda_hash_join(ht_alloc)
         }
     };
 
@@ -468,8 +469,7 @@ struct HashJoinBench {
 }
 
 impl HashJoinBench {
-    fn cuda_hash_join(&self, device: Device, hash_table_alloc: allocator::MemAllocFn<i64>) -> Result<(f64, f64)> {
-        Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
+    fn cuda_hash_join(&self, hash_table_alloc: allocator::MemAllocFn<i64>) -> Result<(f64, f64)> {
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
 
         // FIXME: specify load factor as argument
