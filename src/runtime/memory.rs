@@ -8,12 +8,10 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-extern crate accel;
+extern crate rustacuda;
 
-use self::accel::mvec::MVec;
-use self::accel::uvec::UVec;
+use self::rustacuda::memory::{DeviceBuffer, UnifiedBuffer, DeviceCopy};
 
-use std::any::Any;
 use std::ops::Deref;
 use std::ops::DerefMut;
 
@@ -35,15 +33,15 @@ pub trait PageLock {
 
 pub use self::Mem::*;
 #[derive(Debug)]
-pub enum Mem<T> {
+pub enum Mem<T: DeviceCopy> {
     SysMem(Vec<T>),
     NumaMem(NumaMemory<T>),
     CudaPinnedMem(Vec<T>), // FIXME: allocate with cudaHostAlloc()
-    CudaDevMem(MVec<T>),
-    CudaUniMem(UVec<T>),
+    CudaDevMem(DeviceBuffer<T>),
+    CudaUniMem(UnifiedBuffer<T>),
 }
 
-impl<T: Any + Copy> Mem<T> {
+impl<T: DeviceCopy> Mem<T> {
     pub fn len(&self) -> usize {
         match self {
             SysMem(ref m) => m.len(),
@@ -51,16 +49,6 @@ impl<T: Any + Copy> Mem<T> {
             CudaPinnedMem(ref m) => m.len(),
             CudaDevMem(ref m) => m.len(),
             CudaUniMem(ref m) => m.len(),
-        }
-    }
-
-    pub fn as_any(&self) -> &Any {
-        match self {
-            SysMem(ref m) => m as &Any,
-            NumaMem(ref m) => m as &Any,
-            CudaPinnedMem(ref m) => m as &Any,
-            CudaDevMem(ref m) => m as &Any,
-            CudaUniMem(ref m) => m as &Any,
         }
     }
 
@@ -85,7 +73,7 @@ impl<T: Any + Copy> Mem<T> {
     }
 }
 
-impl<T> From<DerefMem<T>> for Mem<T> {
+impl<T: DeviceCopy> From<DerefMem<T>> for Mem<T> {
     fn from(demem: DerefMem<T>) -> Mem<T> {
         match demem {
             DerefMem::SysMem(m) => Mem::SysMem(m),
@@ -97,14 +85,14 @@ impl<T> From<DerefMem<T>> for Mem<T> {
 }
 
 #[derive(Debug)]
-pub enum DerefMem<T> {
+pub enum DerefMem<T: DeviceCopy> {
     SysMem(Vec<T>),
     NumaMem(NumaMemory<T>),
     CudaPinnedMem(Vec<T>), // FIXME: allocate with cudaHostAlloc()
-    CudaUniMem(UVec<T>),
+    CudaUniMem(UnifiedBuffer<T>),
 }
 
-impl<T> DerefMem<T> {
+impl<T: DeviceCopy> DerefMem<T> {
     pub fn as_slice(&self) -> &[T] {
         match self {
             DerefMem::SysMem(m) => m.as_slice(),
@@ -119,12 +107,12 @@ impl<T> DerefMem<T> {
             DerefMem::SysMem(m) => m.as_mut_slice(),
             DerefMem::NumaMem(m) => m.as_mut_slice(),
             DerefMem::CudaPinnedMem(m) => m.as_mut_slice(),
-            DerefMem::CudaUniMem(m) => m.as_slice_mut(),
+            DerefMem::CudaUniMem(m) => m.as_mut_slice(),
         }
     }
 }
 
-impl<T> Deref for DerefMem<T> {
+impl<T: DeviceCopy> Deref for DerefMem<T> {
     type Target = [T];
 
     fn deref(&self) -> &[T] {
@@ -137,13 +125,13 @@ impl<T> Deref for DerefMem<T> {
     }
 }
 
-impl<T> DerefMut for DerefMem<T> {
+impl<T: DeviceCopy> DerefMut for DerefMem<T> {
     fn deref_mut(&mut self) -> &mut [T] {
         match self {
             DerefMem::SysMem(m) => m.as_mut_slice(),
             DerefMem::NumaMem(m) => m.as_mut_slice(),
             DerefMem::CudaPinnedMem(m) => m.as_mut_slice(),
-            DerefMem::CudaUniMem(m) => m.as_slice_mut(),
+            DerefMem::CudaUniMem(m) => m.as_mut_slice(),
         }
     }
 }

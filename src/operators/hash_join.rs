@@ -8,23 +8,21 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-extern crate accel;
 extern crate cuda_sys;
+extern crate rustacuda;
 
-use self::accel::device::sync;
-use self::accel::error::Check;
-use self::accel::kernel::{Block, Grid};
-use self::accel::module::Module;
-use self::accel::uvec::UVec;
+use cuda_sys::cuda::cuMemsetD32_v2;
 
-use self::cuda_sys::cudart::cudaMemset;
+use self::rustacuda::memory::UnifiedBuffer;
+use self::rustacuda::prelude::*;
+use self::rustacuda::function::{BlockSize, GridSize};
 
+use std::ffi::CString;
 use std::mem::size_of;
-use std::os::raw::c_void;
-use std::path::Path;
+use std::os::raw::{c_uint, c_void};
 use std::sync::Arc;
 
-use crate::error::Result;
+use crate::error::{Error, ErrorKind, Result, ToResult};
 use crate::runtime::memory::*;
 
 extern "C" {
@@ -74,8 +72,8 @@ pub struct CudaHashJoin {
     ops: Module,
     hashing_scheme: HashingScheme,
     hash_table: HashTable,
-    build_dim: (u32, u32),
-    probe_dim: (u32, u32),
+    build_dim: (GridSize, BlockSize),
+    probe_dim: (GridSize, BlockSize),
 }
 
 #[derive(Debug)]
@@ -95,8 +93,8 @@ pub struct HashTable {
 pub struct CudaHashJoinBuilder {
     hashing_scheme: HashingScheme,
     hash_table_i: Option<HashTable>,
-    build_dim_i: (u32, u32),
-    probe_dim_i: (u32, u32),
+    build_dim_i: (GridSize, BlockSize),
+    probe_dim_i: (GridSize, BlockSize),
 }
 
 #[derive(Debug)]
@@ -106,7 +104,12 @@ pub struct CpuHashJoinBuilder {
 }
 
 impl CudaHashJoin {
-    pub fn build(&mut self, join_attr: &Mem<i64>, payload_attr: &Mem<i64>) -> Result<&mut Self> {
+    pub fn build(
+        &mut self,
+        join_attr: &Mem<i64>,
+        payload_attr: &Mem<i64>,
+        stream: &Stream,
+    ) -> Result<&mut Self> {
         ensure!(
             join_attr.len() == payload_attr.len(),
             "Join and payload attributes have different sizes"
@@ -116,32 +119,31 @@ impl CudaHashJoin {
             "Hash table is too small for the build data"
         );
 
-        let (grid, block) = self.build_dim;
+        let (grid, block) = self.build_dim.clone();
 
         let join_attr_len = join_attr.len() as u64;
         let hash_table_size = self.hash_table.size as u64;
+        let module = &self.ops;
 
         match &self.hashing_scheme {
-            HashingScheme::Perfect => cuda!(
-                gpu_ht_build_perfect << [&self.ops, Grid::x(grid), Block::x(block)]
-                    >> (
-                        *self.hash_table.mem.as_any(),
+            HashingScheme::Perfect => unsafe{ launch!(
+                module.gpu_ht_build_perfect<<<grid, block, 0, stream>>>(
+                        *self.hash_table.mem.as_mut_ptr(),
                         hash_table_size,
-                        *join_attr.as_any(),
-                        *payload_attr.as_any(),
+                        *join_attr.as_ptr(),
+                        *payload_attr.as_ptr(),
                         join_attr_len
                     )
-            )?,
-            HashingScheme::LinearProbing => cuda!(
-                gpu_ht_build_linearprobing << [&self.ops, Grid::x(grid), Block::x(block)]
-                    >> (
-                        *self.hash_table.mem.as_any(),
+            )? },
+            HashingScheme::LinearProbing => unsafe { launch!(
+                module.gpu_ht_build_linearprobing<<<grid, block, 0, stream>>>(
+                        *self.hash_table.mem.as_mut_ptr(),
                         hash_table_size,
-                        *join_attr.as_any(),
-                        *payload_attr.as_any(),
+                        *join_attr.as_ptr(),
+                        *payload_attr.as_ptr(),
                         join_attr_len
                     )
-            )?,
+            )? },
         };
 
         Ok(self)
@@ -152,10 +154,11 @@ impl CudaHashJoin {
         join_attr: &Mem<i64>,
         payload_attr: &Mem<i64>,
         result_set: &mut Mem<u64>,
+        stream: &Stream,
     ) -> Result<()> {
-        let (grid, block) = self.probe_dim;
+        let (grid, block) = self.probe_dim.clone();
         ensure!(
-            result_set.len() >= (grid * block) as usize,
+            result_set.len() >= (grid.x * block.x) as usize,
             "Result set size is too small, must be at least grid * block size"
         );
         ensure!(
@@ -165,30 +168,29 @@ impl CudaHashJoin {
 
         let join_attr_len = join_attr.len() as u64;
         let hash_table_size = self.hash_table.size as u64;
+        let module = &self.ops;
 
         match &self.hashing_scheme {
-            HashingScheme::Perfect => cuda!(
-                gpu_ht_probe_aggregate_perfect << [&self.ops, Grid::x(grid), Block::x(block)]
-                    >> (
-                        *self.hash_table.mem.as_any(),
+            HashingScheme::Perfect => unsafe { launch!(
+                module.gpu_ht_probe_aggregate_perfect<<<grid, block, 0, stream>>>(
+                        *self.hash_table.mem.as_mut_ptr(),
                         hash_table_size,
-                        *join_attr.as_any(),
-                        *payload_attr.as_any(),
+                        *join_attr.as_ptr(),
+                        *payload_attr.as_ptr(),
                         join_attr_len,
-                        *result_set.as_any()
+                        *result_set.as_mut_ptr()
                     )
-            )?,
-            HashingScheme::LinearProbing => cuda!(
-                gpu_ht_probe_aggregate_linearprobing << [&self.ops, Grid::x(grid), Block::x(block)]
-                    >> (
-                        *self.hash_table.mem.as_any(),
+            )? },
+            HashingScheme::LinearProbing => unsafe { launch!(
+                module.gpu_ht_probe_aggregate_linearprobing<<<grid, block, 0, stream>>>(
+                        *self.hash_table.mem.as_mut_ptr(),
                         hash_table_size,
-                        *join_attr.as_any(),
-                        *payload_attr.as_any(),
+                        *join_attr.as_ptr(),
+                        *payload_attr.as_ptr(),
                         join_attr_len,
-                        *result_set.as_any()
+                        *result_set.as_mut_ptr()
                     )
-            )?,
+            )? },
         };
 
         Ok(())
@@ -307,13 +309,13 @@ impl HashTable {
 
         // Initialize hash table
         unsafe {
-            cudaMemset(
-                mem.as_ptr() as *mut c_void,
-                Self::NULL_KEY as i32,
-                mem.len() * size_of::<i64>(),
+            cuMemsetD32_v2(
+                mem.as_ptr() as *mut c_void as u64,
+                Self::NULL_KEY as c_uint,
+                mem.len() * (size_of::<i64>() / size_of::<c_uint>()),
             )
         }
-        .check()?;
+        .to_result()?;
 
         Ok(Self { mem, size })
     }
@@ -324,8 +326,8 @@ impl ::std::default::Default for CudaHashJoinBuilder {
         Self {
             hashing_scheme: HashingScheme::default(),
             hash_table_i: None,
-            build_dim_i: (1, 1),
-            probe_dim_i: (1, 1),
+            build_dim_i: (1.into(), 1.into()),
+            probe_dim_i: (1.into(), 1.into()),
         }
     }
 }
@@ -343,12 +345,12 @@ impl CudaHashJoinBuilder {
         self
     }
 
-    pub fn build_dim(mut self, grid: u32, block: u32) -> Self {
+    pub fn build_dim(mut self, grid: GridSize, block: BlockSize) -> Self {
         self.build_dim_i = (grid, block);
         self
     }
 
-    pub fn probe_dim(mut self, grid: u32, block: u32) -> Self {
+    pub fn probe_dim(mut self, grid: GridSize, block: BlockSize) -> Self {
         self.probe_dim_i = (grid, block);
         self
     }
@@ -356,18 +358,25 @@ impl CudaHashJoinBuilder {
     pub fn build(self) -> Result<CudaHashJoin> {
         ensure!(self.hash_table_i.is_some(), "Hash table not set");
 
-        let module_path = Path::new(env!("CUDAUTILS_PATH"));
+        let module_path = CString::new(env!("CUDAUTILS_PATH")).map_err(|e| {
+            Error::with_chain(
+                e,
+                ErrorKind::InvalidArgument(
+                    "Failed to load CUDA module, check your CUDAUTILS_PATH".to_string(),
+                ),
+            )
+        })?;
 
-        // force CUDA to init device and create context
-        sync()?;
-
-        let ops = Module::load_file(module_path)?;
+        let ops = Module::load_from_file(&module_path)?;
 
         let hash_table = if let Some(ht) = self.hash_table_i {
             ht
         } else {
             HashTable {
-                mem: CudaUniMem(UVec::<i64>::new(Self::DEFAULT_HT_SIZE)?),
+                mem: CudaUniMem(UnifiedBuffer::<i64>::new(
+                    &HashTable::NULL_KEY,
+                    Self::DEFAULT_HT_SIZE,
+                )?),
                 size: Self::DEFAULT_HT_SIZE,
             }
         };

@@ -8,7 +8,6 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-extern crate accel;
 #[macro_use]
 extern crate average;
 #[macro_use]
@@ -25,9 +24,6 @@ extern crate serde_derive;
 extern crate serde;
 extern crate structopt;
 
-use accel::device::{sync, Device};
-use accel::event::Event;
-
 use average::{Estimate, Max, Min, Quantile, Variance};
 
 use numa_gpu::datagen;
@@ -38,6 +34,12 @@ use numa_gpu::runtime::backend::*;
 use numa_gpu::runtime::cuda_wrapper::prefetch_async;
 use numa_gpu::runtime::memory::*;
 use numa_gpu::runtime::utils::ensure_physically_backed;
+use numa_gpu::runtime::backend::CudaDeviceInfo;
+
+use rustacuda::prelude::*;
+use rustacuda::device::DeviceAttribute;
+use rustacuda::function::{GridSize, BlockSize};
+use rustacuda::event::{Event, EventFlags};
 
 use std::mem::size_of;
 use std::path::PathBuf;
@@ -235,8 +237,12 @@ pub struct DataPoint<'h, 'c> {
 }
 
 // FIXME: Support for i32 data type
-fn main() {
+fn main() -> Result<()> {
+    // Parse commandline arguments
     let cmd = CmdOpt::from_args();
+
+    // Initialize CUDA
+    rustacuda::init(CudaFlags::empty())?;
 
     // Allocate memory for data sets
     let mut memory: Vec<_> = [
@@ -292,18 +298,14 @@ fn main() {
     };
 
     // Device tuning
-    let dev = Device::set(cmd.device_id.into()).expect("Couldn't set CUDA device");
-    let dev_props = dev
-        .get_property()
-        .expect("Couldn't get CUDA device property map");
-    let sm_cores = dev.cores().expect("Couldn't get number of GPU cores");
-    let cuda_cores = sm_cores * dev_props.multiProcessorCount as u32;
-    let warp_size = dev_props.warpSize as u32;
+    let device = Device::get_device(cmd.device_id.into())?;
+    let cuda_cores = device.cores()?;
+    let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
     let warp_overcommit_factor = 2;
     let grid_overcommit_factor = 32;
 
-    let block_size = warp_size * warp_overcommit_factor;
-    let grid_size = cuda_cores * grid_overcommit_factor;
+    let block_size = BlockSize::x(warp_size * warp_overcommit_factor);
+    let grid_size = GridSize::x(cuda_cores * grid_overcommit_factor);
 
     // Construct benchmark
     let hjb = HashJoinBench {
@@ -313,17 +315,14 @@ fn main() {
         build_relation_payload: rel_pk_payload.into(),
         probe_relation_key: rel_fk_key.into(),
         probe_relation_payload: rel_fk_payload.into(),
-        build_dim: (grid_size, block_size),
-        probe_dim: (grid_size, block_size),
+        build_dim: (grid_size.clone(), block_size.clone()),
+        probe_dim: (grid_size.clone(), block_size.clone()),
     };
 
     // Get device information
     let dev_codename_str = match cmd.device_type {
         ArgDeviceType::CPU => cpu_codename(),
-        ArgDeviceType::GPU => Device::current()
-            .expect("Couldn't get current device")
-            .name()
-            .expect("Couldn't get device code name"),
+        ArgDeviceType::GPU => device.name()?,
     };
 
     // Construct data point template for CSV
@@ -368,13 +367,14 @@ fn main() {
             let ht_alloc = allocator::Allocator::mem_alloc_fn::<i64>(
                 ArgMemTypeHelper { mem_type, location }.into(),
             );
-            hjb.cuda_hash_join(ht_alloc)
+            hjb.cuda_hash_join(device, ht_alloc)
         }
     };
 
     // Run experiment
     measure("hash_join_kim", cmd.repeat, cmd.out_dir, dp, hjc)
         .expect("Failure: hash join benchmark");
+    Ok(())
 }
 
 fn measure<F>(name: &str, repeat: u32, out_dir: PathBuf, template: DataPoint, func: F) -> Result<()>
@@ -462,18 +462,21 @@ struct HashJoinBench {
     build_relation_payload: Mem<i64>,
     probe_relation_key: Mem<i64>,
     probe_relation_payload: Mem<i64>,
-    build_dim: (u32, u32),
-    probe_dim: (u32, u32),
+    build_dim: (GridSize, BlockSize),
+    probe_dim: (GridSize, BlockSize),
 }
 
 impl HashJoinBench {
-    fn cuda_hash_join(&self, hash_table_alloc: allocator::MemAllocFn<i64>) -> Result<(f64, f64)> {
+    fn cuda_hash_join(&self, device: Device, hash_table_alloc: allocator::MemAllocFn<i64>) -> Result<(f64, f64)> {
+        Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
+        let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
+
         // FIXME: specify load factor as argument
         let hash_table_mem = hash_table_alloc(self.hash_table_len);
         let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
         let mut result_counts = allocator::Allocator::alloc_mem(
             allocator::MemType::CudaUniMem,
-            (self.probe_dim.0 * self.probe_dim.1) as usize,
+            (self.probe_dim.0.x * self.probe_dim.1.x) as usize,
         );
 
         // Initialize counts
@@ -499,35 +502,36 @@ impl HashJoinBench {
         .map(|mem| prefetch_async(mem, 0, unsafe { std::mem::zeroed() }))
         .collect::<Result<()>>()?;
 
-        sync()?;
+        stream.synchronize()?;
 
         let mut hj_op = hash_join::CudaHashJoinBuilder::default()
             .hashing_scheme(self.hashing_scheme)
-            .build_dim(self.build_dim.0, self.build_dim.1)
-            .probe_dim(self.probe_dim.0, self.probe_dim.1)
+            .build_dim(self.build_dim.0.clone(), self.build_dim.1.clone())
+            .probe_dim(self.probe_dim.0.clone(), self.probe_dim.1.clone())
             .hash_table(hash_table)
             .build()?;
 
-        let start_event = Event::new()?;
-        let stop_event = Event::new()?;
+        let start_event = Event::new(EventFlags::DEFAULT)?;
+        let stop_event = Event::new(EventFlags::DEFAULT)?;
 
-        start_event.record()?;
-        hj_op.build(&self.build_relation_key, &self.build_relation_payload)?;
+        start_event.record(&stream)?;
+        hj_op.build(&self.build_relation_key, &self.build_relation_payload, &stream)?;
 
-        stop_event.record().and_then(|e| e.synchronize())?;
+        stop_event.record(&stream).and_then(|e| e.synchronize())?;
         let build_millis = stop_event.elapsed_time(&start_event)?;
 
-        start_event.record()?;
+        start_event.record(&stream)?;
         hj_op.probe_count(
             &self.probe_relation_key,
             &self.probe_relation_payload,
             &mut result_counts,
+            &stream,
         )?;
 
-        stop_event.record().and_then(|e| e.synchronize())?;
+        stop_event.record(&stream).and_then(|e| e.synchronize())?;
         let probe_millis = stop_event.elapsed_time(&start_event)?;
 
-        sync()?;
+        stream.synchronize()?;
         Ok((
             build_millis as f64 * 10_f64.powf(6.0),
             probe_millis as f64 * 10_f64.powf(6.0),
@@ -542,7 +546,7 @@ impl HashJoinBench {
         let mut hash_table_mem = hash_table_alloc(self.hash_table_len);
         ensure_physically_backed(&mut hash_table_mem);
         let hash_table = hash_join::HashTable::new_on_cpu(hash_table_mem, self.hash_table_len)?;
-        let mut result_counts = vec![0; (self.probe_dim.0 * self.probe_dim.1) as usize];
+        let mut result_counts = vec![0; threads];
 
         let thread_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)

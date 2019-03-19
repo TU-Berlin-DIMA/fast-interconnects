@@ -9,9 +9,9 @@
  */
 
 #[macro_use]
-extern crate accel_native;
-#[macro_use]
 extern crate error_chain;
+#[macro_use]
+extern crate rustacuda;
 
 pub mod datagen;
 pub mod error;

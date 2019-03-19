@@ -1,20 +1,21 @@
 //! Collection of Rust-ified wrappers for commonly-used CUDA functions.
 
-extern crate accel;
 extern crate cuda_sys;
+extern crate rustacuda;
 
-use self::accel::error::Check;
-use self::accel::uvec::UVec;
+use rustacuda::memory::{DeviceCopy, UnifiedBuffer};
+use rustacuda::stream::Stream;
 
-use self::cuda_sys::cudart::{
-    cudaHostRegister, cudaHostRegisterDefault, cudaHostUnregister, cudaMemPrefetchAsync,
-    cudaStream_t,
+use self::cuda_sys::cuda::{
+    cuMemHostRegister_v2, cuMemHostUnregister, cuMemPrefetchAsync, CUstream,
+    CU_MEMHOSTREGISTER_DEVICEMAP, CU_MEMHOSTREGISTER_PORTABLE,
 };
 
 use std::mem::size_of;
+use std::mem::transmute_copy;
 use std::os::raw::c_void;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, ToResult};
 
 /// Page-lock an existing memory range for efficient GPU transfers.
 ///
@@ -22,12 +23,12 @@ use crate::error::{Error, Result};
 ///
 /// Page-locked memory must be unregistered with host_unregister().
 pub unsafe fn host_register<T>(mem: &mut [T]) -> Result<()> {
-    cudaHostRegister(
+    cuMemHostRegister_v2(
         mem.as_mut_ptr() as *mut c_void,
         mem.len() * size_of::<T>(),
-        cudaHostRegisterDefault,
+        CU_MEMHOSTREGISTER_PORTABLE | CU_MEMHOSTREGISTER_DEVICEMAP,
     )
-    .check()
+    .to_result()
     .map_err(|e| Error::with_chain::<Error, _>(e.into(), "Failed to dynamically pin memory"))
 }
 
@@ -37,8 +38,8 @@ pub unsafe fn host_register<T>(mem: &mut [T]) -> Result<()> {
 ///
 /// Memory range must have been page-locked with host_register().
 pub unsafe fn host_unregister<T>(mem: &mut [T]) -> Result<()> {
-    cudaHostUnregister(mem.as_mut_ptr() as *mut c_void)
-        .check()
+    cuMemHostUnregister(mem.as_mut_ptr() as *mut c_void)
+        .to_result()
         .map_err(|e| {
             Error::with_chain::<Error, _>(
                 e.into(),
@@ -51,15 +52,21 @@ pub unsafe fn host_unregister<T>(mem: &mut [T]) -> Result<()> {
 ///
 /// GPU device must have non-zero identifier. If device is zero, then the memory
 /// range will be prefetched to main-memory.
-pub fn prefetch_async<T>(mem: &UVec<T>, device: u16, stream: cudaStream_t) -> Result<()> {
+pub fn prefetch_async<T: DeviceCopy>(
+    mem: &UnifiedBuffer<T>,
+    device: u16,
+    stream: &Stream,
+) -> Result<()> {
     unsafe {
-        cudaMemPrefetchAsync(
-            mem.as_ptr() as *const c_void,
+        // FIXME: Find a safer solution to replace transmute_copy!!!
+        let cu_stream = transmute_copy::<Stream, CUstream>(stream);
+        cuMemPrefetchAsync(
+            mem.as_ptr() as *const c_void as u64,
             mem.len() * size_of::<T>(),
             device.into(),
-            stream,
+            cu_stream,
         )
-        .check()
+        .to_result()
         .map_err(|e| {
             Error::with_chain::<Error, _>(
                 e.into(),

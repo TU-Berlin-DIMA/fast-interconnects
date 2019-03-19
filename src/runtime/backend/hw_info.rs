@@ -9,8 +9,13 @@
  */
 
 extern crate libc;
+extern crate rustacuda;
+
+use rustacuda::device::{Device, DeviceAttribute};
 
 use std::fmt;
+
+use crate::error::Result;
 
 pub struct ProcessorCache {}
 
@@ -69,4 +74,40 @@ pub fn cpu_codename() -> String {
 #[cfg(target_arch = "powerpc64")]
 pub fn cpu_codename() -> String {
     String::from("POWER9")
+}
+
+/// Extends Rustacuda's Device with methods that provide additional hardware
+/// information.
+pub trait CudaDeviceInfo {
+    /// Returns the number of cores per streaming multiprocessor
+    fn sm_cores(&self) -> Result<u32>;
+
+    /// Returns the total number of cores that are in the device
+    fn cores(&self) -> Result<u32>;
+}
+
+impl CudaDeviceInfo for Device {
+    fn sm_cores(&self) -> Result<u32> {
+        let major = self.get_attribute(DeviceAttribute::ComputeCapabilityMajor)?;
+        let minor = self.get_attribute(DeviceAttribute::ComputeCapabilityMinor)?;
+
+        Ok(match (major, minor) {
+            (3, 0) => 192, // Kepler Generation (SM 3.0) GK10x class
+            (3, 2) => 192, // Kepler Generation (SM 3.2) GK10x class
+            (3, 5) => 192, // Kepler Generation (SM 3.5) GK11x class
+            (3, 7) => 192, // Kepler Generation (SM 3.7) GK21x class
+            (5, 0) => 128, // Maxwell Generation (SM 5.0) GM10x class
+            (5, 2) => 128, // Maxwell Generation (SM 5.2) GM20x class
+            (5, 3) => 128, // Maxwell Generation (SM 5.3) GM20x class
+            (6, 0) => 64,  // Pascal Generation (SM 6.0) GP100 class
+            (6, 1) => 128, // Pascal Generation (SM 6.1) GP10x class
+            (6, 2) => 128, // Pascal Generation (SM 6.2) GP10x class
+            (7, 0) => 64,  // Volta Generation (SM 7.0) GV100 class
+            _ => unreachable!("Unsupported Core"),
+        })
+    }
+
+    fn cores(&self) -> Result<u32> {
+        Ok(self.sm_cores()? * self.get_attribute(DeviceAttribute::MultiprocessorCount)? as u32)
+    }
 }
