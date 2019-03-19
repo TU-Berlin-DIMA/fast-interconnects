@@ -10,7 +10,7 @@
 
 extern crate rustacuda;
 
-use self::rustacuda::memory::{DeviceBuffer, UnifiedBuffer, DeviceCopy};
+use self::rustacuda::memory::{DeviceBuffer, UnifiedBuffer, DeviceCopy, LockedBuffer};
 
 use std::ops::Deref;
 use std::ops::DerefMut;
@@ -36,7 +36,7 @@ pub use self::Mem::*;
 pub enum Mem<T: DeviceCopy> {
     SysMem(Vec<T>),
     NumaMem(NumaMemory<T>),
-    CudaPinnedMem(Vec<T>), // FIXME: allocate with cudaHostAlloc()
+    CudaPinnedMem(LockedBuffer<T>),
     CudaDevMem(DeviceBuffer<T>),
     CudaUniMem(UnifiedBuffer<T>),
 }
@@ -88,7 +88,7 @@ impl<T: DeviceCopy> From<DerefMem<T>> for Mem<T> {
 pub enum DerefMem<T: DeviceCopy> {
     SysMem(Vec<T>),
     NumaMem(NumaMemory<T>),
-    CudaPinnedMem(Vec<T>), // FIXME: allocate with cudaHostAlloc()
+    CudaPinnedMem(LockedBuffer<T>),
     CudaUniMem(UnifiedBuffer<T>),
 }
 

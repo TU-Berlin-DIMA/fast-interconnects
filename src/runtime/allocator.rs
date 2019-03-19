@@ -9,7 +9,7 @@
 
 extern crate rustacuda;
 
-use self::rustacuda::memory::{DeviceBuffer, UnifiedBuffer, DeviceCopy};
+use self::rustacuda::memory::{DeviceBuffer, UnifiedBuffer, DeviceCopy, LockedBuffer};
 
 use std::default::Default;
 use std::mem::size_of;
@@ -137,9 +137,13 @@ impl Allocator {
         DerefMem::NumaMem(NumaMemory::alloc_on_node(len, node))
     }
 
-    fn alloc_cuda_pinned<T: DeviceCopy>(_len: usize) -> DerefMem<T> {
-        // FIXME: implement using cudaAllocHost()
-        unimplemented!();
+    fn alloc_cuda_pinned<T: DeviceCopy>(len: usize) -> DerefMem<T> {
+        unsafe {
+            DerefMem::CudaPinnedMem(LockedBuffer::<T>::uninitialized(len).expect(&format!(
+                        "Failed dot allocate {} bytes of CUDA pinned memory",
+                        len * size_of::<T>()
+                        )))
+        }
     }
 
     /// Allocates CUDA unified memory.
