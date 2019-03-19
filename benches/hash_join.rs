@@ -27,7 +27,7 @@ extern crate structopt;
 use average::{Estimate, Max, Min, Quantile, Variance};
 
 use numa_gpu::datagen;
-use numa_gpu::error::Result;
+use numa_gpu::error::{Result, ErrorKind};
 use numa_gpu::operators::hash_join;
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::backend::*;
@@ -45,6 +45,7 @@ use std::mem::size_of;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
+use std::collections::vec_deque::VecDeque;
 
 use structopt::StructOpt;
 
@@ -245,7 +246,7 @@ fn main() -> Result<()> {
     rustacuda::init(CudaFlags::empty())?;
 
     // Allocate memory for data sets
-    let mut memory: Vec<_> = [
+    let mut memory: VecDeque<_> = [
         (
             datagen::popular::Kim::primary_key_len(),
             cmd.mem_type,
@@ -282,10 +283,10 @@ fn main() -> Result<()> {
         mem
     })
     .collect();
-    let mut rel_pk_key = memory.remove(0);
-    let rel_pk_payload = memory.remove(1);
-    let mut rel_fk_key = memory.remove(2);
-    let rel_fk_payload = memory.remove(3);
+    let mut rel_pk_key = memory.pop_front().ok_or_else(|| ErrorKind::LogicError("Failed to get primary key relation. Is it allocated?".to_string()))?;
+    let rel_pk_payload = memory.pop_front().ok_or_else(|| ErrorKind::LogicError("Failed to get primary key relation. Is it allocated?".to_string()))?;
+    let mut rel_fk_key = memory.pop_front().ok_or_else(|| ErrorKind::LogicError("Failed to get foreign key relation. Is it allocated?".to_string()))?;
+    let rel_fk_payload = memory.pop_front().ok_or_else(|| ErrorKind::LogicError("Failed to get foreign key relation. Is it allocated?".to_string()))?;
 
     // Generate Kim dataset
     datagen::popular::Kim::gen(rel_pk_key.as_mut_slice(), rel_fk_key.as_mut_slice())

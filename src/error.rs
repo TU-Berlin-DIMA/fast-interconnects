@@ -25,6 +25,10 @@ error_chain! {
             description("Integer overflow error")
             display("Aborted with: {}", msg)
         }
+        LogicError(msg: String) {
+            description("Logic error")
+            display("Aborting with: {}", msg)
+        }
     }
 
     foreign_links {
