@@ -17,7 +17,7 @@ extern crate csv;
 #[macro_use]
 extern crate error_chain;
 extern crate hostname;
-extern crate num;
+extern crate num_traits;
 extern crate numa_gpu;
 extern crate rayon;
 #[macro_use]
@@ -35,11 +35,12 @@ use numa_gpu::runtime::backend::CudaDeviceInfo;
 use numa_gpu::runtime::backend::*;
 use numa_gpu::runtime::cuda_wrapper::prefetch_async;
 use numa_gpu::runtime::memory::*;
-use numa_gpu::runtime::utils::ensure_physically_backed;
+use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 
 use rustacuda::device::DeviceAttribute;
 use rustacuda::event::{Event, EventFlags};
 use rustacuda::function::{BlockSize, GridSize};
+use rustacuda::memory::DeviceCopy;
 use rustacuda::prelude::*;
 
 use std::collections::vec_deque::VecDeque;
@@ -84,6 +85,15 @@ arg_enum! {
     pub enum ArgHashingScheme {
         Perfect,
         LinearProbing,
+    }
+}
+
+arg_enum! {
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+    #[repr(usize)]
+    pub enum ArgTupleBytes {
+        Bytes8 = 8,
+        Bytes16 = 16,
     }
 }
 
@@ -196,8 +206,17 @@ struct CmdOpt {
         default_value = "Test",
         raw(possible_values = "&ArgDataSet::variants()", case_insensitive = "true")
     )]
-    #[allow(dead_code)]
     data_set: ArgDataSet,
+
+    #[structopt(
+        long = "tuple-bytes",
+        default_value = "Bytes8",
+        raw(
+            possible_values = "&ArgTupleBytes::variants()",
+            case_insensitive = "true"
+        )
+    )]
+    tuple_bytes: ArgTupleBytes,
 
     /// Type of the device.
     #[structopt(
@@ -219,29 +238,84 @@ struct CmdOpt {
     threads: usize,
 }
 
-#[derive(Debug, Serialize)]
-pub struct DataPoint<'h, 'c> {
-    pub hostname: &'h str,
-    pub device_type: ArgDeviceType,
-    pub device_codename: &'c str,
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct DataPoint {
+    pub hostname: String,
+    pub device_type: Option<ArgDeviceType>,
+    pub device_codename: Option<String>,
     pub threads: Option<usize>,
-    pub hashing_scheme: ArgHashingScheme,
-    pub hash_table_memory_type: ArgMemType,
-    pub hash_table_memory_node: u16,
-    pub hash_table_bytes: usize,
-    pub relation_memory_type: ArgMemType,
-    pub inner_relation_memory_location: u16,
-    pub outer_relation_memory_location: u16,
-    pub build_tuples: usize,
-    pub build_bytes: usize,
-    pub probe_tuples: usize,
-    pub probe_bytes: usize,
-    pub warm_up: bool,
-    pub build_ns: f64,
-    pub probe_ns: f64,
+    pub hashing_scheme: Option<ArgHashingScheme>,
+    pub hash_table_memory_type: Option<ArgMemType>,
+    pub hash_table_memory_node: Option<u16>,
+    pub hash_table_bytes: Option<usize>,
+    pub tuple_bytes: Option<ArgTupleBytes>,
+    pub relation_memory_type: Option<ArgMemType>,
+    pub inner_relation_memory_location: Option<u16>,
+    pub outer_relation_memory_location: Option<u16>,
+    pub build_tuples: Option<usize>,
+    pub build_bytes: Option<usize>,
+    pub probe_tuples: Option<usize>,
+    pub probe_bytes: Option<usize>,
+    pub warm_up: Option<bool>,
+    pub build_ns: Option<f64>,
+    pub probe_ns: Option<f64>,
 }
 
-// FIXME: Support for i32 data type
+impl DataPoint {
+    fn new() -> Result<DataPoint> {
+        let hostname = hostname::get_hostname().ok_or_else(|| "Couldn't get hostname")?;
+
+        let dp = DataPoint {
+            hostname,
+            ..DataPoint::default()
+        };
+
+        Ok(dp)
+    }
+
+    fn fill_from_cmd_options(&self, cmd: &CmdOpt) -> Result<DataPoint> {
+        // Get device information
+        let dev_codename_str = match cmd.device_type {
+            ArgDeviceType::CPU => cpu_codename(),
+            ArgDeviceType::GPU => {
+                let device = Device::get_device(cmd.device_id.into())?;
+                device.name()?
+            }
+        };
+
+        let dp = DataPoint {
+            device_type: Some(cmd.device_type),
+            device_codename: Some(dev_codename_str),
+            threads: if cmd.device_type == ArgDeviceType::CPU {
+                Some(cmd.threads)
+            } else {
+                None
+            },
+            hashing_scheme: Some(cmd.hashing_scheme),
+            hash_table_memory_type: Some(cmd.hash_table_mem_type),
+            hash_table_memory_node: Some(cmd.hash_table_location),
+            tuple_bytes: Some(cmd.tuple_bytes),
+            relation_memory_type: Some(cmd.mem_type),
+            inner_relation_memory_location: Some(cmd.inner_rel_location),
+            outer_relation_memory_location: Some(cmd.outer_rel_location),
+            ..self.clone()
+        };
+
+        Ok(dp)
+    }
+
+    fn fill_from_hash_join_bench<T: DeviceCopy>(&self, hjb: &HashJoinBench<T>) -> DataPoint {
+        DataPoint {
+            hash_table_bytes: Some(hjb.hash_table_len * size_of::<T>()),
+            build_tuples: Some(hjb.build_relation_key.len()),
+            build_bytes: Some(hjb.build_relation_key.len() * size_of::<T>()),
+            probe_tuples: Some(hjb.probe_relation_key.len()),
+            probe_bytes: Some(hjb.probe_relation_key.len() * size_of::<T>()),
+            ..self.clone()
+        }
+    }
+}
+
 fn main() -> Result<()> {
     // Parse commandline arguments
     let cmd = CmdOpt::from_args();
@@ -252,47 +326,35 @@ fn main() -> Result<()> {
     let _context =
         Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
 
-    // Select data set
-    let (primary_key_len, foreign_key_len, data_gen) = data_gen_fn::<_>(cmd.data_set);
+    match cmd.tuple_bytes {
+        ArgTupleBytes::Bytes8 => {
+            let (hjc, dp) = args_to_bench::<i32>(&cmd, device)?;
+            measure("hash_join_kim", cmd.repeat, cmd.out_dir, dp, hjc)?;
+        }
+        ArgTupleBytes::Bytes16 => {
+            let (hjc, dp) = args_to_bench::<i64>(&cmd, device)?;
+            measure("hash_join_kim", cmd.repeat, cmd.out_dir, dp, hjc)?;
+        }
+    };
 
-    // Allocate memory for data sets
-    let mut memory: VecDeque<_> = [
-        (primary_key_len, cmd.mem_type, cmd.inner_rel_location),
-        (primary_key_len, cmd.mem_type, cmd.inner_rel_location),
-        (foreign_key_len, cmd.mem_type, cmd.outer_rel_location),
-        (foreign_key_len, cmd.mem_type, cmd.outer_rel_location),
-    ]
-    .iter()
-    .map(|&(len, mem_type, location)| {
-        let mut mem = allocator::Allocator::alloc_deref_mem(
-            ArgMemTypeHelper { mem_type, location }.into(),
-            len,
-        );
-        match (mem_type, &mut mem) {
-            (ArgMemType::NumaLazyPinned, DerefMem::NumaMem(lazy_pinned_mem)) => lazy_pinned_mem
-                .page_lock()
-                .expect("Failed to lazily pin memory"),
-            _ => {}
-        };
-        mem
-    })
-    .collect();
-    let mut rel_pk_key = memory.pop_front().ok_or_else(|| {
-        ErrorKind::LogicError("Failed to get primary key relation. Is it allocated?".to_string())
-    })?;
-    let rel_pk_payload = memory.pop_front().ok_or_else(|| {
-        ErrorKind::LogicError("Failed to get primary key relation. Is it allocated?".to_string())
-    })?;
-    let mut rel_fk_key = memory.pop_front().ok_or_else(|| {
-        ErrorKind::LogicError("Failed to get foreign key relation. Is it allocated?".to_string())
-    })?;
-    let rel_fk_payload = memory.pop_front().ok_or_else(|| {
-        ErrorKind::LogicError("Failed to get foreign key relation. Is it allocated?".to_string())
-    })?;
+    Ok(())
+}
 
-    // Generate Kim dataset
-    data_gen(rel_pk_key.as_mut_slice(), rel_fk_key.as_mut_slice())?;
-
+fn args_to_bench<T>(
+    cmd: &CmdOpt,
+    device: Device,
+) -> Result<(Box<Fn() -> Result<(f64, f64)>>, DataPoint)>
+where
+    T: Default
+        + DeviceCopy
+        + Sync
+        + Send
+        + hash_join::NullKey
+        + hash_join::CudaHashJoinable<T>
+        + hash_join::CpuHashJoinable<T>
+        + EnsurePhysicallyBacked<Item = T>
+        + num_traits::FromPrimitive,
+{
     // Convert ArgHashingScheme to HashingScheme
     let hashing_scheme = match cmd.hashing_scheme {
         ArgHashingScheme::Perfect => hash_join::HashingScheme::Perfect,
@@ -305,92 +367,65 @@ fn main() -> Result<()> {
     let warp_overcommit_factor = 2;
     let grid_overcommit_factor = 32;
     let hash_table_load_factor = 2;
-    let hash_table_elems_per_entry = 2; // FIXME: replace with an HtEntry type
 
     let block_size = BlockSize::x(warp_size * warp_overcommit_factor);
     let grid_size = GridSize::x(cuda_cores * grid_overcommit_factor);
-    let hash_table_len = primary_key_len
-        .checked_next_power_of_two()
-        .and_then(|x| x.checked_mul(hash_table_load_factor * hash_table_elems_per_entry))
-        .ok_or_else(|| {
-            ErrorKind::IntegerOverflow("Failed to compute hash table length".to_string())
-        })?;
 
-    // Construct benchmark
-    let hjb = HashJoinBench {
-        hashing_scheme,
-        hash_table_len,
-        build_relation_key: rel_pk_key.into(),
-        build_relation_payload: rel_pk_payload.into(),
-        probe_relation_key: rel_fk_key.into(),
-        probe_relation_payload: rel_fk_payload.into(),
-        build_dim: (grid_size.clone(), block_size.clone()),
-        probe_dim: (grid_size.clone(), block_size.clone()),
-    };
-
-    // Get device information
-    let dev_codename_str = match cmd.device_type {
-        ArgDeviceType::CPU => cpu_codename(),
-        ArgDeviceType::GPU => device.name()?,
-    };
-
-    // Construct data point template for CSV
-    let dp = DataPoint {
-        hostname: "",
-        device_type: cmd.device_type,
-        device_codename: dev_codename_str.as_str(),
-        threads: if cmd.device_type == ArgDeviceType::CPU {
-            Some(cmd.threads)
-        } else {
-            None
-        },
-        hashing_scheme: cmd.hashing_scheme,
-        hash_table_memory_type: cmd.hash_table_mem_type,
-        hash_table_memory_node: cmd.hash_table_location,
-        hash_table_bytes: hjb.hash_table_len * size_of::<i64>(),
-        relation_memory_type: cmd.mem_type,
-        inner_relation_memory_location: cmd.inner_rel_location,
-        outer_relation_memory_location: cmd.outer_rel_location,
-        build_tuples: hjb.build_relation_key.len(),
-        build_bytes: hjb.build_relation_key.len() * size_of::<i64>(),
-        probe_tuples: hjb.probe_relation_key.len(),
-        probe_bytes: hjb.probe_relation_key.len() * size_of::<i64>(),
-        warm_up: false,
-        build_ns: 0.0,
-        probe_ns: 0.0,
-    };
+    let mut hjb_builder = HashJoinBenchBuilder::default();
+    hjb_builder
+        .hashing_scheme(hashing_scheme)
+        .hash_table_load_factor(hash_table_load_factor)
+        .inner_location(cmd.inner_rel_location)
+        .outer_location(cmd.outer_rel_location)
+        .inner_mem_type(cmd.mem_type)
+        .outer_mem_type(cmd.mem_type);
 
     // Select the operator to run, depending on the device type
     let dev_type = cmd.device_type.clone();
     let mem_type = cmd.hash_table_mem_type;
     let location = cmd.hash_table_location;
-    let threads = cmd.threads;
-    let hjc = || match dev_type {
-        ArgDeviceType::CPU => {
-            let ht_alloc = allocator::Allocator::deref_mem_alloc_fn::<i64>(
+    let threads = cmd.threads.clone();
+
+    // Select data set
+    let (inner_relation_len, outer_relation_len, data_gen) = data_gen_fn::<_>(cmd.data_set);
+    let hjb = hjb_builder
+        .inner_len(inner_relation_len)
+        .outer_len(outer_relation_len)
+        .build_with_data_gen(data_gen)?;
+
+    // Construct data point template for CSV
+    let dp = DataPoint::new()?
+        .fill_from_cmd_options(cmd)?
+        .fill_from_hash_join_bench(&hjb);
+
+    // Create closure that wraps a hash join benchmark function
+    let hjc: Box<Fn() -> Result<(f64, f64)>> = match dev_type {
+        ArgDeviceType::CPU => Box::new(move || {
+            let ht_alloc = allocator::Allocator::deref_mem_alloc_fn::<T>(
                 ArgMemTypeHelper { mem_type, location }.into(),
             );
             hjb.cpu_hash_join(threads, ht_alloc)
-        }
-        ArgDeviceType::GPU => {
-            let ht_alloc = allocator::Allocator::mem_alloc_fn::<i64>(
+        }),
+        ArgDeviceType::GPU => Box::new(move || {
+            let ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
                 ArgMemTypeHelper { mem_type, location }.into(),
             );
-            hjb.cuda_hash_join(ht_alloc)
-        }
+            hjb.cuda_hash_join(
+                ht_alloc,
+                (grid_size.clone(), block_size.clone()),
+                (grid_size.clone(), block_size.clone()),
+            )
+        }),
     };
 
-    // Run experiment
-    measure("hash_join_kim", cmd.repeat, cmd.out_dir, dp, hjc)
-        .expect("Failure: hash join benchmark");
-    Ok(())
+    Ok((hjc, dp))
 }
 
-fn data_gen_fn<T>(
-    description: ArgDataSet,
-) -> (usize, usize, Box<Fn(&mut [T], &mut [T]) -> Result<()>>)
+type DataGenFn<T> = Box<Fn(&mut [T], &mut [T]) -> Result<()>>;
+
+fn data_gen_fn<T>(description: ArgDataSet) -> (usize, usize, DataGenFn<T>)
 where
-    T: Copy + num::FromPrimitive,
+    T: Copy + num_traits::FromPrimitive,
 {
     match description {
         ArgDataSet::Blanas => (
@@ -417,20 +452,20 @@ where
     }
 }
 
-fn measure<F>(name: &str, repeat: u32, out_dir: PathBuf, template: DataPoint, func: F) -> Result<()>
-where
-    F: Fn() -> Result<(f64, f64)>,
-{
-    let hostname = &hostname::get_hostname().ok_or_else(|| "Couldn't get hostname")?;
-
+fn measure(
+    name: &str,
+    repeat: u32,
+    out_dir: PathBuf,
+    template: DataPoint,
+    func: Box<Fn() -> Result<(f64, f64)>>,
+) -> Result<()> {
     let measurements = (0..repeat)
         .map(|_| {
             func().map(|(build_ns, probe_ns)| DataPoint {
-                hostname,
-                warm_up: false,
-                build_ns,
-                probe_ns,
-                ..template
+                warm_up: Some(false),
+                build_ns: Some(build_ns),
+                probe_ns: Some(probe_ns),
+                ..template.clone()
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -458,12 +493,17 @@ where
 
     let time_stats: Estimator = measurements
         .iter()
-        .map(|row| row.probe_ns / 10_f64.powf(6.0))
+        .filter_map(|row| row.probe_ns)
+        .map(|probe_ns| probe_ns / 10_f64.powf(6.0))
         .collect();
 
     let tput_stats: Estimator = measurements
         .iter()
-        .map(|row| (row.probe_bytes as f64, row.probe_ns))
+        .filter_map(|row| {
+            row.probe_bytes
+                .and_then(|bytes| row.probe_ns.and_then(|ns| Some((bytes, ns))))
+        })
+        .map(|(probe_bytes, probe_ns)| (probe_bytes as f64, probe_ns))
         .map(|(bytes, ms)| bytes / ms / 2.0_f64.powf(30.0) * 10.0_f64.powf(9.0))
         .collect();
 
@@ -494,20 +534,174 @@ Max:           {:6.2}          {:6.2}"#,
     Ok(())
 }
 
-#[allow(dead_code)]
-struct HashJoinBench {
+struct HashJoinBench<T: DeviceCopy> {
     hashing_scheme: hash_join::HashingScheme,
     hash_table_len: usize,
-    build_relation_key: Mem<i64>,
-    build_relation_payload: Mem<i64>,
-    probe_relation_key: Mem<i64>,
-    probe_relation_payload: Mem<i64>,
-    build_dim: (GridSize, BlockSize),
-    probe_dim: (GridSize, BlockSize),
+    build_relation_key: Mem<T>,
+    build_relation_payload: Mem<T>,
+    probe_relation_key: Mem<T>,
+    probe_relation_payload: Mem<T>,
 }
 
-impl HashJoinBench {
-    fn cuda_hash_join(&self, hash_table_alloc: allocator::MemAllocFn<i64>) -> Result<(f64, f64)> {
+struct HashJoinBenchBuilder {
+    hash_table_load_factor: usize,
+    hash_table_elems_per_entry: usize,
+    inner_len: usize,
+    outer_len: usize,
+    inner_location: u16,
+    outer_location: u16,
+    inner_mem_type: ArgMemType,
+    outer_mem_type: ArgMemType,
+    hashing_scheme: hash_join::HashingScheme,
+}
+
+impl Default for HashJoinBenchBuilder {
+    fn default() -> HashJoinBenchBuilder {
+        HashJoinBenchBuilder {
+            hash_table_load_factor: 2,
+            hash_table_elems_per_entry: 2, // FIXME: replace constant with an HtEntry type
+            inner_len: 1,
+            outer_len: 1,
+            inner_location: 0,
+            outer_location: 0,
+            inner_mem_type: ArgMemType::System,
+            outer_mem_type: ArgMemType::System,
+            hashing_scheme: hash_join::HashingScheme::LinearProbing,
+        }
+    }
+}
+
+impl HashJoinBenchBuilder {
+    fn hash_table_load_factor(&mut self, hash_table_load_factor: usize) -> &mut Self {
+        self.hash_table_load_factor = hash_table_load_factor;
+        self
+    }
+
+    fn inner_len(&mut self, inner_len: usize) -> &mut Self {
+        self.inner_len = inner_len;
+        self
+    }
+
+    fn outer_len(&mut self, outer_len: usize) -> &mut Self {
+        self.outer_len = outer_len;
+        self
+    }
+
+    fn inner_location(&mut self, inner_location: u16) -> &mut Self {
+        self.inner_location = inner_location;
+        self
+    }
+
+    fn outer_location(&mut self, outer_location: u16) -> &mut Self {
+        self.outer_location = outer_location;
+        self
+    }
+
+    fn inner_mem_type(&mut self, inner_mem_type: ArgMemType) -> &mut Self {
+        self.inner_mem_type = inner_mem_type;
+        self
+    }
+
+    fn outer_mem_type(&mut self, outer_mem_type: ArgMemType) -> &mut Self {
+        self.outer_mem_type = outer_mem_type;
+        self
+    }
+
+    fn hashing_scheme(&mut self, hashing_scheme: hash_join::HashingScheme) -> &mut Self {
+        self.hashing_scheme = hashing_scheme;
+        self
+    }
+
+    fn build_with_data_gen<T: Copy + Default + DeviceCopy>(
+        &mut self,
+        data_gen_fn: DataGenFn<T>,
+    ) -> Result<HashJoinBench<T>> {
+        // Allocate memory for data sets
+        let mut memory: VecDeque<_> = [
+            (self.inner_len, self.inner_mem_type, self.inner_location),
+            (self.inner_len, self.inner_mem_type, self.inner_location),
+            (self.outer_len, self.outer_mem_type, self.outer_location),
+            (self.outer_len, self.outer_mem_type, self.outer_location),
+        ]
+        .iter()
+        .map(|&(len, mem_type, location)| {
+            let mut mem = allocator::Allocator::alloc_deref_mem(
+                ArgMemTypeHelper { mem_type, location }.into(),
+                len,
+            );
+            match (mem_type, &mut mem) {
+                (ArgMemType::NumaLazyPinned, DerefMem::NumaMem(lazy_pinned_mem)) => lazy_pinned_mem
+                    .page_lock()
+                    .expect("Failed to lazily pin memory"),
+                _ => {}
+            };
+            mem
+        })
+        .collect();
+
+        let mut inner_key = memory.pop_front().ok_or_else(|| {
+            ErrorKind::LogicError(
+                "Failed to get primary key relation. Is it allocated?".to_string(),
+            )
+        })?;
+        let inner_payload = memory.pop_front().ok_or_else(|| {
+            ErrorKind::LogicError(
+                "Failed to get primary key relation. Is it allocated?".to_string(),
+            )
+        })?;
+        let mut outer_key = memory.pop_front().ok_or_else(|| {
+            ErrorKind::LogicError(
+                "Failed to get foreign key relation. Is it allocated?".to_string(),
+            )
+        })?;
+        let outer_payload = memory.pop_front().ok_or_else(|| {
+            ErrorKind::LogicError(
+                "Failed to get foreign key relation. Is it allocated?".to_string(),
+            )
+        })?;
+
+        // Generate dataset
+        data_gen_fn(inner_key.as_mut_slice(), outer_key.as_mut_slice())?;
+
+        // Calculate hash table length
+        let hash_table_len = self
+            .inner_len
+            .checked_next_power_of_two()
+            .and_then(|x| {
+                x.checked_mul(self.hash_table_load_factor * self.hash_table_elems_per_entry)
+            })
+            .ok_or_else(|| {
+                ErrorKind::IntegerOverflow("Failed to compute hash table length".to_string())
+            })?;
+
+        Ok(HashJoinBench {
+            hashing_scheme: self.hashing_scheme,
+            hash_table_len: hash_table_len,
+            build_relation_key: inner_key.into(),
+            build_relation_payload: inner_payload.into(),
+            probe_relation_key: outer_key.into(),
+            probe_relation_payload: outer_payload.into(),
+        })
+    }
+}
+
+impl<T> HashJoinBench<T>
+where
+    T: Default
+        + DeviceCopy
+        + Sync
+        + Send
+        + hash_join::NullKey
+        + hash_join::CudaHashJoinable<T>
+        + hash_join::CpuHashJoinable<T>
+        + EnsurePhysicallyBacked<Item = T>,
+{
+    fn cuda_hash_join(
+        &self,
+        hash_table_alloc: allocator::MemAllocFn<T>,
+        build_dim: (GridSize, BlockSize),
+        probe_dim: (GridSize, BlockSize),
+    ) -> Result<(f64, f64)> {
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
 
         // FIXME: specify load factor as argument
@@ -515,7 +709,7 @@ impl HashJoinBench {
         let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
         let mut result_counts = allocator::Allocator::alloc_mem(
             allocator::MemType::CudaUniMem,
-            (self.probe_dim.0.x * self.probe_dim.1.x) as usize,
+            (probe_dim.0.x * probe_dim.1.x) as usize,
         );
 
         // Initialize counts
@@ -543,10 +737,10 @@ impl HashJoinBench {
 
         stream.synchronize()?;
 
-        let mut hj_op = hash_join::CudaHashJoinBuilder::default()
+        let mut hj_op = hash_join::CudaHashJoinBuilder::<T>::default()
             .hashing_scheme(self.hashing_scheme)
-            .build_dim(self.build_dim.0.clone(), self.build_dim.1.clone())
-            .probe_dim(self.probe_dim.0.clone(), self.probe_dim.1.clone())
+            .build_dim(build_dim.0.clone(), build_dim.1.clone())
+            .probe_dim(probe_dim.0.clone(), probe_dim.1.clone())
             .hash_table(hash_table)
             .build()?;
 
@@ -586,17 +780,17 @@ impl HashJoinBench {
     fn cpu_hash_join(
         &self,
         threads: usize,
-        hash_table_alloc: allocator::DerefMemAllocFn<i64>,
+        hash_table_alloc: allocator::DerefMemAllocFn<T>,
     ) -> Result<(f64, f64)> {
         let mut hash_table_mem = hash_table_alloc(self.hash_table_len);
-        ensure_physically_backed(&mut hash_table_mem);
+        T::ensure_physically_backed(hash_table_mem.as_mut_slice());
         let hash_table = hash_join::HashTable::new_on_cpu(hash_table_mem, self.hash_table_len)?;
         let mut result_counts = vec![0; threads];
 
         let thread_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
-            .expect("Couldn't create thread pool");
+            .map_err(|_| ErrorKind::RuntimeError("Failed to create thread pool".to_string()))?;
         let build_chunk_size = (self.build_relation_key.len() + threads - 1) / threads;
         let probe_chunk_size = (self.probe_relation_key.len() + threads - 1) / threads;
         let build_rel_chunks: Vec<_> = match self.build_relation_key {

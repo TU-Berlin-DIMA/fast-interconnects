@@ -29,6 +29,10 @@ error_chain! {
             description("Logic error")
             display("Aborting with: {}", msg)
         }
+        RuntimeError(msg: String) {
+            description("Runtime error")
+            display("Aborting with: {}", msg)
+        }
     }
 
     foreign_links {

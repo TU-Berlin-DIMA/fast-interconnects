@@ -18,7 +18,7 @@ use std::slice;
 use std::u8;
 
 use super::ProcessorCache;
-use crate::error::{Error, Result};
+use crate::error::{Error, ErrorKind, Result, ResultExt};
 use crate::runtime::cuda_wrapper::{host_register, host_unregister};
 use crate::runtime::memory::PageLock;
 
@@ -105,7 +105,11 @@ impl<T> DerefMut for NumaMemory<T> {
 
 impl<T> PageLock for NumaMemory<T> {
     fn page_lock(&mut self) -> Result<()> {
-        unsafe { host_register(self.as_mut_slice())? };
+        unsafe {
+            host_register(self.as_mut_slice()).chain_err(|| {
+                ErrorKind::RuntimeError("Failed to page-lock NUMA memory region".to_string())
+            })?
+        };
         self.is_page_locked = true;
         Ok(())
     }

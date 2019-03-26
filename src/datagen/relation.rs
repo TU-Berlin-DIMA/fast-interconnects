@@ -12,11 +12,11 @@
 //!
 //! The generators produce relation attributes following a random distribution.
 
-extern crate num;
+extern crate num_traits;
 extern crate rand;
 extern crate zipf;
 
-use self::num::FromPrimitive;
+use self::num_traits::FromPrimitive;
 
 use self::rand::distributions::uniform::SampleUniform;
 use self::rand::distributions::{Distribution, Uniform};

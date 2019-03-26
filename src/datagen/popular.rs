@@ -11,9 +11,9 @@
 //! A collection of data set generators for data sets frequently found in
 //! published papers.
 
-extern crate num;
+extern crate num_traits;
 
-use self::num::FromPrimitive;
+use self::num_traits::FromPrimitive;
 
 use super::relation::UniformRelation;
 
