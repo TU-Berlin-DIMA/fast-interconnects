@@ -518,8 +518,9 @@ impl HashJoinBench {
         start_event.record(&stream)?;
         hj_op.build(&self.build_relation_key, &self.build_relation_payload, &stream)?;
 
-        stop_event.record(&stream).and_then(|e| e.synchronize())?;
-        let build_millis = stop_event.elapsed_time(&start_event)?;
+        stop_event.record(&stream)?;
+        stop_event.synchronize()?;
+        let build_millis = stop_event.elapsed_time_f32(&start_event)?;
 
         start_event.record(&stream)?;
         hj_op.probe_count(
@@ -529,8 +530,9 @@ impl HashJoinBench {
             &stream,
         )?;
 
-        stop_event.record(&stream).and_then(|e| e.synchronize())?;
-        let probe_millis = stop_event.elapsed_time(&start_event)?;
+        stop_event.record(&stream)?;
+        stop_event.synchronize()?;
+        let probe_millis = stop_event.elapsed_time_f32(&start_event)?;
 
         stream.synchronize()?;
         Ok((
