@@ -17,6 +17,7 @@ extern crate csv;
 #[macro_use]
 extern crate error_chain;
 extern crate hostname;
+extern crate num;
 extern crate numa_gpu;
 extern crate rayon;
 #[macro_use]
@@ -27,33 +28,34 @@ extern crate structopt;
 use average::{Estimate, Max, Min, Quantile, Variance};
 
 use numa_gpu::datagen;
-use numa_gpu::error::{Result, ErrorKind};
+use numa_gpu::error::{ErrorKind, Result};
 use numa_gpu::operators::hash_join;
 use numa_gpu::runtime::allocator;
+use numa_gpu::runtime::backend::CudaDeviceInfo;
 use numa_gpu::runtime::backend::*;
 use numa_gpu::runtime::cuda_wrapper::prefetch_async;
 use numa_gpu::runtime::memory::*;
 use numa_gpu::runtime::utils::ensure_physically_backed;
-use numa_gpu::runtime::backend::CudaDeviceInfo;
 
-use rustacuda::prelude::*;
 use rustacuda::device::DeviceAttribute;
-use rustacuda::function::{GridSize, BlockSize};
 use rustacuda::event::{Event, EventFlags};
+use rustacuda::function::{BlockSize, GridSize};
+use rustacuda::prelude::*;
 
+use std::collections::vec_deque::VecDeque;
 use std::mem::size_of;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use std::collections::vec_deque::VecDeque;
 
 use structopt::StructOpt;
 
 arg_enum! {
     #[derive(Copy, Clone, Debug, PartialEq)]
     enum ArgDataSet {
-        Alb,
+        Blanas,
         Kim,
+        Test,
     }
 }
 
@@ -185,15 +187,17 @@ struct CmdOpt {
     outer_rel_location: u16,
 
     /// Use a pre-defined data set.
-    //   alb: Albutiu et al. Massively parallel sort-merge joins"
+    //   blanas: Blanas et al. "Main memory hash join algorithms for multi-core CPUs"
     //   kim: Kim et al. "Sort vs. hash revisited"
+    //   test: A small data set for testing on the laptop
     #[structopt(
         short = "s",
         long = "data-set",
+        default_value = "Test",
         raw(possible_values = "&ArgDataSet::variants()", case_insensitive = "true")
     )]
     #[allow(dead_code)]
-    data_set: Option<ArgDataSet>,
+    data_set: ArgDataSet,
 
     /// Type of the device.
     #[structopt(
@@ -245,30 +249,18 @@ fn main() -> Result<()> {
     // Initialize CUDA
     rustacuda::init(CudaFlags::empty())?;
     let device = Device::get_device(cmd.device_id.into())?;
-    let _context = Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
+    let _context =
+        Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
+
+    // Select data set
+    let (primary_key_len, foreign_key_len, data_gen) = data_gen_fn::<_>(cmd.data_set);
 
     // Allocate memory for data sets
     let mut memory: VecDeque<_> = [
-        (
-            datagen::popular::Kim::primary_key_len(),
-            cmd.mem_type,
-            cmd.inner_rel_location,
-        ),
-        (
-            datagen::popular::Kim::primary_key_len(),
-            cmd.mem_type,
-            cmd.inner_rel_location,
-        ),
-        (
-            datagen::popular::Kim::foreign_key_len(),
-            cmd.mem_type,
-            cmd.outer_rel_location,
-        ),
-        (
-            datagen::popular::Kim::foreign_key_len(),
-            cmd.mem_type,
-            cmd.outer_rel_location,
-        ),
+        (primary_key_len, cmd.mem_type, cmd.inner_rel_location),
+        (primary_key_len, cmd.mem_type, cmd.inner_rel_location),
+        (foreign_key_len, cmd.mem_type, cmd.outer_rel_location),
+        (foreign_key_len, cmd.mem_type, cmd.outer_rel_location),
     ]
     .iter()
     .map(|&(len, mem_type, location)| {
@@ -285,14 +277,21 @@ fn main() -> Result<()> {
         mem
     })
     .collect();
-    let mut rel_pk_key = memory.pop_front().ok_or_else(|| ErrorKind::LogicError("Failed to get primary key relation. Is it allocated?".to_string()))?;
-    let rel_pk_payload = memory.pop_front().ok_or_else(|| ErrorKind::LogicError("Failed to get primary key relation. Is it allocated?".to_string()))?;
-    let mut rel_fk_key = memory.pop_front().ok_or_else(|| ErrorKind::LogicError("Failed to get foreign key relation. Is it allocated?".to_string()))?;
-    let rel_fk_payload = memory.pop_front().ok_or_else(|| ErrorKind::LogicError("Failed to get foreign key relation. Is it allocated?".to_string()))?;
+    let mut rel_pk_key = memory.pop_front().ok_or_else(|| {
+        ErrorKind::LogicError("Failed to get primary key relation. Is it allocated?".to_string())
+    })?;
+    let rel_pk_payload = memory.pop_front().ok_or_else(|| {
+        ErrorKind::LogicError("Failed to get primary key relation. Is it allocated?".to_string())
+    })?;
+    let mut rel_fk_key = memory.pop_front().ok_or_else(|| {
+        ErrorKind::LogicError("Failed to get foreign key relation. Is it allocated?".to_string())
+    })?;
+    let rel_fk_payload = memory.pop_front().ok_or_else(|| {
+        ErrorKind::LogicError("Failed to get foreign key relation. Is it allocated?".to_string())
+    })?;
 
     // Generate Kim dataset
-    datagen::popular::Kim::gen(rel_pk_key.as_mut_slice(), rel_fk_key.as_mut_slice())
-        .expect("Failed to generate Kim data set");
+    data_gen(rel_pk_key.as_mut_slice(), rel_fk_key.as_mut_slice())?;
 
     // Convert ArgHashingScheme to HashingScheme
     let hashing_scheme = match cmd.hashing_scheme {
@@ -305,14 +304,22 @@ fn main() -> Result<()> {
     let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
     let warp_overcommit_factor = 2;
     let grid_overcommit_factor = 32;
+    let hash_table_load_factor = 2;
+    let hash_table_elems_per_entry = 2; // FIXME: replace with an HtEntry type
 
     let block_size = BlockSize::x(warp_size * warp_overcommit_factor);
     let grid_size = GridSize::x(cuda_cores * grid_overcommit_factor);
+    let hash_table_len = primary_key_len
+        .checked_next_power_of_two()
+        .and_then(|x| x.checked_mul(hash_table_load_factor * hash_table_elems_per_entry))
+        .ok_or_else(|| {
+            ErrorKind::IntegerOverflow("Failed to compute hash table length".to_string())
+        })?;
 
     // Construct benchmark
     let hjb = HashJoinBench {
         hashing_scheme,
-        hash_table_len: 4 * 128 * 2_usize.pow(20),
+        hash_table_len,
         build_relation_key: rel_pk_key.into(),
         build_relation_payload: rel_pk_payload.into(),
         probe_relation_key: rel_fk_key.into(),
@@ -377,6 +384,37 @@ fn main() -> Result<()> {
     measure("hash_join_kim", cmd.repeat, cmd.out_dir, dp, hjc)
         .expect("Failure: hash join benchmark");
     Ok(())
+}
+
+fn data_gen_fn<T>(
+    description: ArgDataSet,
+) -> (usize, usize, Box<Fn(&mut [T], &mut [T]) -> Result<()>>)
+where
+    T: Copy + num::FromPrimitive,
+{
+    match description {
+        ArgDataSet::Blanas => (
+            datagen::popular::Blanas::primary_key_len(),
+            datagen::popular::Blanas::foreign_key_len(),
+            Box::new(|pk_rel, fk_rel| datagen::popular::Blanas::gen(pk_rel, fk_rel)),
+        ),
+        ArgDataSet::Kim => (
+            datagen::popular::Kim::primary_key_len(),
+            datagen::popular::Kim::foreign_key_len(),
+            Box::new(|pk_rel, fk_rel| datagen::popular::Kim::gen(pk_rel, fk_rel)),
+        ),
+        ArgDataSet::Test => {
+            let gen = |pk_rel: &mut [_], fk_rel: &mut [_]| {
+                datagen::relation::UniformRelation::gen_primary_key(pk_rel)?;
+                datagen::relation::UniformRelation::gen_foreign_key_from_primary_key(
+                    fk_rel, pk_rel,
+                );
+                Ok(())
+            };
+
+            (1000, 1000, Box::new(gen))
+        }
+    }
 }
 
 fn measure<F>(name: &str, repeat: u32, out_dir: PathBuf, template: DataPoint, func: F) -> Result<()>
@@ -516,7 +554,11 @@ impl HashJoinBench {
         let stop_event = Event::new(EventFlags::DEFAULT)?;
 
         start_event.record(&stream)?;
-        hj_op.build(&self.build_relation_key, &self.build_relation_payload, &stream)?;
+        hj_op.build(
+            &self.build_relation_key,
+            &self.build_relation_payload,
+            &stream,
+        )?;
 
         stop_event.record(&stream)?;
         stop_event.synchronize()?;
