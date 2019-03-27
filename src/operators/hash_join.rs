@@ -13,9 +13,9 @@ extern crate rustacuda;
 
 use cuda_sys::cuda::cuMemsetD32_v2;
 
+use self::rustacuda::function::{BlockSize, GridSize};
 use self::rustacuda::memory::UnifiedBuffer;
 use self::rustacuda::prelude::*;
-use self::rustacuda::function::{BlockSize, GridSize};
 
 use std::ffi::CString;
 use std::mem::size_of;
@@ -126,24 +126,28 @@ impl CudaHashJoin {
         let module = &self.ops;
 
         match &self.hashing_scheme {
-            HashingScheme::Perfect => unsafe{ launch!(
-                module.gpu_ht_build_perfect<<<grid, block, 0, stream>>>(
-                        *self.hash_table.mem.as_mut_ptr(),
-                        hash_table_size,
-                        *join_attr.as_ptr(),
-                        *payload_attr.as_ptr(),
-                        join_attr_len
-                    )
-            )? },
-            HashingScheme::LinearProbing => unsafe { launch!(
-                module.gpu_ht_build_linearprobing<<<grid, block, 0, stream>>>(
-                        *self.hash_table.mem.as_mut_ptr(),
-                        hash_table_size,
-                        *join_attr.as_ptr(),
-                        *payload_attr.as_ptr(),
-                        join_attr_len
-                    )
-            )? },
+            HashingScheme::Perfect => unsafe {
+                launch!(
+                    module.gpu_ht_build_perfect<<<grid, block, 0, stream>>>(
+                            *self.hash_table.mem.as_mut_ptr(),
+                            hash_table_size,
+                            *join_attr.as_ptr(),
+                            *payload_attr.as_ptr(),
+                            join_attr_len
+                        )
+                )?
+            },
+            HashingScheme::LinearProbing => unsafe {
+                launch!(
+                    module.gpu_ht_build_linearprobing<<<grid, block, 0, stream>>>(
+                            *self.hash_table.mem.as_mut_ptr(),
+                            hash_table_size,
+                            *join_attr.as_ptr(),
+                            *payload_attr.as_ptr(),
+                            join_attr_len
+                        )
+                )?
+            },
         };
 
         Ok(self)
@@ -171,26 +175,30 @@ impl CudaHashJoin {
         let module = &self.ops;
 
         match &self.hashing_scheme {
-            HashingScheme::Perfect => unsafe { launch!(
-                module.gpu_ht_probe_aggregate_perfect<<<grid, block, 0, stream>>>(
-                        *self.hash_table.mem.as_mut_ptr(),
-                        hash_table_size,
-                        *join_attr.as_ptr(),
-                        *payload_attr.as_ptr(),
-                        join_attr_len,
-                        *result_set.as_mut_ptr()
-                    )
-            )? },
-            HashingScheme::LinearProbing => unsafe { launch!(
-                module.gpu_ht_probe_aggregate_linearprobing<<<grid, block, 0, stream>>>(
-                        *self.hash_table.mem.as_mut_ptr(),
-                        hash_table_size,
-                        *join_attr.as_ptr(),
-                        *payload_attr.as_ptr(),
-                        join_attr_len,
-                        *result_set.as_mut_ptr()
-                    )
-            )? },
+            HashingScheme::Perfect => unsafe {
+                launch!(
+                    module.gpu_ht_probe_aggregate_perfect<<<grid, block, 0, stream>>>(
+                            *self.hash_table.mem.as_mut_ptr(),
+                            hash_table_size,
+                            *join_attr.as_ptr(),
+                            *payload_attr.as_ptr(),
+                            join_attr_len,
+                            *result_set.as_mut_ptr()
+                        )
+                )?
+            },
+            HashingScheme::LinearProbing => unsafe {
+                launch!(
+                    module.gpu_ht_probe_aggregate_linearprobing<<<grid, block, 0, stream>>>(
+                            *self.hash_table.mem.as_mut_ptr(),
+                            hash_table_size,
+                            *join_attr.as_ptr(),
+                            *payload_attr.as_ptr(),
+                            join_attr_len,
+                            *result_set.as_mut_ptr()
+                        )
+                )?
+            },
         };
 
         Ok(())

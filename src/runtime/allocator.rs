@@ -9,7 +9,7 @@
 
 extern crate rustacuda;
 
-use self::rustacuda::memory::{DeviceBuffer, UnifiedBuffer, DeviceCopy, LockedBuffer};
+use self::rustacuda::memory::{DeviceBuffer, DeviceCopy, LockedBuffer, UnifiedBuffer};
 
 use std::default::Default;
 use std::mem::size_of;
@@ -140,9 +140,9 @@ impl Allocator {
     fn alloc_cuda_pinned<T: DeviceCopy>(len: usize) -> DerefMem<T> {
         unsafe {
             DerefMem::CudaPinnedMem(LockedBuffer::<T>::uninitialized(len).expect(&format!(
-                        "Failed dot allocate {} bytes of CUDA pinned memory",
-                        len * size_of::<T>()
-                        )))
+                "Failed dot allocate {} bytes of CUDA pinned memory",
+                len * size_of::<T>()
+            )))
         }
     }
 
@@ -154,9 +154,9 @@ impl Allocator {
     fn alloc_cuda_unified<T: Clone + Default + DeviceCopy>(len: usize) -> DerefMem<T> {
         unsafe {
             DerefMem::CudaUniMem(UnifiedBuffer::<T>::uninitialized(len).expect(&format!(
-                        "Failed dot allocate {} bytes of CUDA unified memory",
-                        len * size_of::<T>()
-                        )))
+                "Failed dot allocate {} bytes of CUDA unified memory",
+                len * size_of::<T>()
+            )))
         }
     }
 
@@ -171,9 +171,9 @@ impl Allocator {
     fn alloc_cuda_device<T: DeviceCopy>(len: usize) -> Mem<T> {
         unsafe {
             Mem::CudaDevMem(DeviceBuffer::<T>::uninitialized(len).expect(&format!(
-                        "Failed to allocate {} bytes of CUDA device memory",
-                        len * size_of::<T>()
-                        )))
+                "Failed to allocate {} bytes of CUDA device memory",
+                len * size_of::<T>()
+            )))
         }
     }
 }

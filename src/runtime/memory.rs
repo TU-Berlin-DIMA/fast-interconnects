@@ -10,7 +10,7 @@
 
 extern crate rustacuda;
 
-use self::rustacuda::memory::{DeviceBuffer, UnifiedBuffer, DeviceCopy, LockedBuffer};
+use self::rustacuda::memory::{DeviceBuffer, DeviceCopy, LockedBuffer, UnifiedBuffer};
 
 use std::ops::Deref;
 use std::ops::DerefMut;
