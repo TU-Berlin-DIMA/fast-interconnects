@@ -129,10 +129,10 @@ impl CudaHashJoin {
             HashingScheme::Perfect => unsafe {
                 launch!(
                     module.gpu_ht_build_perfect<<<grid, block, 0, stream>>>(
-                            *self.hash_table.mem.as_mut_ptr(),
+                            self.hash_table.mem.as_launchable_mut_ptr(),
                             hash_table_size,
-                            *join_attr.as_ptr(),
-                            *payload_attr.as_ptr(),
+                            join_attr.as_launchable_ptr(),
+                            payload_attr.as_launchable_ptr(),
                             join_attr_len
                         )
                 )?
@@ -140,10 +140,10 @@ impl CudaHashJoin {
             HashingScheme::LinearProbing => unsafe {
                 launch!(
                     module.gpu_ht_build_linearprobing<<<grid, block, 0, stream>>>(
-                            *self.hash_table.mem.as_mut_ptr(),
+                            self.hash_table.mem.as_launchable_mut_ptr(),
                             hash_table_size,
-                            *join_attr.as_ptr(),
-                            *payload_attr.as_ptr(),
+                            join_attr.as_launchable_ptr(),
+                            payload_attr.as_launchable_ptr(),
                             join_attr_len
                         )
                 )?
@@ -178,24 +178,24 @@ impl CudaHashJoin {
             HashingScheme::Perfect => unsafe {
                 launch!(
                     module.gpu_ht_probe_aggregate_perfect<<<grid, block, 0, stream>>>(
-                            *self.hash_table.mem.as_mut_ptr(),
+                            self.hash_table.mem.as_launchable_ptr(),
                             hash_table_size,
-                            *join_attr.as_ptr(),
-                            *payload_attr.as_ptr(),
+                            join_attr.as_launchable_ptr(),
+                            payload_attr.as_launchable_ptr(),
                             join_attr_len,
-                            *result_set.as_mut_ptr()
+                            result_set.as_launchable_mut_ptr()
                         )
                 )?
             },
             HashingScheme::LinearProbing => unsafe {
                 launch!(
                     module.gpu_ht_probe_aggregate_linearprobing<<<grid, block, 0, stream>>>(
-                            *self.hash_table.mem.as_mut_ptr(),
+                            self.hash_table.mem.as_launchable_ptr(),
                             hash_table_size,
-                            *join_attr.as_ptr(),
-                            *payload_attr.as_ptr(),
+                            join_attr.as_launchable_ptr(),
+                            payload_attr.as_launchable_ptr(),
                             join_attr_len,
-                            *result_set.as_mut_ptr()
+                            result_set.as_launchable_mut_ptr()
                         )
                 )?
             },
