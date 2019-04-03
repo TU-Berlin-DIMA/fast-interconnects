@@ -171,20 +171,20 @@ impl NullKey for i64 {
 /// support [impl specializations with default implementations](https://github.com/rust-lang/rfcs/blob/master/text/1210-impl-specialization.md).
 /// [Rust issue #31844](https://github.com/rust-lang/rust/issues/31844) tracks
 /// the RFC.
-pub trait CudaHashJoinable<T: DeviceCopy + NullKey> {
-    /// Implements `CudaHashJoin::build` for the type `T`.
+pub trait CudaHashJoinable: DeviceCopy + NullKey {
+    /// Implements `CudaHashJoin::build` for the implementing type.
     fn build_impl(
-        hj: &mut CudaHashJoin<T>,
-        join_attr: &Mem<T>,
-        payload_attr: &Mem<T>,
+        hj: &mut CudaHashJoin<Self>,
+        join_attr: &Mem<Self>,
+        payload_attr: &Mem<Self>,
         stream: &Stream,
     ) -> Result<()>;
 
-    /// Implements `CudaHashJoin::probe_count` for the type `T`.
+    /// Implements `CudaHashJoin::probe_count` for the implementing type.
     fn probe_count_impl(
-        hj: &mut CudaHashJoin<T>,
-        join_attr: &Mem<T>,
-        payload_attr: &Mem<T>,
+        hj: &mut CudaHashJoin<Self>,
+        join_attr: &Mem<Self>,
+        payload_attr: &Mem<Self>,
         result_set: &mut Mem<u64>,
         stream: &Stream,
     ) -> Result<()>;
@@ -194,15 +194,19 @@ pub trait CudaHashJoinable<T: DeviceCopy + NullKey> {
 /// `CpuHashJoin`.
 ///
 /// See `CudaHashJoinable` for more details on the design decision.
-pub trait CpuHashJoinable<T: DeviceCopy + NullKey> {
-    /// Implements `CpuHashJoin::build` for the type `T`.
-    fn build_impl(hj: &mut CpuHashJoin<T>, join_attr: &[T], payload_attr: &[T]) -> Result<()>;
+pub trait CpuHashJoinable: DeviceCopy + NullKey {
+    /// Implements `CpuHashJoin::build` for the implementing type.
+    fn build_impl(
+        hj: &mut CpuHashJoin<Self>,
+        join_attr: &[Self],
+        payload_attr: &[Self],
+    ) -> Result<()>;
 
-    /// Implements `CpuHashJoin::probe_count` for the type `T`.
+    /// Implements `CpuHashJoin::probe_count` for the implementing type.
     fn probe_count_impl(
-        hj: &mut CpuHashJoin<T>,
-        join_attr: &[T],
-        payload_attr: &[T],
+        hj: &mut CpuHashJoin<Self>,
+        join_attr: &[Self],
+        payload_attr: &[Self],
         join_count: &mut u64,
     ) -> Result<()>;
 }
@@ -263,7 +267,7 @@ pub struct CpuHashJoinBuilder<T: DeviceCopy + NullKey> {
 
 impl<T> CudaHashJoin<T>
 where
-    T: DeviceCopy + NullKey + CudaHashJoinable<T>,
+    T: DeviceCopy + NullKey + CudaHashJoinable,
 {
     /// Build a hash table on the GPU.
     pub fn build(
@@ -294,7 +298,7 @@ where
 
 impl<T> CpuHashJoin<T>
 where
-    T: DeviceCopy + NullKey + CpuHashJoinable<T>,
+    T: DeviceCopy + NullKey + CpuHashJoinable,
 {
     /// Build a hash table on the CPU.
     pub fn build(&mut self, join_attr: &[T], payload_attr: &[T]) -> Result<()> {
@@ -322,7 +326,7 @@ where
 /// by the `Suffix` parameter.
 macro_rules! impl_cuda_hash_join_for_type {
     ($Type:ty, $Suffix:expr) => {
-        impl CudaHashJoinable<$Type> for $Type {
+        impl CudaHashJoinable for $Type {
             paste::item!{
                 fn build_impl(
                     hj: &mut CudaHashJoin<$Type>,
@@ -430,7 +434,7 @@ impl_cuda_hash_join_for_type!(i64, int64);
 /// by the `Suffix` parameter.
 macro_rules! impl_cpu_hash_join_for_type {
     ($Type:ty, $Suffix:expr) => {
-        impl CpuHashJoinable<$Type> for $Type {
+        impl CpuHashJoinable for $Type {
             paste::item!{
                 fn build_impl(hj: &mut CpuHashJoin<$Type>, join_attr: &[$Type], payload_attr: &[$Type]) -> Result<()> {
                     ensure!(

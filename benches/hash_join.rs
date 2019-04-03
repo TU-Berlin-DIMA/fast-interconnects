@@ -350,9 +350,9 @@ where
         + Sync
         + Send
         + hash_join::NullKey
-        + hash_join::CudaHashJoinable<T>
-        + hash_join::CpuHashJoinable<T>
-        + EnsurePhysicallyBacked<Item = T>
+        + hash_join::CudaHashJoinable
+        + hash_join::CpuHashJoinable
+        + EnsurePhysicallyBacked
         + num_traits::FromPrimitive,
 {
     // Convert ArgHashingScheme to HashingScheme
@@ -692,9 +692,9 @@ where
         + Sync
         + Send
         + hash_join::NullKey
-        + hash_join::CudaHashJoinable<T>
-        + hash_join::CpuHashJoinable<T>
-        + EnsurePhysicallyBacked<Item = T>,
+        + hash_join::CudaHashJoinable
+        + hash_join::CpuHashJoinable
+        + EnsurePhysicallyBacked,
 {
     fn cuda_hash_join(
         &self,

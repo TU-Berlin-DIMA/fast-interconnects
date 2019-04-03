@@ -18,15 +18,11 @@
 ///
 /// This function forces the OS to back all pages with physical memory by
 /// writing non-uniform data into each page.
-pub trait EnsurePhysicallyBacked {
-    type Item;
-
-    fn ensure_physically_backed(data: &mut [Self::Item]);
+pub trait EnsurePhysicallyBacked: Sized {
+    fn ensure_physically_backed(data: &mut [Self]);
 }
 
 impl EnsurePhysicallyBacked for i32 {
-    type Item = i32;
-
     #[inline(never)]
     fn ensure_physically_backed(data: &mut [i32]) {
         data.iter_mut().by_ref().zip(0..).for_each(|(x, i)| *x = i);
@@ -34,8 +30,6 @@ impl EnsurePhysicallyBacked for i32 {
 }
 
 impl EnsurePhysicallyBacked for i64 {
-    type Item = i64;
-
     fn ensure_physically_backed(data: &mut [i64]) {
         data.iter_mut().by_ref().zip(0..).for_each(|(x, i)| *x = i);
     }
