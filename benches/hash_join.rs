@@ -23,6 +23,7 @@ extern crate rayon;
 #[macro_use]
 extern crate serde_derive;
 extern crate serde;
+extern crate serde_repr;
 extern crate structopt;
 
 use average::{Estimate, Max, Min, Quantile, Variance};
@@ -42,6 +43,8 @@ use rustacuda::event::{Event, EventFlags};
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
 use rustacuda::prelude::*;
+
+use serde_repr::Serialize_repr;
 
 use std::collections::vec_deque::VecDeque;
 use std::mem::size_of;
@@ -89,7 +92,7 @@ arg_enum! {
 }
 
 arg_enum! {
-    #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize_repr)]
     #[repr(usize)]
     pub enum ArgTupleBytes {
         Bytes8 = 8,
