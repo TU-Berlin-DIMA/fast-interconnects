@@ -8,6 +8,24 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
+//! Hash join operators for CPU and GPU.
+//!
+//! The hash join operator supports x86_64 and PPC64 CPUs and CUDA GPUs.
+//! The hash join can be executed in parallel. Heterogeneous parallel execution
+//! on CPUs and GPUs is also supported. This is possible because the
+//! processor-specific operators use the same underlying hash table.
+//!
+//! To execute in parallel on a CPU, the `build` and `probe_count` methods of
+//! `CpuHashJoin` must be called from multiple threads on non-overlapping data.
+//! `build` must be completed on all threads before calling `probe_count`.
+//! This design was chosen to maximize flexibility on which cores to execute on.
+//!
+//! To execute in parallel on a GPU, it is sufficient to call `build` and
+//! `probe_count` once. Both methods require grid and block sizes as input,
+//! that specify the parallelism with which to execute on the GPU. The join
+//! can also be parallelized over multiple GPUs by calling the methods multiple
+//! times using different CUDA devices.
+
 extern crate cuda_sys;
 extern crate num_traits;
 extern crate paste;
@@ -100,12 +118,29 @@ extern "C" {
     );
 }
 
+/// Specifies the hashing scheme using in hash table insert and probe operations.
 #[derive(Clone, Copy, Debug)]
 pub enum HashingScheme {
+    /// Perfect hashing scheme.
+    ///
+    /// Perfect hashing assumes that build-side join keys are unique and in a
+    /// contiguous range, i.e., k \in [0,N-1]. Probe-side keys are allowed to be
+    /// non-unique and outside of the range.
     Perfect,
+
+    /// Linear probing scheme.
+    ///
+    /// Linear probing makes no assumptions about the join key distribution.
     LinearProbing,
 }
 
+/// Specifies the null key value of the given type.
+///
+/// The null key is expected to have a binary representation of all ones. For
+/// signed integers, that value equals -1, for unsigned integers, the value
+/// equals 0xF...F.
+///
+/// The null key in Rust must be kept in sync with the null key in C++ and CUDA.
 pub trait NullKey: AsPrimitive<c_uint> {
     fn null_key() -> Self;
 }
@@ -122,13 +157,30 @@ impl NullKey for i64 {
     }
 }
 
+/// Specifies that the implementing type can be used as a join key in
+/// `CudaHashJoin`.
+///
+/// `CudaHashJoinable` is a trait for which specialized implementations exist
+/// for each implementing type (currently i32 and i64). Specialization is
+/// necessary because each type requires a different CUDA function to be called.
+///
+/// An alternative approach would be to specialize the implementation of
+/// `CudaHashJoin` methods for each type. However, this would also require a
+/// default implementation for all non-implemented types that throws an
+/// exception. The benefit would be less code, but currently Rust stable doesn't
+/// support [impl specializations with default implementations](https://github.com/rust-lang/rfcs/blob/master/text/1210-impl-specialization.md).
+/// [Rust issue #31844](https://github.com/rust-lang/rust/issues/31844) tracks
+/// the RFC.
 pub trait CudaHashJoinable<T: DeviceCopy + NullKey> {
+    /// Implements `CudaHashJoin::build` for the type `T`.
     fn build_impl(
         hj: &mut CudaHashJoin<T>,
         join_attr: &Mem<T>,
         payload_attr: &Mem<T>,
         stream: &Stream,
     ) -> Result<()>;
+
+    /// Implements `CudaHashJoin::probe_count` for the type `T`.
     fn probe_count_impl(
         hj: &mut CudaHashJoin<T>,
         join_attr: &Mem<T>,
@@ -138,8 +190,15 @@ pub trait CudaHashJoinable<T: DeviceCopy + NullKey> {
     ) -> Result<()>;
 }
 
+/// Specifies that the implementing type can be used as a join key in
+/// `CpuHashJoin`.
+///
+/// See `CudaHashJoinable` for more details on the design decision.
 pub trait CpuHashJoinable<T: DeviceCopy + NullKey> {
+    /// Implements `CpuHashJoin::build` for the type `T`.
     fn build_impl(hj: &mut CpuHashJoin<T>, join_attr: &[T], payload_attr: &[T]) -> Result<()>;
+
+    /// Implements `CpuHashJoin::probe_count` for the type `T`.
     fn probe_count_impl(
         hj: &mut CpuHashJoin<T>,
         join_attr: &[T],
@@ -148,6 +207,14 @@ pub trait CpuHashJoinable<T: DeviceCopy + NullKey> {
     ) -> Result<()>;
 }
 
+/// GPU hash join implemented in CUDA.
+///
+/// See the module documentation above for usage details.
+///
+/// The `build` and `probe_count` methods are simply wrappers for the
+/// corresponding implementations in `CudaHashJoinable`. The wrapping is
+/// necessary due to the specialization for each type `T`. See the documentation
+/// of `CudaHashJoinable` for details.
 #[derive(Debug)]
 pub struct CudaHashJoin<T: DeviceCopy + NullKey> {
     ops: Module,
@@ -157,18 +224,28 @@ pub struct CudaHashJoin<T: DeviceCopy + NullKey> {
     probe_dim: (GridSize, BlockSize),
 }
 
+/// CPU hash join implemented in C++.
+///
+/// See the module documentation above for details.
+///
+/// The `build` and `probe_count` methods are simply wrappers for the
+/// corresponding implementations in `CpuHashJoinable`. The wrapping is
+/// necessary due to the specialization for each type `T`. See the documentation
+/// of `CpuHashJoinable` for details.
 #[derive(Debug)]
 pub struct CpuHashJoin<T: DeviceCopy + NullKey> {
     hashing_scheme: HashingScheme,
     hash_table: Arc<HashTable<T>>,
 }
 
+/// Hash table for `CpuHashJoin` and `CudaHashJoin`.
 #[derive(Debug)]
 pub struct HashTable<T: DeviceCopy + NullKey> {
     mem: Mem<T>,
     size: usize,
 }
 
+/// Build a `CudaHashJoin`.
 #[derive(Debug)]
 pub struct CudaHashJoinBuilder<T: DeviceCopy + NullKey> {
     hashing_scheme: HashingScheme,
@@ -177,6 +254,7 @@ pub struct CudaHashJoinBuilder<T: DeviceCopy + NullKey> {
     probe_dim_i: (GridSize, BlockSize),
 }
 
+/// Build a `CpuHashJoin`.
 #[derive(Debug)]
 pub struct CpuHashJoinBuilder<T: DeviceCopy + NullKey> {
     hashing_scheme: HashingScheme,
@@ -187,6 +265,7 @@ impl<T> CudaHashJoin<T>
 where
     T: DeviceCopy + NullKey + CudaHashJoinable<T>,
 {
+    /// Build a hash table on the GPU.
     pub fn build(
         &mut self,
         join_attr: &Mem<T>,
@@ -195,6 +274,13 @@ where
     ) -> Result<()> {
         T::build_impl(self, join_attr, payload_attr, stream)
     }
+
+    /// Probe the hash table on the GPU and count the number of result tuples.
+    ///
+    /// This effectively implements the SQL code:
+    /// ```SQL
+    /// SELECT COUNT(*) FROM r JOIN s ON r.join_attr = s.join_attr
+    /// ```
     pub fn probe_count(
         &mut self,
         join_attr: &Mem<T>,
@@ -210,10 +296,17 @@ impl<T> CpuHashJoin<T>
 where
     T: DeviceCopy + NullKey + CpuHashJoinable<T>,
 {
+    /// Build a hash table on the CPU.
     pub fn build(&mut self, join_attr: &[T], payload_attr: &[T]) -> Result<()> {
         T::build_impl(self, join_attr, payload_attr)
     }
 
+    /// Probe the hash table on the CPU and count the number of result tuples.
+    ///
+    /// This effectively implements the SQL code:
+    /// ```SQL
+    /// SELECT COUNT(*) FROM r JOIN s ON r.join_attr = s.join_attr
+    /// ```
     pub fn probe_count(
         &mut self,
         join_attr: &[T],
@@ -224,6 +317,9 @@ where
     }
 }
 
+/// A Rust macro for specializing the implementation of a join key type. Each
+/// type calls a different CUDA function. The function to be called is specified
+/// by the `Suffix` parameter.
 macro_rules! impl_cuda_hash_join_for_type {
     ($Type:ty, $Suffix:expr) => {
         impl CudaHashJoinable<$Type> for $Type {
@@ -329,6 +425,9 @@ macro_rules! impl_cuda_hash_join_for_type {
 impl_cuda_hash_join_for_type!(i32, int32);
 impl_cuda_hash_join_for_type!(i64, int64);
 
+/// A Rust macro for specializing the implementation of a join key type. Each
+/// type calls a different C++ function. The function to be called is specified
+/// by the `Suffix` parameter.
 macro_rules! impl_cpu_hash_join_for_type {
     ($Type:ty, $Suffix:expr) => {
         impl CpuHashJoinable<$Type> for $Type {
@@ -420,7 +519,10 @@ impl_cpu_hash_join_for_type!(i32, int32);
 impl_cpu_hash_join_for_type!(i64, int64);
 
 impl<T: DeviceCopy + NullKey> HashTable<T> {
-    // FIXME: make generic for type T
+    /// Create a new CPU hash table.
+    ///
+    /// The hash table can be used on CPUs. In the case of NVLink 2.0 on POWER9,
+    /// it can also be used on GPUs.
     pub fn new_on_cpu(mut mem: DerefMem<T>, size: usize) -> Result<Self> {
         ensure!(
             size.is_power_of_two(),
@@ -439,6 +541,11 @@ impl<T: DeviceCopy + NullKey> HashTable<T> {
         })
     }
 
+    /// Create a new GPU hash table.
+    ///
+    /// The hash table can be used on GPUs. It cannot always be used on CPUs,
+    /// due to the possibility of using GPU device memory. This also holds true
+    /// for NVLink 2.0 on POWER9.
     pub fn new_on_gpu(mem: Mem<T>, size: usize) -> Result<Self> {
         ensure!(
             size.is_power_of_two(),
