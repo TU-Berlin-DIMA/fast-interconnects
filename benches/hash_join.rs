@@ -145,9 +145,9 @@ struct CmdOpt {
     #[structopt(short = "r", long = "repeat", default_value = "30")]
     repeat: u32,
 
-    /// Output path for measurement files (defaults to current directory)
-    #[structopt(short = "o", long = "out-dir", parse(from_os_str), default_value = ".")]
-    out_dir: PathBuf,
+    /// Output filename for measurement CSV file
+    #[structopt(long = "csv", parse(from_os_str))]
+    csv: Option<PathBuf>,
 
     /// Memory type with which to allocate data.
     //   unified: CUDA Unified memory (default)
@@ -329,11 +329,11 @@ fn main() -> Result<()> {
     match cmd.tuple_bytes {
         ArgTupleBytes::Bytes8 => {
             let (hjc, dp) = args_to_bench::<i32>(&cmd, device)?;
-            measure("hash_join_kim", cmd.repeat, cmd.out_dir, dp, hjc)?;
+            measure("hash_join_kim", cmd.repeat, cmd.csv, dp, hjc)?;
         }
         ArgTupleBytes::Bytes16 => {
             let (hjc, dp) = args_to_bench::<i64>(&cmd, device)?;
-            measure("hash_join_kim", cmd.repeat, cmd.out_dir, dp, hjc)?;
+            measure("hash_join_kim", cmd.repeat, cmd.csv, dp, hjc)?;
         }
     };
 
@@ -455,7 +455,7 @@ where
 fn measure(
     name: &str,
     repeat: u32,
-    out_dir: PathBuf,
+    out_file_name: Option<PathBuf>,
     template: DataPoint,
     func: Box<Fn() -> Result<(f64, f64)>>,
 ) -> Result<()> {
@@ -470,18 +470,17 @@ fn measure(
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let csv_path = out_dir.with_file_name(name).with_extension("csv");
-
-    let csv_file = std::fs::File::create(csv_path)?;
-
-    let mut csv = csv::Writer::from_writer(csv_file);
-    ensure!(
-        measurements
-            .iter()
-            .try_for_each(|row| csv.serialize(row))
-            .is_ok(),
-        "Couldn't write serialized measurements"
-    );
+    if let Some(ofn) = out_file_name {
+        let csv_file = std::fs::File::create(ofn)?;
+        let mut csv = csv::Writer::from_writer(csv_file);
+        ensure!(
+            measurements
+                .iter()
+                .try_for_each(|row| csv.serialize(row))
+                .is_ok(),
+            "Couldn't write serialized measurements"
+        );
+    }
 
     concatenate!(
         Estimator,
