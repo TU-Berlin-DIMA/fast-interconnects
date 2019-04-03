@@ -34,6 +34,8 @@
 #define NULL_KEY_32 0xFFFFFFFF
 #define NULL_KEY_64 0xFFFFFFFFFFFFFFFFll
 
+#define OPTIMIZE_INT32
+
 /*
  * Note: uint64_t in cstdint header doesn't match atomicCAS()
  */
@@ -60,6 +62,18 @@ void gpu_ht_insert_linearprobing_int32(
         // This is done because each key/payload pair occupies 2 slots in ht array
         index &= ~1ul;
 
+#ifdef OPTIMIZE_INT32
+        uint64_t null_key_64 = NULL_KEY_64;
+        int32_t old_key = hash_table[index];
+        uint64_t entry = (((uint64_t)key) << 32) | ((uint64_t)payload);
+        if (old_key == NULL_KEY_32) {
+            uint64_t old_entry = atomicCAS((uint64_t*)&hash_table[index], null_key_64, entry);
+            old_key = old_entry >> 32;
+            if (old_key == NULL_KEY_32) {
+                return;
+            }
+        }
+#else
         unsigned int null_key = NULL_KEY_32;
         int32_t old = hash_table[index];
         if (old == NULL_KEY_32) {
@@ -69,6 +83,7 @@ void gpu_ht_insert_linearprobing_int32(
                 return;
             }
         }
+#endif
     }
 }
 
