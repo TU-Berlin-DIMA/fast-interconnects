@@ -11,7 +11,8 @@
 extern crate rustacuda;
 
 use self::rustacuda::memory::{
-    DeviceBuffer, DeviceCopy, DevicePointer, LockedBuffer, UnifiedBuffer, UnifiedPointer,
+    DeviceBuffer, DeviceCopy, DevicePointer, DeviceSlice, LockedBuffer, UnifiedBuffer,
+    UnifiedPointer,
 };
 
 use std::ops::Deref;
@@ -72,6 +73,14 @@ impl<T: DeviceCopy> Mem<T> {
             CudaDevMem(m) => m.as_mut_ptr(),
             CudaUniMem(m) => m.as_mut_ptr(),
         }
+    }
+
+    pub fn as_launchable_slice(&self) -> LaunchableSlice<T> {
+        // Note: This is implementation is a short-cut. The proper way is
+        // implemented in as_launchable_mut_ptr(). The reason we don't do the
+        // proper way here is because RUSTACuda doesn't have a *const T
+        // equivalent for UnifiedPointer and DevicePointer.
+        unsafe { LaunchableSlice(std::slice::from_raw_parts(self.as_ptr(), self.len())) }
     }
 
     pub fn as_launchable_ptr(&self) -> LaunchablePtr<T> {
@@ -156,6 +165,69 @@ impl<T: DeviceCopy> DerefMut for DerefMem<T> {
     }
 }
 
+pub enum RefMem<'a, T: DeviceCopy> {
+    SysMem(&'a [T]),
+    NumaMem(&'a NumaMemory<T>),
+    CudaPinnedMem(&'a LockedBuffer<T>),
+    CudaDevMem(&'a DeviceBuffer<T>),
+    CudaUniMem(&'a UnifiedBuffer<T>),
+}
+
+pub trait LaunchableMem {
+    type Item;
+
+    fn as_launchable_ptr(&self) -> LaunchablePtr<Self::Item>;
+    fn as_launchable_slice(&self) -> LaunchableSlice<Self::Item>;
+}
+
+impl<'a, T> LaunchableMem for [T] {
+    type Item = T;
+
+    fn as_launchable_ptr(&self) -> LaunchablePtr<T> {
+        LaunchablePtr(self.as_ptr())
+    }
+
+    fn as_launchable_slice(&self) -> LaunchableSlice<T> {
+        LaunchableSlice(self)
+    }
+}
+
+impl<'a, T> LaunchableMem for DeviceBuffer<T> {
+    type Item = T;
+
+    fn as_launchable_ptr(&self) -> LaunchablePtr<T> {
+        LaunchablePtr(self.as_ptr())
+    }
+
+    fn as_launchable_slice(&self) -> LaunchableSlice<T> {
+        unsafe { LaunchableSlice(std::slice::from_raw_parts(self.as_ptr(), self.len())) }
+    }
+}
+
+impl<'a, T> LaunchableMem for DeviceSlice<T> {
+    type Item = T;
+
+    fn as_launchable_ptr(&self) -> LaunchablePtr<T> {
+        LaunchablePtr(self.as_ptr())
+    }
+
+    fn as_launchable_slice(&self) -> LaunchableSlice<T> {
+        unsafe { LaunchableSlice(std::slice::from_raw_parts(self.as_ptr(), self.len())) }
+    }
+}
+
+impl<'a, T: DeviceCopy> LaunchableMem for UnifiedBuffer<T> {
+    type Item = T;
+
+    fn as_launchable_ptr(&self) -> LaunchablePtr<T> {
+        LaunchablePtr(self.as_ptr())
+    }
+
+    fn as_launchable_slice(&self) -> LaunchableSlice<T> {
+        unsafe { LaunchableSlice(std::slice::from_raw_parts(self.as_ptr(), self.len())) }
+    }
+}
+
 /// A pointer to constant memory that can be dereferenced on the GPU.
 ///
 /// `LaunchablePtr` is intended to be passed as an argument to a CUDA kernel
@@ -167,7 +239,7 @@ impl<T: DeviceCopy> DerefMut for DerefMem<T> {
 /// `LaunchablePtr` is guaranteed to have an equivalent internal
 /// representation to a raw pointer. Thus, it can be safely reinterpreted or
 /// transmuted to `*const T`.
-pub struct LaunchablePtr<T: DeviceCopy>(*const T);
+pub struct LaunchablePtr<T>(*const T);
 
 unsafe impl<T: DeviceCopy> DeviceCopy for LaunchablePtr<T> {}
 
@@ -177,7 +249,7 @@ impl<T: DeviceCopy> From<UnifiedPointer<T>> for LaunchablePtr<T> {
     }
 }
 
-impl<T: DeviceCopy> From<DevicePointer<T>> for LaunchablePtr<T> {
+impl<T> From<DevicePointer<T>> for LaunchablePtr<T> {
     fn from(device_ptr: DevicePointer<T>) -> Self {
         Self(device_ptr.as_raw())
     }
@@ -194,7 +266,7 @@ impl<T: DeviceCopy> From<DevicePointer<T>> for LaunchablePtr<T> {
 /// `LaunchableMutPtr` is guaranteed to have an equivalent internal
 /// representation to a raw pointer. Thus, it can be safely reinterpreted or
 /// transmuted to `*mut T`.
-pub struct LaunchableMutPtr<T: DeviceCopy>(*mut T);
+pub struct LaunchableMutPtr<T>(*mut T);
 
 unsafe impl<T: DeviceCopy> DeviceCopy for LaunchableMutPtr<T> {}
 
@@ -204,8 +276,22 @@ impl<T: DeviceCopy> From<UnifiedPointer<T>> for LaunchableMutPtr<T> {
     }
 }
 
-impl<T: DeviceCopy> From<DevicePointer<T>> for LaunchableMutPtr<T> {
+impl<T> From<DevicePointer<T>> for LaunchableMutPtr<T> {
     fn from(mut device_ptr: DevicePointer<T>) -> Self {
         Self(device_ptr.as_raw_mut())
+    }
+}
+
+pub struct LaunchableSlice<'a, T>(&'a [T]);
+
+unsafe impl<'a, T: DeviceCopy> DeviceCopy for LaunchableSlice<'a, T> {}
+
+impl<'a, T> LaunchableSlice<'a, T> {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn as_launchable_ptr(&self) -> LaunchablePtr<T> {
+        LaunchablePtr(self.0.as_ptr())
     }
 }

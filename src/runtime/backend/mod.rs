@@ -13,7 +13,7 @@ mod hw_info;
 mod numa;
 
 // Re-exports
-pub use self::cuda::Cuda;
+pub use self::cuda::*;
 pub use self::hw_info::*;
 pub use self::numa::*;
 

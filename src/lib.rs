@@ -8,6 +8,7 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
+extern crate crossbeam_utils;
 #[macro_use]
 extern crate error_chain;
 #[macro_use]

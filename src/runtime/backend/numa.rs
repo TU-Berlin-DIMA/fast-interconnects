@@ -106,7 +106,7 @@ impl<T> DerefMut for NumaMemory<T> {
 impl<T> PageLock for NumaMemory<T> {
     fn page_lock(&mut self) -> Result<()> {
         unsafe {
-            host_register(self.as_mut_slice()).chain_err(|| {
+            host_register(self.as_slice()).chain_err(|| {
                 ErrorKind::RuntimeError("Failed to page-lock NUMA memory region".to_string())
             })?
         };
@@ -117,7 +117,7 @@ impl<T> PageLock for NumaMemory<T> {
     fn page_unlock(&mut self) -> Result<()> {
         if self.is_page_locked {
             unsafe {
-                host_unregister(self.as_mut_slice())?;
+                host_unregister(self.as_slice())?;
             }
             self.is_page_locked = false;
         }
@@ -131,7 +131,7 @@ impl<T> Drop for NumaMemory<T> {
         // In drop() method, we can only handle error by panicking.
         if self.is_page_locked {
             unsafe {
-                host_unregister(self.as_mut_slice()).unwrap();
+                host_unregister(self.as_slice()).unwrap();
             }
         }
 

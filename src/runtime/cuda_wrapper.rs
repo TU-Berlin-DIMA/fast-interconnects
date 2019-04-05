@@ -23,9 +23,9 @@ use crate::error::{Error, Result, ToResult};
 /// # Unsafety
 ///
 /// Page-locked memory must be unregistered with host_unregister().
-pub unsafe fn host_register<T>(mem: &mut [T]) -> Result<()> {
+pub unsafe fn host_register<T>(mem: &[T]) -> Result<()> {
     cuMemHostRegister_v2(
-        mem.as_mut_ptr() as *mut c_void,
+        mem.as_ptr() as *mut c_void,
         mem.len() * size_of::<T>(),
         CU_MEMHOSTREGISTER_PORTABLE | CU_MEMHOSTREGISTER_DEVICEMAP,
     )
@@ -38,8 +38,8 @@ pub unsafe fn host_register<T>(mem: &mut [T]) -> Result<()> {
 /// # Unsafety
 ///
 /// Memory range must have been page-locked with host_register().
-pub unsafe fn host_unregister<T>(mem: &mut [T]) -> Result<()> {
-    cuMemHostUnregister(mem.as_mut_ptr() as *mut c_void)
+pub unsafe fn host_unregister<T>(mem: &[T]) -> Result<()> {
+    cuMemHostUnregister(mem.as_ptr() as *mut c_void)
         .to_result()
         .map_err(|e| {
             Error::with_chain::<Error, _>(
