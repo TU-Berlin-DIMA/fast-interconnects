@@ -164,6 +164,7 @@ pub fn run_on_node(node: u16) -> Result<()> {
 /// Put memory on a specific node.
 ///
 /// ```
+/// # use numa_gpu::runtime::backend::tonode_memory;
 /// let data = vec!(1; 1024);
 /// tonode_memory(&data, 0);
 /// ```
