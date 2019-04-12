@@ -3,6 +3,8 @@
 extern crate cuda_sys;
 extern crate rustacuda;
 
+use rustacuda::context::CurrentContext;
+use rustacuda::device::DeviceAttribute;
 use rustacuda::memory::{DeviceCopy, UnifiedPointer};
 use rustacuda::stream::Stream;
 
@@ -53,6 +55,12 @@ pub fn prefetch_async<T: DeviceCopy>(
     len: usize,
     stream: &Stream,
 ) -> Result<()> {
+    let is_concurrent_managed_access_supported =
+        CurrentContext::get_device()?.get_attribute(DeviceAttribute::ConcurrentManagedAccess)?;
+    if is_concurrent_managed_access_supported == 0 {
+        bail!("The CUDA device does not support concurrent managed access.");
+    }
+
     unsafe {
         let mut cu_device: CUdevice = zeroed();
         cuCtxGetDevice(&mut cu_device).to_result().map_err(|e| {
@@ -73,6 +81,8 @@ pub fn prefetch_async<T: DeviceCopy>(
                 e.into(),
                 format!("Failed to prefetch unified memory to device {}", cu_device),
             )
-        })
+        })?;
     }
+
+    Ok(())
 }
