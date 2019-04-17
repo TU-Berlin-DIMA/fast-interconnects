@@ -346,7 +346,7 @@ fn main() -> Result<()> {
 fn args_to_bench<T>(
     cmd: &CmdOpt,
     device: Device,
-) -> Result<(Box<Fn() -> Result<(f64, f64)>>, DataPoint)>
+) -> Result<(Box<FnMut() -> Result<(f64, f64)>>, DataPoint)>
 where
     T: Default
         + DeviceCopy
@@ -391,7 +391,7 @@ where
 
     // Select data set
     let (inner_relation_len, outer_relation_len, data_gen) = data_gen_fn::<_>(cmd.data_set);
-    let hjb = hjb_builder
+    let mut hjb = hjb_builder
         .inner_len(inner_relation_len)
         .outer_len(outer_relation_len)
         .build_with_data_gen(data_gen)?;
@@ -402,7 +402,7 @@ where
         .fill_from_hash_join_bench(&hjb);
 
     // Create closure that wraps a hash join benchmark function
-    let hjc: Box<Fn() -> Result<(f64, f64)>> = match dev_type {
+    let hjc: Box<FnMut() -> Result<(f64, f64)>> = match dev_type {
         ArgDeviceType::CPU => Box::new(move || {
             let ht_alloc = allocator::Allocator::deref_mem_alloc_fn::<T>(
                 ArgMemTypeHelper { mem_type, location }.into(),
@@ -424,7 +424,7 @@ where
     Ok((hjc, dp))
 }
 
-type DataGenFn<T> = Box<Fn(&mut [T], &mut [T]) -> Result<()>>;
+type DataGenFn<T> = Box<FnMut(&mut [T], &mut [T]) -> Result<()>>;
 
 fn data_gen_fn<T>(description: ArgDataSet) -> (usize, usize, DataGenFn<T>)
 where
@@ -460,7 +460,7 @@ fn measure(
     repeat: u32,
     out_file_name: Option<PathBuf>,
     template: DataPoint,
-    func: Box<Fn() -> Result<(f64, f64)>>,
+    mut func: Box<FnMut() -> Result<(f64, f64)>>,
 ) -> Result<()> {
     let measurements = (0..repeat)
         .map(|_| {
@@ -616,7 +616,7 @@ impl HashJoinBenchBuilder {
 
     fn build_with_data_gen<T: Copy + Default + DeviceCopy>(
         &mut self,
-        data_gen_fn: DataGenFn<T>,
+        mut data_gen_fn: DataGenFn<T>,
     ) -> Result<HashJoinBench<T>> {
         // Allocate memory for data sets
         let mut memory: VecDeque<_> = [
@@ -699,7 +699,7 @@ where
         + EnsurePhysicallyBacked,
 {
     fn cuda_hash_join(
-        &self,
+        &mut self,
         hash_table_alloc: allocator::MemAllocFn<T>,
         build_dim: (GridSize, BlockSize),
         probe_dim: (GridSize, BlockSize),
@@ -721,12 +721,12 @@ where
 
         // Tune memory locations
         [
-            &self.build_relation_key,
-            &self.probe_relation_key,
-            &self.build_relation_payload,
-            &self.probe_relation_payload,
+            &mut self.build_relation_key,
+            &mut self.probe_relation_key,
+            &mut self.build_relation_payload,
+            &mut self.probe_relation_payload,
         ]
-        .iter()
+        .iter_mut()
         .filter_map(|mem| {
             if let CudaUniMem(m) = mem {
                 Some(m)
@@ -734,7 +734,7 @@ where
                 None
             }
         })
-        .map(|mem| prefetch_async(mem, 0, unsafe { std::mem::zeroed() }))
+        .map(|mem| prefetch_async(mem.as_unified_ptr(), mem.len(), &stream))
         .collect::<Result<()>>()?;
 
         stream.synchronize()?;
