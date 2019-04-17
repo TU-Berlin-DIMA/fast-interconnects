@@ -170,7 +170,6 @@ impl<T: DeviceCopy> DerefMut for DerefMem<T> {
 /// By implementing `LaunchableMem` for a type, you specify that the memory can
 /// be directly accessed on the GPU.
 pub trait LaunchableMem {
-
     /// The type of elements stored in the memory range.
     type Item;
 
@@ -298,7 +297,6 @@ pub struct LaunchableSlice<'a, T>(&'a [T]);
 unsafe impl<'a, T: DeviceCopy> DeviceCopy for LaunchableSlice<'a, T> {}
 
 impl<'a, T> LaunchableSlice<'a, T> {
-
     /// Returns the length of the slice.
     pub fn len(&self) -> usize {
         self.0.len()

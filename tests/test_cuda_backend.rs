@@ -56,13 +56,14 @@ fn test_cuda_iterator_2_pageable_copy() -> Result<(), Box<dyn Error>> {
 
     (data_0.as_mut_slice(), data_1.as_mut_slice())
         .into_cuda_iter_with_strategy(CudaTransferStrategy::PageableCopy, chunk_len)?
-        .fold(|(x, y), range, stream| {
-            assert_ne!(range.len(), 0);
-            assert_eq!(range.len(), chunk_len);
+        .fold(|(x, y), stream| {
+            assert_ne!(x.len(), 0);
+            assert_eq!(x.len(), chunk_len);
+            assert_eq!(x.len(), y.len());
 
             unsafe {
                 launch!(cuda_dot<<<10, 1024, 0, stream>>>(
-                range.len(),
+                x.len(),
                 x.as_launchable_ptr(),
                 y.as_launchable_ptr(),
                 result_ptr
@@ -99,13 +100,14 @@ fn test_cuda_iterator_2_pinned_copy() -> Result<(), Box<dyn Error>> {
 
     (data_0.as_mut_slice(), data_1.as_mut_slice())
         .into_cuda_iter_with_strategy(CudaTransferStrategy::PinnedCopy, chunk_len)?
-        .fold(|(x, y), range, stream| {
-            assert_ne!(range.len(), 0);
-            assert_eq!(range.len(), chunk_len);
+        .fold(|(x, y), stream| {
+            assert_ne!(x.len(), 0);
+            assert_eq!(x.len(), chunk_len);
+            assert_eq!(x.len(), y.len());
 
             unsafe {
                 launch!(cuda_dot<<<10, 1024, 0, stream>>>(
-                range.len(),
+                x.len(),
                 x.as_launchable_ptr(),
                 y.as_launchable_ptr(),
                 result_ptr
@@ -142,13 +144,14 @@ fn test_cuda_iterator_2_lazy_pinned_copy() -> Result<(), Box<dyn Error>> {
 
     (data_0.as_mut_slice(), data_1.as_mut_slice())
         .into_cuda_iter_with_strategy(CudaTransferStrategy::LazyPinnedCopy, chunk_len)?
-        .fold(|(x, y), range, stream| {
-            assert_ne!(range.len(), 0);
-            assert_eq!(range.len(), chunk_len);
+        .fold(|(x, y), stream| {
+            assert_ne!(x.len(), 0);
+            assert_eq!(x.len(), chunk_len);
+            assert_eq!(x.len(), y.len());
 
             unsafe {
                 launch!(cuda_dot<<<10, 1024, 0, stream>>>(
-                range.len(),
+                x.len(),
                 x.as_launchable_ptr(),
                 y.as_launchable_ptr(),
                 result_ptr
@@ -189,13 +192,14 @@ fn test_cuda_iterator_2_prefetch() -> Result<(), Box<dyn Error>> {
 
     (&mut data_0, &mut data_1)
         .into_cuda_iter(chunk_len)?
-        .fold(|(x, y), range, stream| {
-            assert_ne!(range.len(), 0);
-            assert_eq!(range.len(), chunk_len);
+        .fold(|(x, y), stream| {
+            assert_ne!(x.len(), 0);
+            assert_eq!(x.len(), chunk_len);
+            assert_eq!(x.len(), y.len());
 
             unsafe {
                 launch!(module.dot<<<10, 1024, 0, stream>>>(
-                range.len(),
+                x.len(),
                 x.as_launchable_ptr(),
                 y.as_launchable_ptr(),
                 result.as_device_ptr()
@@ -234,13 +238,14 @@ fn test_cuda_iterator_2_coherence() -> Result<(), Box<dyn Error>> {
 
     (data_0.as_mut_slice(), data_1.as_mut_slice())
         .into_cuda_iter_with_strategy(CudaTransferStrategy::Coherence, chunk_len)?
-        .fold(|(x, y), range, stream| {
-            assert_ne!(range.len(), 0);
-            assert_eq!(range.len(), chunk_len);
+        .fold(|(x, y), stream| {
+            assert_ne!(x.len(), 0);
+            assert_eq!(x.len(), chunk_len);
+            assert_eq!(x.len(), y.len());
 
             unsafe {
                 launch!(cuda_dot<<<10, 1024, 0, stream>>>(
-                range.len(),
+                x.len(),
                 x.as_launchable_ptr(),
                 y.as_launchable_ptr(),
                 result_ptr
@@ -276,12 +281,13 @@ fn test_cuda_iterator_2_pageable_copy_non_divisor_chunk_len() -> Result<(), Box<
 
     (data_0.as_mut_slice(), data_1.as_mut_slice())
         .into_cuda_iter_with_strategy(CudaTransferStrategy::PageableCopy, chunk_len)?
-        .fold(|(x, y), range, stream| {
-            assert_ne!(range.len(), 0);
+        .fold(|(x, y), stream| {
+            assert_ne!(x.len(), 0);
+            assert_eq!(x.len(), y.len());
 
             unsafe {
                 launch!(cuda_dot<<<10, 1024, 0, stream>>>(
-                range.len(),
+                x.len(),
                 x.as_launchable_ptr(),
                 y.as_launchable_ptr(),
                 result_ptr
@@ -317,12 +323,13 @@ fn test_cuda_iterator_2_pinned_copy_non_divisor_chunk_len() -> Result<(), Box<dy
 
     (data_0.as_mut_slice(), data_1.as_mut_slice())
         .into_cuda_iter_with_strategy(CudaTransferStrategy::PinnedCopy, chunk_len)?
-        .fold(|(x, y), range, stream| {
-            assert_ne!(range.len(), 0);
+        .fold(|(x, y), stream| {
+            assert_ne!(x.len(), 0);
+            assert_eq!(x.len(), y.len());
 
             unsafe {
                 launch!(cuda_dot<<<10, 1024, 0, stream>>>(
-                range.len(),
+                x.len(),
                 x.as_launchable_ptr(),
                 y.as_launchable_ptr(),
                 result_ptr
@@ -358,12 +365,13 @@ fn test_cuda_iterator_2_lazy_pinned_copy_non_divisor_chunk_len() -> Result<(), B
 
     (data_0.as_mut_slice(), data_1.as_mut_slice())
         .into_cuda_iter_with_strategy(CudaTransferStrategy::LazyPinnedCopy, chunk_len)?
-        .fold(|(x, y), range, stream| {
-            assert_ne!(range.len(), 0);
+        .fold(|(x, y), stream| {
+            assert_ne!(x.len(), 0);
+            assert_eq!(x.len(), y.len());
 
             unsafe {
                 launch!(cuda_dot<<<10, 1024, 0, stream>>>(
-                range.len(),
+                x.len(),
                 x.as_launchable_ptr(),
                 y.as_launchable_ptr(),
                 result_ptr
@@ -403,12 +411,13 @@ fn test_cuda_iterator_2_prefetch_non_divisor_chunk_len() -> Result<(), Box<dyn E
 
     (&mut data_0, &mut data_1)
         .into_cuda_iter(chunk_len)?
-        .fold(|(x, y), range, stream| {
-            assert_ne!(range.len(), 0);
+        .fold(|(x, y), stream| {
+            assert_ne!(x.len(), 0);
+            assert_eq!(x.len(), y.len());
 
             unsafe {
                 launch!(module.dot<<<10, 1024, 0, stream>>>(
-                range.len(),
+                x.len(),
                 x.as_launchable_ptr(),
                 y.as_launchable_ptr(),
                 result.as_device_ptr()
@@ -446,12 +455,13 @@ fn test_cuda_iterator_2_coherence_non_divisor_chunk_len() -> Result<(), Box<dyn 
 
     (data_0.as_mut_slice(), data_1.as_mut_slice())
         .into_cuda_iter_with_strategy(CudaTransferStrategy::Coherence, chunk_len)?
-        .fold(|(x, y), range, stream| {
-            assert_ne!(range.len(), 0);
+        .fold(|(x, y), stream| {
+            assert_ne!(x.len(), 0);
+            assert_eq!(x.len(), y.len());
 
             unsafe {
                 launch!(cuda_dot<<<10, 1024, 0, stream>>>(
-                range.len(),
+                x.len(),
                 x.as_launchable_ptr(),
                 y.as_launchable_ptr(),
                 result_ptr

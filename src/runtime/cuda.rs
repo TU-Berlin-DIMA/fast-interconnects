@@ -25,7 +25,6 @@ use rustacuda::memory::{
 use rustacuda::stream::{Stream, StreamFlags};
 
 use std::cmp::min;
-use std::ops::Range;
 
 use crate::error::{ErrorKind, Result, ResultExt};
 use crate::runtime::cuda_wrapper::{host_register, host_unregister, prefetch_async};
@@ -259,7 +258,6 @@ fn new_strategy_impl<'a, T: Copy + DeviceCopy + Send + 'a>(
 /// In contrast, `copy_to_device` may execute asynchronously. To wait for it
 /// to complete, call `Stream::synchronize()` or other CUDA stream functions.
 trait CudaTransferStrategyImpl: Send {
-
     /// The type of elements being iterator over.
     type Item: DeviceCopy;
 
@@ -487,7 +485,6 @@ pub struct CudaIterator2<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> {
 }
 
 impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2<'a, R, S> {
-
     /// Apply a GPU function that produces a single, final value.
     ///
     /// `fold()` takes two arguments: a data value, and a CUDA stream. In the
@@ -546,10 +543,10 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
     /// (data_0.as_mut_slice(), data_1.as_mut_slice())
     ///     .into_cuda_iter_with_strategy(CudaTransferStrategy::PageableCopy, chunk_len)
     ///     .unwrap()
-    ///     .fold(|(x, y), range, stream| {
+    ///     .fold(|(x, y), stream| {
     ///         unsafe {
-    ///             launch!(cuda_dot<<<10, 1024, 0, stream>>>(
-    ///             range.len(),
+    ///             launch!(cuda_dot<<<1, 1, 0, stream>>>(
+    ///             x.len(),
     ///             x.as_launchable_ptr(),
     ///             y.as_launchable_ptr(),
     ///             result_ptr
@@ -564,11 +561,8 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
     /// ```
     pub fn fold<F>(&mut self, f: F) -> Result<()>
     where
-    // FIXME: remove the range parameter
-    // FIXME: should be using a mutable LaunchableSlice type
-        F: Fn((LaunchableSlice<R>, LaunchableSlice<S>), &Range<usize>, &Stream) -> Result<()>
-            + Send
-            + Sync,
+        // FIXME: should be using a mutable LaunchableSlice type
+        F: Fn((LaunchableSlice<R>, LaunchableSlice<S>), &Stream) -> Result<()> + Send + Sync,
     {
         let partitions = &mut self.partitions;
         let strategy_impls = &mut self.strategy_impls;
@@ -598,8 +592,7 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
                                     let snd_chunk =
                                         strategy_snd.copy_to_device(&snd, &stream).unwrap();
 
-                                    let range = 0..fst.len();
-                                    let result = pf((fst_chunk, snd_chunk), &range, &stream);
+                                    let result = pf((fst_chunk, snd_chunk), &stream);
 
                                     strategy_fst.cool_down(&fst).unwrap();
                                     strategy_snd.cool_down(&snd).unwrap();
@@ -641,7 +634,6 @@ pub struct CudaUnifiedIterator2<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> 
 }
 
 impl<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> CudaUnifiedIterator2<'a, R, S> {
-
     /// Apply a GPU function that produces a single, final value.
     ///
     /// `fold()` takes two arguments: a data value, and a CUDA stream. In the
@@ -667,7 +659,7 @@ impl<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> CudaUnifiedIterator2<'a, R,
     /// memory.
     pub fn fold<F>(&mut self, mut f: F) -> Result<()>
     where
-        F: FnMut((LaunchableSlice<R>, LaunchableSlice<S>), &Range<usize>, &Stream) -> Result<()>,
+        F: FnMut((LaunchableSlice<R>, LaunchableSlice<S>), &Stream) -> Result<()>,
     {
         let data_len = self.data.0.len();
         let chunk_len = self.chunk_len;
@@ -692,7 +684,7 @@ impl<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> CudaUnifiedIterator2<'a, R,
                 let fst_chunk = fst.as_slice()[range.clone()].as_launchable_slice();
                 let snd_chunk = snd.as_slice()[range.clone()].as_launchable_slice();
 
-                f((fst_chunk, snd_chunk), &range, stream)?;
+                f((fst_chunk, snd_chunk), stream)?;
 
                 Ok(())
             })
