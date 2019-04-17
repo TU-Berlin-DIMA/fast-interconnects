@@ -18,7 +18,7 @@ use self::rustacuda::memory::{
 use std::ops::Deref;
 use std::ops::DerefMut;
 
-use super::backend::NumaMemory;
+use super::numa::NumaMemory;
 use crate::error::Result;
 
 /// A trait for memory that can be page-locked by CUDA.

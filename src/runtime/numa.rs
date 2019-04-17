@@ -17,7 +17,7 @@ use std::os::raw::{c_int, c_void};
 use std::slice;
 use std::u8;
 
-use super::ProcessorCache;
+use super::hw_info::ProcessorCache;
 use crate::error::{Error, ErrorKind, Result, ResultExt};
 use crate::runtime::cuda_wrapper::{host_register, host_unregister};
 use crate::runtime::memory::PageLock;
@@ -164,7 +164,7 @@ pub fn run_on_node(node: u16) -> Result<()> {
 /// Put memory on a specific node.
 ///
 /// ```
-/// # use numa_gpu::runtime::backend::tonode_memory;
+/// # use numa_gpu::runtime::numa::tonode_memory;
 /// let data = vec!(1; 1024);
 /// tonode_memory(&data, 0);
 /// ```

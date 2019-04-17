@@ -32,9 +32,8 @@ use numa_gpu::datagen;
 use numa_gpu::error::{ErrorKind, Result};
 use numa_gpu::operators::hash_join;
 use numa_gpu::runtime::allocator;
-use numa_gpu::runtime::backend::CudaDeviceInfo;
-use numa_gpu::runtime::backend::*;
 use numa_gpu::runtime::cuda_wrapper::prefetch_async;
+use numa_gpu::runtime::hw_info::{cpu_codename, CudaDeviceInfo};
 use numa_gpu::runtime::memory::*;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 

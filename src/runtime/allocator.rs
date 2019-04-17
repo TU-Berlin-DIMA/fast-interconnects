@@ -14,8 +14,8 @@ use self::rustacuda::memory::{DeviceBuffer, DeviceCopy, LockedBuffer, UnifiedBuf
 use std::default::Default;
 use std::mem::size_of;
 
-use super::backend::NumaMemory;
 use super::memory::{DerefMem, Mem};
+use super::numa::NumaMemory;
 
 /// Heterogeneous memory allocator.
 pub struct Allocator;

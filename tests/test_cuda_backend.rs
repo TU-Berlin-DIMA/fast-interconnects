@@ -17,7 +17,7 @@ use assert_approx_eq::assert_approx_eq;
 
 use error_chain::bail;
 
-use numa_gpu::runtime::backend::{
+use numa_gpu::runtime::cuda::{
     CudaTransferStrategy, IntoCudaIterator, IntoCudaIteratorWithStrategy,
 };
 
