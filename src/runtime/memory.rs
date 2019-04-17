@@ -165,21 +165,28 @@ impl<T: DeviceCopy> DerefMut for DerefMem<T> {
     }
 }
 
-pub enum RefMem<'a, T: DeviceCopy> {
-    SysMem(&'a [T]),
-    NumaMem(&'a NumaMemory<T>),
-    CudaPinnedMem(&'a LockedBuffer<T>),
-    CudaDevMem(&'a DeviceBuffer<T>),
-    CudaUniMem(&'a UnifiedBuffer<T>),
-}
-
+/// GPU-accessible memory.
+///
+/// By implementing `LaunchableMem` for a type, you specify that the memory can
+/// be directly accessed on the GPU.
 pub trait LaunchableMem {
+
+    /// The type of elements stored in the memory range.
     type Item;
 
+    /// Returns a launchable pointer to the beginning of the memory range.
     fn as_launchable_ptr(&self) -> LaunchablePtr<Self::Item>;
+
+    /// Returns a launchable slice to the entire memory range.
     fn as_launchable_slice(&self) -> LaunchableSlice<Self::Item>;
 }
 
+/// Directly derefencing a main-memory slice on the GPU requires that the GPU
+/// has cache-coherent access to main-memory. For example, on POWER9 and Tesla
+/// V100 with NVLink 2.0.
+///
+/// On non-cache-coherent GPUs, derefencing main-memory will lead to a
+/// segmentation fault!
 impl<'a, T> LaunchableMem for [T] {
     type Item = T;
 
@@ -228,7 +235,7 @@ impl<'a, T: DeviceCopy> LaunchableMem for UnifiedBuffer<T> {
     }
 }
 
-/// A pointer to constant memory that can be dereferenced on the GPU.
+/// A pointer to immutable memory that can be dereferenced on the GPU.
 ///
 /// `LaunchablePtr` is intended to be passed as an argument to a CUDA kernel
 /// function. For example, it can be passed to RUSTACuda's `launch!()` macro.
@@ -282,15 +289,22 @@ impl<T> From<DevicePointer<T>> for LaunchableMutPtr<T> {
     }
 }
 
+/// A slice of immutable memory that can be dereferenced on the GPU.
+///
+/// `LaunchableSlice` is intended to be passed to a function that executes a
+/// CUDA kernel with the slice as input parameter.
 pub struct LaunchableSlice<'a, T>(&'a [T]);
 
 unsafe impl<'a, T: DeviceCopy> DeviceCopy for LaunchableSlice<'a, T> {}
 
 impl<'a, T> LaunchableSlice<'a, T> {
+
+    /// Returns the length of the slice.
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
+    /// Returns a launchable pointer to the beginning of the slice.
     pub fn as_launchable_ptr(&self) -> LaunchablePtr<T> {
         LaunchablePtr(self.0.as_ptr())
     }

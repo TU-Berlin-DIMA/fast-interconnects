@@ -8,6 +8,13 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
+//! CUDA runtime for data transfer and kernel execution.
+//!
+//! There exist multiple methods to transfer data from main-memory to device
+//! memory. Also, data transfer and execution should overlap for the best
+//! performance. This module provides a collection of transfer method
+//! implementations, and efficient iterators for executing GPU kernels.
+
 use crossbeam_utils::thread::scope;
 
 use rustacuda::context::CurrentContext;
@@ -24,23 +31,95 @@ use crate::error::{ErrorKind, Result, ResultExt};
 use crate::runtime::cuda_wrapper::{host_register, host_unregister, prefetch_async};
 use crate::runtime::memory::{LaunchableMem, LaunchableSlice};
 
+/// Specify the CUDA transfer strategy.
+///
+/// Defines which strategy with which to transfer data from main-memory to
+/// device memory.
+///
+/// A `Prefetch` strategy is not defined, because `cuda_prefetch_async()`
+/// requires unified memory allocated with `cuda_malloc_managed()`. Thus,
+/// regular memory that is allocated with the system allocator cannot be used in
+/// conjunction with prefetching. As unified memory is more specific than the
+/// general system memory, prefetching is handled separately using
+/// `IntoCudaIterator`.
 #[derive(Clone, Copy, Debug)]
 pub enum CudaTransferStrategy {
+    /// Copy directly from pageable memory.
+    ///
+    /// Transfers data using `cuda_memcopy()` directly from the specified memory
+    /// location. No intermediate steps are performed.
+    ///
+    /// This strategy can also transfer memory that is pinned by the user before
+    /// the transfer.
     PageableCopy,
+
+    /// Copy using an intermediate, pinned buffer.
+    ///
+    /// The transfer first copies data from its original location into a pinned
+    /// buffer. Then data is transferred using `cuda_memcpy()`.
+    ///
+    /// In principle, this strategy can also tranfer from a pinned memory
+    /// location. However, the `PageableCopy` strategy would avoid the additional
+    /// overhead incurred by the intermediate buffer.
     PinnedCopy,
+
+    /// Pin the memory in-place and the copy.
+    ///
+    /// The transfer first pins the memory in-place using `cuda_host_register()`.
+    /// Then the data is transferred using `cuda_memcpy()`.
+    ///
+    /// Don't use this strategy with a pinned memory location, as calling
+    /// `cuda_host_register()` on a pinned location is probably undefined
+    /// behavior.
     LazyPinnedCopy,
+
+    /// Access the memory in-place without any copies.
+    ///
+    /// Requires that the GPU has cache-coherent access to main-memory.
+    /// E.g., POWER9 and Tesla V100 with NVLink 2.0.
     Coherence,
 }
 
+/// Conversion into a CUDA iterator.
+///
+/// By implementing `IntoCudaIterator` for a type, you define how the type is
+/// converted into an iterator capable of executing CUDA functions on a GPU.
+///
+/// The iterator must define a transfer strategy.
+///
+/// The `chunk_len` parameter specifies the granularity of each data transfer
+/// from main-memory to device memory. The same granularity is used when
+/// passing input parameters to the GPU kernel.
 pub trait IntoCudaIterator<'a> {
+    /// The type of the iterator to produce.
     type Iter;
 
+    /// Creates an iterator from a value.
+    ///
+    /// See the module-level documentation for details.
     fn into_cuda_iter(&'a mut self, chunk_len: usize) -> Result<Self::Iter>;
 }
 
+/// Conversion into a CUDA iterator with a specified transfer strategy.
+///
+/// By implementing `IntoCudaIteratorWithStrategy` for a type, you define how
+/// the type is converted into an iterator capable of executing CUDA functions
+/// on a GPU.
+///
+/// `strategy` specifies which transfer strategy to use. See the
+/// `CudaTransferStrategy` documation for details. The iterator must implement
+/// all strategies.
+///
+/// The `chunk_len` parameter specifies the granularity of each data transfer
+/// from main-memory to device memory. The same granularity is used when
+/// passing input parameters to the GPU kernel.
 pub trait IntoCudaIteratorWithStrategy<'a> {
+    /// The type of the iterator to produce.
     type Iter;
 
+    /// Creates an iterator from a value.
+    ///
+    /// See the module-level documentation for details.
     fn into_cuda_iter_with_strategy(
         &'a mut self,
         strategy: CudaTransferStrategy,
@@ -48,6 +127,20 @@ pub trait IntoCudaIteratorWithStrategy<'a> {
     ) -> Result<Self::Iter>;
 }
 
+/// Converts a tuple of two mutable slices into a CUDA iterator.
+///
+/// The slices must be mutable (and cannot be read-only) because transfer
+/// strategies can be implemented using a parallel pipeline. Parallelism
+/// requires exclusive access to data for Rust to successfully type-check.
+/// In Rust, holding a mutable reference guarantees exclusive access, because
+/// only a single mutable reference can exist at any point in time.
+///
+/// The slices can have mutually distinct lifetimes. However, the lifetime
+/// of the resulting iterator must be shorter than that of the shortest slice
+/// lifetime.
+///
+/// This implementation should be used as a basis for future implementations
+/// for other tuples of slices (e.g., one slice, three slices, etc.).
 impl<'i, 'r, 's, R, S> IntoCudaIteratorWithStrategy<'i> for (&'r mut [R], &'s mut [S])
 where
     'r: 'i,
@@ -92,6 +185,12 @@ where
     }
 }
 
+/// Converts a tuple of two mutable unified buffer references into a CUDA
+/// iterator.
+///
+/// The references must be mutable because the buffer should not be modified
+/// during the prefetching operation (as required by
+/// UnifiedBuffer::as_unified_ptr).
 impl<'i, 'r, 's, R, S> IntoCudaIterator<'i> for (&'r mut UnifiedBuffer<R>, &'s mut UnifiedBuffer<S>)
 where
     'r: 'i,
@@ -116,6 +215,8 @@ where
     }
 }
 
+/// Instantiates the concrete transfer strategy implementation as specified by
+/// the strategy enum.
 fn new_strategy_impl<'a, T: Copy + DeviceCopy + Send + 'a>(
     strategy: CudaTransferStrategy,
     chunk_len: usize,
@@ -132,24 +233,74 @@ fn new_strategy_impl<'a, T: Copy + DeviceCopy + Send + 'a>(
     Ok(wrapper)
 }
 
+/// Implements a CUDA transfer strategy.
+///
+/// By implementing `CudaTransferStrategyImpl` for a type, you define a concrete
+/// strategy to transfer data from main-memory to device memory.
+///
+/// # Contract
+///
+/// A caller of the methods specified by `CudaTransferStrategyImpl` must adhere
+/// to the following contract.
+///
+/// The methods `warm_up()`, `copy_to_device`, and `cool_down` must be called
+/// in this order. In addition, they must be called on the same chunk, exactly
+/// once, in sequence. Chunks may not be interleaved.
+///
+/// A common use-case for interleaving chunks is transferring multiple input
+/// parameters to the device. Instead of iterleaving chunks originating from
+/// different inputs, each input should be seen as a separate stream of chunks.
+/// Thus, each chunk stream should have its own `CudaTransferStrategyImpl`
+/// instance.
+///
+/// # Parallelism
+///
+/// `warm_up` and `cool_down` should execute as synchronous methods.
+/// In contrast, `copy_to_device` may execute asynchronously. To wait for it
+/// to complete, call `Stream::synchronize()` or other CUDA stream functions.
 trait CudaTransferStrategyImpl: Send {
+
+    /// The type of elements being iterator over.
     type Item: DeviceCopy;
 
+    /// Prepare the chunk for copying.
+    ///
+    /// For example, copy to an itermediate buffer.
     fn warm_up(&mut self, _chunk: &[Self::Item]) -> Result<()> {
         Ok(())
     }
 
+    /// Transfer the chunk from main-memory to device memory.
+    ///
+    /// For example, by using `cuda_memcpy()`.
+    ///
+    /// # Reference lifetimes
+    ///
+    /// The resulting `LaunchableSlice` must have a shorter lifetime than the data
+    /// it references. However, we want to be able to either reference data that
+    /// belongs to `self` (e.g., an intermediate pinned buffer), or to reference
+    /// the chunk directly. Thus, `self` and the chunk must both outlive
+    /// `LaunchableSlice`.
+    ///
+    /// See [the Rust book's chapter on advanced lifetimes](https://doc.rust-lang.org/book/ch19-02-advanced-lifetimes.html)
+    /// for syntax details.
     fn copy_to_device<'s: 'l, 'c: 'l, 'l>(
         &'s mut self,
         chunk: &'c [Self::Item],
         stream: &Stream,
     ) -> Result<LaunchableSlice<'l, Self::Item>>;
 
+    /// Tear down any resources created in `warm_up`.
+    ///
+    /// For example, unpin a lazily pinned buffer.
     fn cool_down(&mut self, _chunk: &[Self::Item]) -> Result<()> {
         Ok(())
     }
 }
 
+/// CUDA pageable copy strategy.
+///
+/// See the `CudaTransferStrategy` documentation for details.
 #[derive(Debug)]
 struct CudaPageableCopyStrategy<T: DeviceCopy> {
     buffer: DeviceBuffer<T>,
@@ -180,6 +331,9 @@ impl<T: DeviceCopy> CudaTransferStrategyImpl for CudaPageableCopyStrategy<T> {
     }
 }
 
+/// CUDA pinned copy strategy.
+///
+/// See the `CudaTransferStrategy` documentation for details.
 #[derive(Debug)]
 struct CudaPinnedCopyStrategy<T: Copy + DeviceCopy> {
     devc_buffer: DeviceBuffer<T>,
@@ -221,6 +375,9 @@ impl<T: Copy + DeviceCopy> CudaTransferStrategyImpl for CudaPinnedCopyStrategy<T
     }
 }
 
+/// CUDA lazy pinned copy strategy.
+///
+/// See the `CudaTransferStrategy` documentation for details.
 #[derive(Debug)]
 struct CudaLazyPinnedCopyStrategy<T: DeviceCopy> {
     buffer: DeviceBuffer<T>,
@@ -267,6 +424,9 @@ impl<T: DeviceCopy> CudaTransferStrategyImpl for CudaLazyPinnedCopyStrategy<T> {
     }
 }
 
+/// CUDA coherence strategy.
+///
+/// See the `CudaTransferStrategy` documentation for details.
 #[derive(Debug)]
 struct CudaCoherenceStrategy<T> {
     phantom: std::marker::PhantomData<T>,
@@ -292,6 +452,31 @@ impl<T: DeviceCopy + Send> CudaTransferStrategyImpl for CudaCoherenceStrategy<T>
     }
 }
 
+/// CUDA iterator for two mutable inputs.
+///
+/// Transfers data from main-memory to device memory on a chunk-sized
+/// granularity.
+///
+/// # Preconditions
+///
+/// All inputs are required to have the same length.
+///
+/// # Thread safety
+///
+/// Transfers involve multiple stages (currently 4 stages). These
+/// stages are performed in a parallel pipeline using threads. For this reason,
+/// thread-safety is implemented through mutable references and the `Send`
+/// marker trait.
+///
+/// See the `fold()` documentation for details.
+///
+/// # Notes for future reference
+///
+/// Currently, `CudaIterator2` does not copy back data from device memory to
+/// main-memory, but this functionality could be implemented in future.
+///
+/// `CudaIterator2` could be used as a template for iterators over less or more
+/// inputs, e.g. a `CudaIterator1` or `CudaIterator3`.
 pub struct CudaIterator2<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> {
     chunk_len: usize,
     partitions: Vec<(&'a mut [R], &'a mut [S])>,
@@ -302,8 +487,85 @@ pub struct CudaIterator2<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> {
 }
 
 impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2<'a, R, S> {
+
+    /// Apply a GPU function that produces a single, final value.
+    ///
+    /// `fold()` takes two arguments: a data value, and a CUDA stream. In the
+    /// case of `CudaIterator2`, the data value is specified as a two-tuple of
+    /// launchable slices. The slices are guaranteed to have the same length.
+    ///
+    /// The function passed to `fold()` is meant to launch a CUDA kernel function
+    /// on the given CUDA stream.
+    ///
+    /// In contrast to Rust's standard library `fold()` iterator, the state in
+    /// this iterator is implicit in GPU memory.
+    ///
+    /// # Thread safety
+    ///
+    /// As the transfer is performed as a parallel pipeline, i.e., transfer and
+    /// execution overlap. Therefore, the function may be called by multiple
+    /// threads at the same time, and must be thread-safe. Thread-safety is
+    /// specified through the `Send` and `Sync` marker traits.
+    ///
+    /// Furthermore, the CUDA kernel is executed on two or more CUDA streams,
+    /// and must therefore be thread-safe. However, Rust cannot guarantee
+    /// thread-safety of CUDA kernels. Thus, the user must ensure that the CUDA
+    /// kernels are safe to execute on multiple CUDA streams, e.g. by using
+    /// atomic operations when accessing device memory.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use numa_gpu::runtime::cuda::{
+    /// #     CudaTransferStrategy, IntoCudaIterator, IntoCudaIteratorWithStrategy,
+    /// # };
+    /// #
+    /// # use rustacuda::launch;
+    /// # use rustacuda::memory::{CopyDestination, DeviceBox, UnifiedBuffer};
+    /// # use rustacuda::module::Module;
+    /// # use rustacuda::quick_init;
+    /// #
+    /// # use std::ffi::CString;
+    /// #
+    /// # let _ctx = quick_init().unwrap();
+    /// #
+    /// # let module_data =
+    /// #     CString::new(include_str!("../../resources/dot.ptx")).unwrap();
+    /// # let module = Module::load_from_string(&module_data).unwrap();
+    /// # let cuda_dot = module.get_function(&CString::new("dot").unwrap()).unwrap();
+    /// #
+    /// # let data_len = 2_usize.pow(20);
+    /// let chunk_len = 1024_usize;
+    /// # assert_eq!(data_len % chunk_len, 0);
+    ///
+    /// let mut data_0 = vec![1.0_f32; data_len];
+    /// let mut data_1 = vec![1.0_f32; data_len];
+    /// let mut result = DeviceBox::new(&0.0f32).unwrap();
+    /// let result_ptr = result.as_device_ptr();
+    ///
+    /// (data_0.as_mut_slice(), data_1.as_mut_slice())
+    ///     .into_cuda_iter_with_strategy(CudaTransferStrategy::PageableCopy, chunk_len)
+    ///     .unwrap()
+    ///     .fold(|(x, y), range, stream| {
+    ///         unsafe {
+    ///             launch!(cuda_dot<<<10, 1024, 0, stream>>>(
+    ///             range.len(),
+    ///             x.as_launchable_ptr(),
+    ///             y.as_launchable_ptr(),
+    ///             result_ptr
+    ///             ))?;
+    ///         }
+    ///
+    ///         Ok(())
+    ///     }).unwrap();
+    ///
+    /// let mut result_host = 0.0f32;
+    /// result.copy_to(&mut result_host).unwrap();
+    /// ```
     pub fn fold<F>(&mut self, f: F) -> Result<()>
     where
+    // FIXME: remove the range parameter
+    // FIXME: should be using a mutable LaunchableSlice type
         F: Fn((LaunchableSlice<R>, LaunchableSlice<S>), &Range<usize>, &Stream) -> Result<()>
             + Send
             + Sync,
@@ -358,6 +620,19 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
     }
 }
 
+/// CUDA iterator for two mutable unified memory inputs.
+///
+/// Prefetches data from main-memory to device memory on a chunk-sized
+/// granularity.
+///
+/// # Preconditions
+///
+/// All inputs are required to have the same length.
+///
+/// # Thread safety
+///
+/// Only one CPU thread is used within the iterator, thus thread-safety only
+/// applies to the CUDA kernel. See the `fold()` documentation for details.
 #[derive(Debug)]
 pub struct CudaUnifiedIterator2<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> {
     data: (&'a mut UnifiedBuffer<R>, &'a mut UnifiedBuffer<S>),
@@ -366,6 +641,30 @@ pub struct CudaUnifiedIterator2<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> 
 }
 
 impl<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> CudaUnifiedIterator2<'a, R, S> {
+
+    /// Apply a GPU function that produces a single, final value.
+    ///
+    /// `fold()` takes two arguments: a data value, and a CUDA stream. In the
+    /// case of `CudaUnifiedIterator2`, the data value is specified as a
+    /// two-tuple of launchable slices. The slices are guaranteed to have the
+    /// same length.
+    ///
+    /// The function passed to `fold()` is meant to launch a CUDA kernel function
+    /// on the given CUDA stream.
+    ///
+    /// In contrast to Rust's standard library `fold()` iterator, the state in
+    /// this iterator is implicit in GPU memory.
+    ///
+    /// # Thread safety
+    ///
+    /// Prefetching and kernel execution are asynchronous operations. They are
+    /// performed on two or more CUDA streams to achieve parallelism, i.e..
+    /// prefetching and execution overlap.
+    ///
+    /// However, Rust cannot guarantee thread-safety of CUDA kernels. Thus, the
+    /// user must ensure that the CUDA kernels are safe to execute on multiple
+    /// CUDA streams, e.g. by using atomic operations when accessing device
+    /// memory.
     pub fn fold<F>(&mut self, mut f: F) -> Result<()>
     where
         F: FnMut((LaunchableSlice<R>, LaunchableSlice<S>), &Range<usize>, &Stream) -> Result<()>,
