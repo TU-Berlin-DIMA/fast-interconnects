@@ -15,7 +15,7 @@
 //! performance. This module provides a collection of transfer method
 //! implementations, and efficient iterators for executing GPU kernels.
 
-use crossbeam_utils::thread::scope;
+use crossbeam_utils::thread::{scope, ScopedJoinHandle};
 
 use rustacuda::context::CurrentContext;
 use rustacuda::error::CudaResult;
@@ -25,6 +25,7 @@ use rustacuda::memory::{
 use rustacuda::stream::{Stream, StreamFlags};
 
 use std::cmp::min;
+use std::thread::Result as ThreadResult;
 
 use crate::error::{ErrorKind, Result, ResultExt};
 use crate::runtime::cuda_wrapper::{host_register, host_unregister, prefetch_async};
@@ -569,46 +570,61 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
         let chunk_len = self.chunk_len;
         let af = std::sync::Arc::new(f);
 
-        scope(|scope| {
+        let result: ThreadResult<Result<()>> = scope(|scope| {
             partitions
                 .iter_mut()
                 .zip(strategy_impls.iter_mut())
                 .map(
                     |((partition_fst, partition_snd), (strategy_fst, strategy_snd))| {
                         let pf = af.clone();
-                        let unowned_context = CurrentContext::get_current().unwrap();
-                        scope.spawn(move |_| {
-                            CurrentContext::set_current(&unowned_context).unwrap();
-                            let stream = Stream::new(StreamFlags::NON_BLOCKING, None).unwrap();
+                        let unowned_context = CurrentContext::get_current()?;
+                        let handle: ScopedJoinHandle<Result<()>> = scope.spawn(move |_| {
+                            CurrentContext::set_current(&unowned_context)?;
+                            let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
                             partition_fst
                                 .chunks_mut(chunk_len)
                                 .zip(partition_snd.chunks_mut(chunk_len))
                                 .map(|(fst, snd)| {
-                                    strategy_fst.warm_up(&fst).unwrap();
-                                    strategy_snd.warm_up(&snd).unwrap();
+                                    strategy_fst.warm_up(&fst)?;
+                                    strategy_snd.warm_up(&snd).or_else(|err| {
+                                        let _ = strategy_fst.cool_down(&fst);
+                                        Err(err)
+                                    })?;
 
-                                    let fst_chunk =
-                                        strategy_fst.copy_to_device(&fst, &stream).unwrap();
-                                    let snd_chunk =
-                                        strategy_snd.copy_to_device(&snd, &stream).unwrap();
+                                    let fst_chunk = strategy_fst.copy_to_device(&fst, &stream)?;
+                                    let snd_chunk = strategy_snd.copy_to_device(&snd, &stream)?;
 
+                                    // We must run cool_down(). Thus, we can't
+                                    // immediately return if we get an error result.
+                                    // Instead, save the result for later and run
+                                    // cool_down() next.
                                     let result = pf((fst_chunk, snd_chunk), &stream);
 
-                                    strategy_fst.cool_down(&fst).unwrap();
-                                    strategy_snd.cool_down(&snd).unwrap();
+                                    let fst_result = strategy_fst.cool_down(&fst);
+                                    strategy_snd.cool_down(&snd)?;
 
-                                    result.unwrap();
-                                    ()
+                                    // Now we can return the results.
+                                    result?;
+                                    fst_result?;
+                                    Ok(())
                                 })
-                                .for_each(drop);
-                            stream.synchronize().unwrap();
+                                .collect::<Result<()>>()?;
+                            stream.synchronize()?;
+
+                            Ok(())
                         });
+
+                        // FIXME: Handle boxed error without unwrap()
+                        handle.join().unwrap()?;
+                        Ok(())
                     },
                 )
-                .for_each(drop);
-        })
-        .unwrap();
+                .collect::<Result<()>>()?;
+            Ok(())
+        });
 
+        // FIXME: Handle boxed error without unwrap()
+        result.unwrap()?;
         Ok(())
     }
 }
