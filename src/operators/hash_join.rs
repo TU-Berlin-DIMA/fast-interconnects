@@ -174,18 +174,18 @@ impl NullKey for i64 {
 pub trait CudaHashJoinable: DeviceCopy + NullKey {
     /// Implements `CudaHashJoin::build` for the implementing type.
     fn build_impl(
-        hj: &mut CudaHashJoin<Self>,
-        join_attr: &Mem<Self>,
-        payload_attr: &Mem<Self>,
+        hj: &CudaHashJoin<Self>,
+        join_attr: LaunchableSlice<Self>,
+        payload_attr: LaunchableSlice<Self>,
         stream: &Stream,
     ) -> Result<()>;
 
     /// Implements `CudaHashJoin::probe_count` for the implementing type.
     fn probe_count_impl(
-        hj: &mut CudaHashJoin<Self>,
-        join_attr: &Mem<Self>,
-        payload_attr: &Mem<Self>,
-        result_set: &mut Mem<u64>,
+        hj: &CudaHashJoin<Self>,
+        join_attr: LaunchableSlice<Self>,
+        payload_attr: LaunchableSlice<Self>,
+        result_set: &Mem<u64>,
         stream: &Stream,
     ) -> Result<()>;
 }
@@ -271,9 +271,9 @@ where
 {
     /// Build a hash table on the GPU.
     pub fn build(
-        &mut self,
-        join_attr: &Mem<T>,
-        payload_attr: &Mem<T>,
+        &self,
+        join_attr: LaunchableSlice<T>,
+        payload_attr: LaunchableSlice<T>,
         stream: &Stream,
     ) -> Result<()> {
         T::build_impl(self, join_attr, payload_attr, stream)
@@ -286,10 +286,10 @@ where
     /// SELECT COUNT(*) FROM r JOIN s ON r.join_attr = s.join_attr
     /// ```
     pub fn probe_count(
-        &mut self,
-        join_attr: &Mem<T>,
-        payload_attr: &Mem<T>,
-        result_set: &mut Mem<u64>,
+        &self,
+        join_attr: LaunchableSlice<T>,
+        payload_attr: LaunchableSlice<T>,
+        result_set: &Mem<u64>,
         stream: &Stream,
     ) -> Result<()> {
         T::probe_count_impl(self, join_attr, payload_attr, result_set, stream)
@@ -329,9 +329,9 @@ macro_rules! impl_cuda_hash_join_for_type {
         impl CudaHashJoinable for $Type {
             paste::item!{
                 fn build_impl(
-                    hj: &mut CudaHashJoin<$Type>,
-                    join_attr: &Mem<$Type>,
-                    payload_attr: &Mem<$Type>,
+                    hj: &CudaHashJoin<$Type>,
+                    join_attr: LaunchableSlice<$Type>,
+                    payload_attr: LaunchableSlice<$Type>,
                     stream: &Stream,
                     ) -> Result<()> {
                     ensure!(
@@ -352,7 +352,7 @@ macro_rules! impl_cuda_hash_join_for_type {
                     match &hj.hashing_scheme {
                         HashingScheme::Perfect => unsafe{ launch!(
                                 module.[<gpu_ht_build_perfect_ $Suffix>]<<<grid, block, 0, stream>>>(
-                                    hj.hash_table.mem.as_launchable_mut_ptr(),
+                                    hj.hash_table.mem.as_launchable_ptr(),
                                     hash_table_size,
                                     join_attr.as_launchable_ptr(),
                                     payload_attr.as_launchable_ptr(),
@@ -361,7 +361,7 @@ macro_rules! impl_cuda_hash_join_for_type {
                                 )? },
                         HashingScheme::LinearProbing => unsafe { launch!(
                                 module.[<gpu_ht_build_linearprobing_ $Suffix>]<<<grid, block, 0, stream>>>(
-                                    hj.hash_table.mem.as_launchable_mut_ptr(),
+                                    hj.hash_table.mem.as_launchable_ptr(),
                                     hash_table_size,
                                     join_attr.as_launchable_ptr(),
                                     payload_attr.as_launchable_ptr(),
@@ -376,10 +376,10 @@ macro_rules! impl_cuda_hash_join_for_type {
 
             paste::item!{
                 fn probe_count_impl(
-                    hj: &mut CudaHashJoin<$Type>,
-                    join_attr: &Mem<$Type>,
-                    payload_attr: &Mem<$Type>,
-                    result_set: &mut Mem<u64>,
+                    hj: &CudaHashJoin<$Type>,
+                    join_attr: LaunchableSlice<$Type>,
+                    payload_attr: LaunchableSlice<$Type>,
+                    result_set: &Mem<u64>,
                     stream: &Stream,
                     ) -> Result<()> {
                     let (grid, block) = hj.probe_dim.clone();
@@ -404,7 +404,7 @@ macro_rules! impl_cuda_hash_join_for_type {
                                     join_attr.as_launchable_ptr(),
                                     payload_attr.as_launchable_ptr(),
                                     join_attr_len,
-                                    result_set.as_launchable_mut_ptr()
+                                    result_set.as_launchable_ptr()
                                     )
                                 )? },
                         HashingScheme::LinearProbing => unsafe { launch!(
@@ -414,7 +414,7 @@ macro_rules! impl_cuda_hash_join_for_type {
                                     join_attr.as_launchable_ptr(),
                                     payload_attr.as_launchable_ptr(),
                                     join_attr_len,
-                                    result_set.as_launchable_mut_ptr()
+                                    result_set.as_launchable_ptr()
                                     )
                                 )? },
                     };

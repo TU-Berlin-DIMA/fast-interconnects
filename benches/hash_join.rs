@@ -32,6 +32,9 @@ use numa_gpu::datagen;
 use numa_gpu::error::{ErrorKind, Result};
 use numa_gpu::operators::hash_join;
 use numa_gpu::runtime::allocator;
+use numa_gpu::runtime::cuda::{
+    CudaTransferStrategy, IntoCudaIterator, IntoCudaIteratorWithStrategy,
+};
 use numa_gpu::runtime::cuda_wrapper::prefetch_async;
 use numa_gpu::runtime::hw_info::{cpu_codename, CudaDeviceInfo};
 use numa_gpu::runtime::memory::*;
@@ -76,9 +79,22 @@ arg_enum! {
 
 arg_enum! {
     #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
-    pub enum ArgDeviceType {
-        CPU,
-        GPU,
+    pub enum ArgExecutionMethod {
+        Cpu,
+        Gpu,
+        GpuStream,
+        Het,
+    }
+}
+
+arg_enum! {
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+    pub enum ArgTransferStrategy {
+        PageableCopy,
+        PinnedCopy,
+        LazyPinnedCopy,
+        Unified,
+        Coherence,
     }
 }
 
@@ -127,6 +143,20 @@ impl From<ArgMemTypeHelper> for allocator::DerefMemType {
             ArgMemType::Pinned => allocator::DerefMemType::CudaPinnedMem,
             ArgMemType::Unified => allocator::DerefMemType::CudaUniMem,
             ArgMemType::Device => panic!("Error: Device memory not supported in this context!"),
+        }
+    }
+}
+
+impl From<ArgTransferStrategy> for CudaTransferStrategy {
+    fn from(asm: ArgTransferStrategy) -> Self {
+        match asm {
+            ArgTransferStrategy::PageableCopy => CudaTransferStrategy::PageableCopy,
+            ArgTransferStrategy::PinnedCopy => CudaTransferStrategy::PinnedCopy,
+            ArgTransferStrategy::LazyPinnedCopy => CudaTransferStrategy::LazyPinnedCopy,
+            ArgTransferStrategy::Unified => {
+                panic!("Error: Unified memory cannot be handled by CudaTransferStrategy!")
+            }
+            ArgTransferStrategy::Coherence => CudaTransferStrategy::Coherence,
         }
     }
 }
@@ -220,17 +250,31 @@ struct CmdOpt {
     )]
     tuple_bytes: ArgTupleBytes,
 
-    /// Type of the device.
+    /// Execute on device(s) with in-place or streaming-transfer method.
     #[structopt(
-        short = "d",
-        long = "device-type",
+        long = "execution-method",
         default_value = "CPU",
         raw(
-            possible_values = "&ArgDeviceType::variants()",
+            possible_values = "&ArgExecutionMethod::variants()",
             case_insensitive = "true"
         )
     )]
-    device_type: ArgDeviceType,
+    execution_method: ArgExecutionMethod,
+
+    /// Stream data to device using the transfer strategy.
+    #[structopt(
+        long = "transfer-strategy",
+        default_value = "PageableCopy",
+        raw(
+            possible_values = "&ArgTransferStrategy::variants()",
+            case_insensitive = "true"
+        )
+    )]
+    transfer_strategy: ArgTransferStrategy,
+
+    /// Execute stream and transfer with chunk size (bytes)
+    #[structopt(long = "chunk-bytes", default_value = "1")]
+    chunk_bytes: usize,
 
     #[structopt(short = "i", long = "device-id", default_value = "0")]
     /// Execute on GPU (See CUDA device list)
@@ -243,8 +287,10 @@ struct CmdOpt {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct DataPoint {
     pub hostname: String,
-    pub device_type: Option<ArgDeviceType>,
+    pub execution_method: Option<ArgExecutionMethod>,
     pub device_codename: Option<String>,
+    pub transfer_strategy: Option<ArgTransferStrategy>,
+    pub chunk_bytes: Option<usize>,
     pub threads: Option<usize>,
     pub hashing_scheme: Option<ArgHashingScheme>,
     pub hash_table_memory_type: Option<ArgMemType>,
@@ -277,18 +323,21 @@ impl DataPoint {
 
     fn fill_from_cmd_options(&self, cmd: &CmdOpt) -> Result<DataPoint> {
         // Get device information
-        let dev_codename_str = match cmd.device_type {
-            ArgDeviceType::CPU => cpu_codename(),
-            ArgDeviceType::GPU => {
+        let dev_codename_str = match cmd.execution_method {
+            ArgExecutionMethod::Cpu => cpu_codename(),
+            ArgExecutionMethod::Gpu | ArgExecutionMethod::GpuStream => {
                 let device = Device::get_device(cmd.device_id.into())?;
                 device.name()?
             }
+            ArgExecutionMethod::Het => unimplemented!(),
         };
 
         let dp = DataPoint {
-            device_type: Some(cmd.device_type),
+            execution_method: Some(cmd.execution_method),
             device_codename: Some(dev_codename_str),
-            threads: if cmd.device_type == ArgDeviceType::CPU {
+            transfer_strategy: Some(cmd.transfer_strategy),
+            chunk_bytes: Some(cmd.chunk_bytes),
+            threads: if cmd.execution_method == ArgExecutionMethod::Cpu {
                 Some(cmd.threads)
             } else {
                 None
@@ -373,6 +422,18 @@ where
     let block_size = BlockSize::x(warp_size * warp_overcommit_factor);
     let grid_size = GridSize::x(cuda_cores * grid_overcommit_factor);
 
+    if cmd.execution_method == ArgExecutionMethod::GpuStream {
+        assert!(
+            cmd.mem_type == ArgMemType::System || cmd.mem_type == ArgMemType::Numa || cmd.mem_type == ArgMemType::Unified,
+            "Invalid memory type. Streaming execution method must be either System, Numa, or Unified."
+        );
+        assert!(
+            cmd.transfer_strategy != ArgTransferStrategy::Unified
+                || cmd.mem_type == ArgMemType::Unified,
+            "If transfer strategy is \"Unified\", then memory type must also be \"Unified\"."
+        );
+    }
+
     let mut hjb_builder = HashJoinBenchBuilder::default();
     hjb_builder
         .hashing_scheme(hashing_scheme)
@@ -383,7 +444,9 @@ where
         .outer_mem_type(cmd.mem_type);
 
     // Select the operator to run, depending on the device type
-    let dev_type = cmd.device_type.clone();
+    let exec_method = cmd.execution_method.clone();
+    let transfer_strategy = cmd.transfer_strategy.clone();
+    let chunk_len = cmd.chunk_bytes / size_of::<T>();
     let mem_type = cmd.hash_table_mem_type;
     let location = cmd.hash_table_location;
     let threads = cmd.threads.clone();
@@ -401,14 +464,14 @@ where
         .fill_from_hash_join_bench(&hjb);
 
     // Create closure that wraps a hash join benchmark function
-    let hjc: Box<FnMut() -> Result<(f64, f64)>> = match dev_type {
-        ArgDeviceType::CPU => Box::new(move || {
+    let hjc: Box<FnMut() -> Result<(f64, f64)>> = match exec_method {
+        ArgExecutionMethod::Cpu => Box::new(move || {
             let ht_alloc = allocator::Allocator::deref_mem_alloc_fn::<T>(
                 ArgMemTypeHelper { mem_type, location }.into(),
             );
             hjb.cpu_hash_join(threads, ht_alloc)
         }),
-        ArgDeviceType::GPU => Box::new(move || {
+        ArgExecutionMethod::Gpu => Box::new(move || {
             let ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
                 ArgMemTypeHelper { mem_type, location }.into(),
             );
@@ -418,6 +481,32 @@ where
                 (grid_size.clone(), block_size.clone()),
             )
         }),
+        ArgExecutionMethod::GpuStream if transfer_strategy == ArgTransferStrategy::Unified => {
+            Box::new(move || {
+                let ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
+                    ArgMemTypeHelper { mem_type, location }.into(),
+                );
+                hjb.cuda_streaming_unified_hash_join(
+                    ht_alloc,
+                    (grid_size.clone(), block_size.clone()),
+                    (grid_size.clone(), block_size.clone()),
+                    chunk_len,
+                )
+            })
+        }
+        ArgExecutionMethod::GpuStream => Box::new(move || {
+            let ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
+                ArgMemTypeHelper { mem_type, location }.into(),
+            );
+            hjb.cuda_streaming_hash_join(
+                ht_alloc,
+                (grid_size.clone(), block_size.clone()),
+                (grid_size.clone(), block_size.clone()),
+                transfer_strategy.into(),
+                chunk_len,
+            )
+        }),
+        ArgExecutionMethod::Het => unimplemented!(),
     };
 
     Ok((hjc, dp))
@@ -738,7 +827,7 @@ where
 
         stream.synchronize()?;
 
-        let mut hj_op = hash_join::CudaHashJoinBuilder::<T>::default()
+        let hj_op = hash_join::CudaHashJoinBuilder::<T>::default()
             .hashing_scheme(self.hashing_scheme)
             .build_dim(build_dim.0.clone(), build_dim.1.clone())
             .probe_dim(probe_dim.0.clone(), probe_dim.1.clone())
@@ -750,8 +839,8 @@ where
 
         start_event.record(&stream)?;
         hj_op.build(
-            &self.build_relation_key,
-            &self.build_relation_payload,
+            self.build_relation_key.as_launchable_slice(),
+            self.build_relation_payload.as_launchable_slice(),
             &stream,
         )?;
 
@@ -761,8 +850,8 @@ where
 
         start_event.record(&stream)?;
         hj_op.probe_count(
-            &self.probe_relation_key,
-            &self.probe_relation_payload,
+            self.probe_relation_key.as_launchable_slice(),
+            self.probe_relation_payload.as_launchable_slice(),
             &mut result_counts,
             &stream,
         )?;
@@ -776,6 +865,153 @@ where
             build_millis as f64 * 10_f64.powf(6.0),
             probe_millis as f64 * 10_f64.powf(6.0),
         ))
+    }
+
+    fn cuda_streaming_hash_join(
+        &mut self,
+        hash_table_alloc: allocator::MemAllocFn<T>,
+        build_dim: (GridSize, BlockSize),
+        probe_dim: (GridSize, BlockSize),
+        transfer_strategy: CudaTransferStrategy,
+        chunk_len: usize,
+    ) -> Result<(f64, f64)> {
+        let hash_table_mem = hash_table_alloc(self.hash_table_len);
+        let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
+        let mut result_counts = allocator::Allocator::alloc_mem(
+            allocator::MemType::CudaUniMem,
+            (probe_dim.0.x * probe_dim.1.x) as usize,
+        );
+
+        // Initialize counts
+        if let CudaUniMem(ref mut c) = result_counts {
+            c.iter_mut().map(|count| *count = 0).for_each(drop);
+        }
+
+        let build_rel_key = match self.build_relation_key {
+            Mem::CudaUniMem(ref mut m) => m.as_mut_slice(),
+            Mem::SysMem(ref mut m) => m.as_mut_slice(),
+            Mem::NumaMem(ref mut m) => m.as_mut_slice(),
+            Mem::CudaPinnedMem(ref mut m) => m.as_mut_slice(),
+            Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
+        };
+        let build_rel_pay = match self.build_relation_payload {
+            Mem::CudaUniMem(ref mut m) => m.as_mut_slice(),
+            Mem::SysMem(ref mut m) => m.as_mut_slice(),
+            Mem::NumaMem(ref mut m) => m.as_mut_slice(),
+            Mem::CudaPinnedMem(ref mut m) => m.as_mut_slice(),
+            Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
+        };
+        let probe_rel_key = match self.probe_relation_key {
+            Mem::CudaUniMem(ref mut m) => m.as_mut_slice(),
+            Mem::SysMem(ref mut m) => m.as_mut_slice(),
+            Mem::NumaMem(ref mut m) => m.as_mut_slice(),
+            Mem::CudaPinnedMem(ref mut m) => m.as_mut_slice(),
+            Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
+        };
+        let probe_rel_pay = match self.probe_relation_payload {
+            Mem::CudaUniMem(ref mut m) => m.as_mut_slice(),
+            Mem::SysMem(ref mut m) => m.as_mut_slice(),
+            Mem::NumaMem(ref mut m) => m.as_mut_slice(),
+            Mem::CudaPinnedMem(ref mut m) => m.as_mut_slice(),
+            Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
+        };
+
+        let hj_op = hash_join::CudaHashJoinBuilder::<T>::default()
+            .hashing_scheme(self.hashing_scheme)
+            .build_dim(build_dim.0.clone(), build_dim.1.clone())
+            .probe_dim(probe_dim.0.clone(), probe_dim.1.clone())
+            .hash_table(hash_table)
+            .build()?;
+
+        let mut build_relation = (build_rel_key, build_rel_pay);
+        let mut probe_relation = (probe_rel_key, probe_rel_pay);
+
+        let mut timer = Instant::now();
+
+        build_relation
+            .into_cuda_iter_with_strategy(transfer_strategy, chunk_len)?
+            .fold(|(key, val), stream| hj_op.build(key, val, stream))?;
+
+        let mut dur = timer.elapsed();
+        let build_nanos = dur.as_secs() * 10_u64.pow(9) + dur.subsec_nanos() as u64;
+
+        timer = Instant::now();
+
+        probe_relation
+            .into_cuda_iter_with_strategy(transfer_strategy, chunk_len)?
+            .fold(|(key, val), stream| hj_op.probe_count(key, val, &result_counts, stream))?;
+
+        dur = timer.elapsed();
+        let probe_nanos = dur.as_secs() * 10_u64.pow(9) + dur.subsec_nanos() as u64;
+
+        Ok((build_nanos as f64, probe_nanos as f64))
+    }
+
+    fn cuda_streaming_unified_hash_join(
+        &mut self,
+        hash_table_alloc: allocator::MemAllocFn<T>,
+        build_dim: (GridSize, BlockSize),
+        probe_dim: (GridSize, BlockSize),
+        chunk_len: usize,
+    ) -> Result<(f64, f64)> {
+        let hash_table_mem = hash_table_alloc(self.hash_table_len);
+        let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
+        let mut result_counts = allocator::Allocator::alloc_mem(
+            allocator::MemType::CudaUniMem,
+            (probe_dim.0.x * probe_dim.1.x) as usize,
+        );
+
+        // Initialize counts
+        if let CudaUniMem(ref mut c) = result_counts {
+            c.iter_mut().map(|count| *count = 0).for_each(drop);
+        }
+
+        let build_rel_key = match self.build_relation_key {
+            Mem::CudaUniMem(ref mut m) => m,
+            _ => unreachable!(),
+        };
+        let build_rel_pay = match self.build_relation_payload {
+            Mem::CudaUniMem(ref mut m) => m,
+            _ => unreachable!(),
+        };
+        let probe_rel_key = match self.probe_relation_key {
+            Mem::CudaUniMem(ref mut m) => m,
+            _ => unreachable!(),
+        };
+        let probe_rel_pay = match self.probe_relation_payload {
+            Mem::CudaUniMem(ref mut m) => m,
+            _ => unreachable!(),
+        };
+
+        let hj_op = hash_join::CudaHashJoinBuilder::<T>::default()
+            .hashing_scheme(self.hashing_scheme)
+            .build_dim(build_dim.0.clone(), build_dim.1.clone())
+            .probe_dim(probe_dim.0.clone(), probe_dim.1.clone())
+            .hash_table(hash_table)
+            .build()?;
+
+        let mut build_relation = (build_rel_key, build_rel_pay);
+        let mut probe_relation = (probe_rel_key, probe_rel_pay);
+
+        let mut timer = Instant::now();
+
+        build_relation
+            .into_cuda_iter(chunk_len)?
+            .fold(|(key, val), stream| hj_op.build(key, val, stream))?;
+
+        let mut dur = timer.elapsed();
+        let build_nanos = dur.as_secs() * 10_u64.pow(9) + dur.subsec_nanos() as u64;
+
+        timer = Instant::now();
+
+        probe_relation
+            .into_cuda_iter(chunk_len)?
+            .fold(|(key, val), stream| hj_op.probe_count(key, val, &result_counts, stream))?;
+
+        dur = timer.elapsed();
+        let probe_nanos = dur.as_secs() * 10_u64.pow(9) + dur.subsec_nanos() as u64;
+
+        Ok((build_nanos as f64, probe_nanos as f64))
     }
 
     fn cpu_hash_join(
