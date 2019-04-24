@@ -578,7 +578,7 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
                     |((partition_fst, partition_snd), (strategy_fst, strategy_snd))| {
                         let pf = af.clone();
                         let unowned_context = CurrentContext::get_current()?;
-                        let handle: ScopedJoinHandle<Result<()>> = scope.spawn(move |_| {
+                        let _handle: ScopedJoinHandle<Result<()>> = scope.spawn(move |_| {
                             CurrentContext::set_current(&unowned_context)?;
                             let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
                             partition_fst
@@ -614,8 +614,6 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
                             Ok(())
                         });
 
-                        // FIXME: Handle boxed error without unwrap()
-                        handle.join().unwrap()?;
                         Ok(())
                     },
                 )
