@@ -923,22 +923,19 @@ where
 
         let mut build_relation = (build_rel_key, build_rel_pay);
         let mut probe_relation = (probe_rel_key, probe_rel_pay);
+        let mut build_iter =
+            build_relation.into_cuda_iter_with_strategy(transfer_strategy, chunk_len)?;
+        let mut probe_iter =
+            probe_relation.into_cuda_iter_with_strategy(transfer_strategy, chunk_len)?;
 
         let mut timer = Instant::now();
-
-        build_relation
-            .into_cuda_iter_with_strategy(transfer_strategy, chunk_len)?
-            .fold(|(key, val), stream| hj_op.build(key, val, stream))?;
-
+        build_iter.fold(|(key, val), stream| hj_op.build(key, val, stream))?;
         let mut dur = timer.elapsed();
         let build_nanos = dur.as_secs() * 10_u64.pow(9) + dur.subsec_nanos() as u64;
 
         timer = Instant::now();
-
-        probe_relation
-            .into_cuda_iter_with_strategy(transfer_strategy, chunk_len)?
+        probe_iter
             .fold(|(key, val), stream| hj_op.probe_count(key, val, &result_counts, stream))?;
-
         dur = timer.elapsed();
         let probe_nanos = dur.as_secs() * 10_u64.pow(9) + dur.subsec_nanos() as u64;
 
