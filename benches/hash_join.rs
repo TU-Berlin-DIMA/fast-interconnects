@@ -185,8 +185,7 @@ struct CmdOpt {
     //   unified: CUDA Unified memory (default)
     //   numa: NUMA-local memory on node specified with [inner,outer]-rel-location
     #[structopt(
-        short = "m",
-        long = "mem-type",
+        long = "rel-mem-type",
         default_value = "Unified",
         raw(possible_values = "&ArgMemType::variants()", case_insensitive = "true")
     )]
@@ -209,9 +208,8 @@ struct CmdOpt {
     //   unified: CUDA Unified memory (default)
     //   numa: NUMA-local memory on node specified with hash-table-location
     #[structopt(
-        short = "m",
-        long = "mem-type",
-        default_value = "Unified",
+        long = "hash-table-mem-type",
+        default_value = "Device",
         raw(possible_values = "&ArgMemType::variants()", case_insensitive = "true")
     )]
     hash_table_mem_type: ArgMemType,
