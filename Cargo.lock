@@ -506,7 +506,7 @@ dependencies = [
 [[package]]
 name = "rustacuda"
 version = "0.1.0"
-source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#bd230987ad1da681c6a2481e2cd984af452a9e59"
+source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#09b29c527cfebb61312aacf46a5c6c9b09f0ebc8"
 dependencies = [
  "bitflags 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "cuda-sys 0.2.1-alpha.0 (git+https://github.com/LutzCle/cuda-sys?branch=cuda-10.0)",
@@ -517,12 +517,12 @@ dependencies = [
 [[package]]
 name = "rustacuda_core"
 version = "0.1.0"
-source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#bd230987ad1da681c6a2481e2cd984af452a9e59"
+source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#09b29c527cfebb61312aacf46a5c6c9b09f0ebc8"
 
 [[package]]
 name = "rustacuda_derive"
 version = "0.1.0"
-source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#bd230987ad1da681c6a2481e2cd984af452a9e59"
+source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#09b29c527cfebb61312aacf46a5c6c9b09f0ebc8"
 dependencies = [
  "proc-macro2 0.4.23 (registry+https://github.com/rust-lang/crates.io-index)",
  "quote 0.6.10 (registry+https://github.com/rust-lang/crates.io-index)",
