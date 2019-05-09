@@ -15,9 +15,7 @@ use std::mem::size_of;
 use std::ops::{Deref, DerefMut};
 use std::os::raw::{c_int, c_void};
 use std::slice;
-use std::u8;
 
-use super::hw_info::ProcessorCache;
 use crate::error::{Error, ErrorKind, Result, ResultExt};
 use crate::runtime::cuda_wrapper::{host_register, host_unregister};
 use crate::runtime::memory::PageLock;
@@ -37,8 +35,6 @@ extern "C" {
 pub struct NumaMemory<T> {
     pointer: *mut T,
     len: usize,
-    base_pointer: *mut T,
-    alignment: usize,
     node: u16,
     is_page_locked: bool,
 }
@@ -46,28 +42,21 @@ pub struct NumaMemory<T> {
 impl<T> NumaMemory<T> {
     /// Allocates a new memory region with the specified capacity on the
     /// specified NUMA node.
+    ///
+    /// numa_alloc_onnode is currently (as of 2019-05-09, using libnuma-2.0.11)
+    /// implemented by allocating memory using mmap() followed by NUMA-binding
+    /// it using mbind(). As MMAP_ANONYMOUS allocates pages, it's not necessary
+    /// to do manual page alignment.
     pub fn alloc_on_node(len: usize, node: u16) -> Self {
-        // Get page alignment
-        let alignment = ProcessorCache::page_size();
-
         let size = len * size_of::<T>();
-        let base_pointer = unsafe { numa_alloc_onnode(size + alignment, node.into()) } as *mut T;
-        if base_pointer.is_null() {
+        let pointer = unsafe { numa_alloc_onnode(size, node.into()) } as *mut T;
+        if pointer.is_null() {
             panic!("Couldn't allocate memory on NUMA node {}", node);
         }
-
-        // Align to page size
-        // Note: use std::pointer::align_offset() when in stable branch
-        let offset = (base_pointer as usize) & alignment;
-        let pointer = unsafe { (base_pointer as *mut u8).add(offset) as *mut T };
-
-        assert!((pointer as usize) & alignment == 0);
 
         Self {
             pointer,
             len,
-            base_pointer,
-            alignment,
             node,
             is_page_locked: false,
         }
@@ -136,7 +125,7 @@ impl<T> Drop for NumaMemory<T> {
         }
 
         let size = self.len * size_of::<T>();
-        unsafe { numa_free(self.base_pointer as *mut c_void, size + self.alignment) };
+        unsafe { numa_free(self.pointer as *mut c_void, size) };
     }
 }
 
