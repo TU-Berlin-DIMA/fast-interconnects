@@ -550,7 +550,7 @@ impl<T: DeviceCopy + NullKey> HashTable<T> {
     /// The hash table can be used on GPUs. It cannot always be used on CPUs,
     /// due to the possibility of using GPU device memory. This also holds true
     /// for NVLink 2.0 on POWER9.
-    pub fn new_on_gpu(mem: Mem<T>, size: usize) -> Result<Self> {
+    pub fn new_on_gpu(mut mem: Mem<T>, size: usize) -> Result<Self> {
         ensure!(
             size.is_power_of_two(),
             "Hash table size must be a power of two"
@@ -560,19 +560,33 @@ impl<T: DeviceCopy + NullKey> HashTable<T> {
             "Provided memory must be larger than hash table size"
         );
 
+        let mem_ptr = mem.as_ptr();
+        let mem_len = mem.len();
+
         // Initialize hash table
-        unsafe {
-            cuMemsetD32_v2(
-                mem.as_ptr() as *mut c_void as u64,
-                T::null_key().as_(),
-                mem.len()
-                    .checked_mul(size_of::<T>() / size_of::<c_uint>())
-                    .ok_or_else(|| {
-                        ErrorKind::IntegerOverflow("Failed to compute hash table bytes".to_string())
-                    })?,
-            )
+        match mem {
+            Mem::SysMem(ref mut mem) => mem.iter_mut().by_ref().for_each(|x| *x = T::null_key()),
+            Mem::NumaMem(ref mut mem) => mem.iter_mut().by_ref().for_each(|x| *x = T::null_key()),
+            Mem::CudaPinnedMem(ref mut mem) => {
+                mem.iter_mut().by_ref().for_each(|x| *x = T::null_key())
+            }
+            _ => {
+                unsafe {
+                    cuMemsetD32_v2(
+                        mem_ptr as *mut c_void as u64,
+                        T::null_key().as_(),
+                        mem_len
+                            .checked_mul(size_of::<T>() / size_of::<c_uint>())
+                            .ok_or_else(|| {
+                                ErrorKind::IntegerOverflow(
+                                    "Failed to compute hash table bytes".to_string(),
+                                )
+                            })?,
+                    )
+                }
+                .to_result()?;
+            }
         }
-        .to_result()?;
 
         Ok(Self { mem, size })
     }
