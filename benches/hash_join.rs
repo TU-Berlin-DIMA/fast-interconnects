@@ -700,10 +700,10 @@ impl HashJoinBenchBuilder {
         self
     }
 
-    fn build_with_data_gen<T: Copy + Default + DeviceCopy>(
-        &mut self,
-        mut data_gen_fn: DataGenFn<T>,
-    ) -> Result<HashJoinBench<T>> {
+    fn build_with_data_gen<T>(&mut self, mut data_gen_fn: DataGenFn<T>) -> Result<HashJoinBench<T>>
+    where
+        T: Copy + Default + DeviceCopy + EnsurePhysicallyBacked,
+    {
         // Allocate memory for data sets
         let mut memory: VecDeque<_> = [
             (self.inner_len, self.inner_mem_type, self.inner_location),
@@ -717,12 +717,25 @@ impl HashJoinBenchBuilder {
                 ArgMemTypeHelper { mem_type, location }.into(),
                 len,
             );
+
+            // Force the OS to physically allocate the memory
+            match mem {
+                DerefMem::SysMem(ref mut mem) => T::ensure_physically_backed(mem.as_mut_slice()),
+                DerefMem::NumaMem(ref mut mem) => T::ensure_physically_backed(mem.as_mut_slice()),
+                DerefMem::CudaPinnedMem(ref mut mem) => {
+                    T::ensure_physically_backed(mem.as_mut_slice())
+                }
+                _ => {}
+            };
+
+            // If user selected NumaLazyPinned, then pin the memory
             match (mem_type, &mut mem) {
                 (ArgMemType::NumaLazyPinned, DerefMem::NumaMem(lazy_pinned_mem)) => lazy_pinned_mem
                     .page_lock()
                     .expect("Failed to lazily pin memory"),
                 _ => {}
             };
+
             mem
         })
         .collect();
