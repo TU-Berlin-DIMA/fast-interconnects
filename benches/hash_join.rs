@@ -60,6 +60,7 @@ arg_enum! {
     #[derive(Copy, Clone, Debug, PartialEq)]
     enum ArgDataSet {
         Blanas,
+        Blanas4MB,
         Kim,
         Test,
     }
@@ -228,6 +229,7 @@ struct CmdOpt {
 
     /// Use a pre-defined data set.
     //   blanas: Blanas et al. "Main memory hash join algorithms for multi-core CPUs"
+    //   blanas4mb: Blanas, but with a 4 MiB inner relation
     //   kim: Kim et al. "Sort vs. hash revisited"
     //   test: A small data set for testing on the laptop
     #[structopt(
@@ -533,6 +535,17 @@ where
             datagen::popular::Kim::foreign_key_len(),
             Box::new(|pk_rel, fk_rel| datagen::popular::Kim::gen(pk_rel, fk_rel)),
         ),
+        ArgDataSet::Blanas4MB => {
+            let gen = |pk_rel: &mut [_], fk_rel: &mut [_]| {
+                datagen::relation::UniformRelation::gen_primary_key(pk_rel)?;
+                datagen::relation::UniformRelation::gen_foreign_key_from_primary_key(
+                    fk_rel, pk_rel,
+                );
+                Ok(())
+            };
+
+            (512 * 2_usize.pow(10), 256 * 2_usize.pow(20), Box::new(gen))
+        }
         ArgDataSet::Test => {
             let gen = |pk_rel: &mut [_], fk_rel: &mut [_]| {
                 datagen::relation::UniformRelation::gen_primary_key(pk_rel)?;
