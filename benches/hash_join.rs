@@ -337,8 +337,16 @@ impl DataPoint {
             data_set: Some(cmd.data_set.to_string()),
             execution_method: Some(cmd.execution_method),
             device_codename: Some(dev_codename_str),
-            transfer_strategy: Some(cmd.transfer_strategy),
-            chunk_bytes: Some(cmd.chunk_bytes),
+            transfer_strategy: if cmd.execution_method == ArgExecutionMethod::GpuStream {
+                Some(cmd.transfer_strategy)
+            } else {
+                None
+            },
+            chunk_bytes: if cmd.execution_method == ArgExecutionMethod::GpuStream {
+                Some(cmd.chunk_bytes)
+            } else {
+                None
+            },
             threads: if cmd.execution_method == ArgExecutionMethod::Cpu {
                 Some(cmd.threads)
             } else {
