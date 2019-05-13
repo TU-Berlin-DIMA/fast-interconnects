@@ -359,9 +359,13 @@ impl DataPoint {
         DataPoint {
             hash_table_bytes: Some(hjb.hash_table_len * size_of::<T>()),
             build_tuples: Some(hjb.build_relation_key.len()),
-            build_bytes: Some(hjb.build_relation_key.len() * size_of::<T>()),
+            build_bytes: Some(
+                (hjb.build_relation_key.len() + hjb.build_relation_payload.len()) * size_of::<T>(),
+            ),
             probe_tuples: Some(hjb.probe_relation_key.len()),
-            probe_bytes: Some(hjb.probe_relation_key.len() * size_of::<T>()),
+            probe_bytes: Some(
+                (hjb.probe_relation_key.len() + hjb.probe_relation_payload.len()) * size_of::<T>(),
+            ),
             ..self.clone()
         }
     }
