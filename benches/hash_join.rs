@@ -284,6 +284,7 @@ struct CmdOpt {
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct DataPoint {
+    pub data_set: Option<String>,
     pub hostname: String,
     pub execution_method: Option<ArgExecutionMethod>,
     pub device_codename: Option<String>,
@@ -292,7 +293,7 @@ pub struct DataPoint {
     pub threads: Option<usize>,
     pub hashing_scheme: Option<ArgHashingScheme>,
     pub hash_table_memory_type: Option<ArgMemType>,
-    pub hash_table_memory_node: Option<u16>,
+    pub hash_table_memory_location: Option<u16>,
     pub hash_table_bytes: Option<usize>,
     pub tuple_bytes: Option<ArgTupleBytes>,
     pub relation_memory_type: Option<ArgMemType>,
@@ -331,6 +332,7 @@ impl DataPoint {
         };
 
         let dp = DataPoint {
+            data_set: Some(cmd.data_set.to_string()),
             execution_method: Some(cmd.execution_method),
             device_codename: Some(dev_codename_str),
             transfer_strategy: Some(cmd.transfer_strategy),
@@ -342,7 +344,7 @@ impl DataPoint {
             },
             hashing_scheme: Some(cmd.hashing_scheme),
             hash_table_memory_type: Some(cmd.hash_table_mem_type),
-            hash_table_memory_node: Some(cmd.hash_table_location),
+            hash_table_memory_location: Some(cmd.hash_table_location),
             tuple_bytes: Some(cmd.tuple_bytes),
             relation_memory_type: Some(cmd.mem_type),
             inner_relation_memory_location: Some(cmd.inner_rel_location),
