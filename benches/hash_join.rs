@@ -52,7 +52,7 @@ use std::collections::vec_deque::VecDeque;
 use std::mem::size_of;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use structopt::StructOpt;
 
@@ -308,6 +308,17 @@ pub struct DataPoint {
     pub warm_up: Option<bool>,
     pub build_ns: Option<f64>,
     pub probe_ns: Option<f64>,
+    pub build_warm_up_ns: Option<f64>,
+    pub probe_warm_up_ns: Option<f64>,
+    pub build_copy_ns: Option<f64>,
+    pub probe_copy_ns: Option<f64>,
+    pub build_compute_ns: Option<f64>,
+    pub probe_compute_ns: Option<f64>,
+    pub build_cool_down_ns: Option<f64>,
+    pub probe_cool_down_ns: Option<f64>,
+    pub hash_table_malloc_ns: Option<f64>,
+    pub relation_malloc_ns: Option<f64>,
+    pub relation_gen_ns: Option<f64>,
 }
 
 impl DataPoint {
@@ -379,6 +390,14 @@ impl DataPoint {
             ..self.clone()
         }
     }
+
+    fn set_init_time(&self, malloc: Duration, data_gen: Duration) -> DataPoint {
+        DataPoint {
+            relation_malloc_ns: Some(malloc.as_nanos() as f64),
+            relation_gen_ns: Some(data_gen.as_nanos() as f64),
+            ..self.clone()
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -408,7 +427,7 @@ fn main() -> Result<()> {
 fn args_to_bench<T>(
     cmd: &CmdOpt,
     device: Device,
-) -> Result<(Box<FnMut() -> Result<(f64, f64)>>, DataPoint)>
+) -> Result<(Box<FnMut() -> Result<HashJoinPoint>>, DataPoint)>
 where
     T: Default
         + DeviceCopy
@@ -467,7 +486,7 @@ where
 
     // Select data set
     let (inner_relation_len, outer_relation_len, data_gen) = data_gen_fn::<_>(cmd.data_set);
-    let mut hjb = hjb_builder
+    let (mut hjb, malloc_time, data_gen_time) = hjb_builder
         .inner_len(inner_relation_len)
         .outer_len(outer_relation_len)
         .build_with_data_gen(data_gen)?;
@@ -475,10 +494,11 @@ where
     // Construct data point template for CSV
     let dp = DataPoint::new()?
         .fill_from_cmd_options(cmd)?
-        .fill_from_hash_join_bench(&hjb);
+        .fill_from_hash_join_bench(&hjb)
+        .set_init_time(malloc_time, data_gen_time);
 
     // Create closure that wraps a hash join benchmark function
-    let hjc: Box<FnMut() -> Result<(f64, f64)>> = match exec_method {
+    let hjc: Box<FnMut() -> Result<HashJoinPoint>> = match exec_method {
         ArgExecutionMethod::Cpu => Box::new(move || {
             let ht_alloc = allocator::Allocator::deref_mem_alloc_fn::<T>(
                 ArgMemTypeHelper { mem_type, location }.into(),
@@ -573,14 +593,34 @@ fn measure(
     repeat: u32,
     out_file_name: Option<PathBuf>,
     template: DataPoint,
-    mut func: Box<FnMut() -> Result<(f64, f64)>>,
+    mut func: Box<FnMut() -> Result<HashJoinPoint>>,
 ) -> Result<()> {
-    let measurements = (0..repeat)
-        .map(|_| {
-            func().map(|(build_ns, probe_ns)| DataPoint {
-                warm_up: Some(false),
-                build_ns: Some(build_ns),
-                probe_ns: Some(probe_ns),
+    let measurements = (0..=repeat)
+        .zip(std::iter::once(true).chain(std::iter::repeat(false)))
+        .map(|(_, warm_up)| {
+            func().map(|p| DataPoint {
+                warm_up: Some(warm_up),
+                relation_malloc_ns: if warm_up {
+                    template.relation_malloc_ns
+                } else {
+                    None
+                },
+                relation_gen_ns: if warm_up {
+                    template.relation_gen_ns
+                } else {
+                    None
+                },
+                hash_table_malloc_ns: p.hash_table_malloc_ns,
+                build_ns: p.build_ns,
+                probe_ns: p.probe_ns,
+                build_warm_up_ns: p.build_warm_up_ns,
+                probe_warm_up_ns: p.probe_warm_up_ns,
+                build_copy_ns: p.build_copy_ns,
+                probe_copy_ns: p.probe_copy_ns,
+                build_compute_ns: p.build_compute_ns,
+                probe_compute_ns: p.probe_compute_ns,
+                build_cool_down_ns: p.build_cool_down_ns,
+                probe_cool_down_ns: p.probe_cool_down_ns,
                 ..template.clone()
             })
         })
@@ -647,6 +687,21 @@ Max:           {:6.2}          {:6.2}"#,
     );
 
     Ok(())
+}
+
+#[derive(Debug, Default)]
+struct HashJoinPoint {
+    hash_table_malloc_ns: Option<f64>,
+    build_ns: Option<f64>,
+    probe_ns: Option<f64>,
+    build_warm_up_ns: Option<f64>,
+    probe_warm_up_ns: Option<f64>,
+    build_copy_ns: Option<f64>,
+    probe_copy_ns: Option<f64>,
+    build_compute_ns: Option<f64>,
+    probe_compute_ns: Option<f64>,
+    build_cool_down_ns: Option<f64>,
+    probe_cool_down_ns: Option<f64>,
 }
 
 struct HashJoinBench<T: DeviceCopy> {
@@ -727,11 +782,15 @@ impl HashJoinBenchBuilder {
         self
     }
 
-    fn build_with_data_gen<T>(&mut self, mut data_gen_fn: DataGenFn<T>) -> Result<HashJoinBench<T>>
+    fn build_with_data_gen<T>(
+        &mut self,
+        mut data_gen_fn: DataGenFn<T>,
+    ) -> Result<(HashJoinBench<T>, Duration, Duration)>
     where
         T: Copy + Default + DeviceCopy + EnsurePhysicallyBacked,
     {
         // Allocate memory for data sets
+        let malloc_timer = Instant::now();
         let mut memory: VecDeque<_> = [
             (self.inner_len, self.inner_mem_type, self.inner_location),
             (self.inner_len, self.inner_mem_type, self.inner_location),
@@ -766,6 +825,7 @@ impl HashJoinBenchBuilder {
             mem
         })
         .collect();
+        let malloc_time = malloc_timer.elapsed();
 
         let mut inner_key = memory.pop_front().ok_or_else(|| {
             ErrorKind::LogicError(
@@ -789,7 +849,9 @@ impl HashJoinBenchBuilder {
         })?;
 
         // Generate dataset
+        let gen_timer = Instant::now();
         data_gen_fn(inner_key.as_mut_slice(), outer_key.as_mut_slice())?;
+        let gen_time = gen_timer.elapsed();
 
         // Calculate hash table length
         let hash_table_len = self
@@ -802,14 +864,18 @@ impl HashJoinBenchBuilder {
                 ErrorKind::IntegerOverflow("Failed to compute hash table length".to_string())
             })?;
 
-        Ok(HashJoinBench {
-            hashing_scheme: self.hashing_scheme,
-            hash_table_len: hash_table_len,
-            build_relation_key: inner_key.into(),
-            build_relation_payload: inner_payload.into(),
-            probe_relation_key: outer_key.into(),
-            probe_relation_payload: outer_payload.into(),
-        })
+        Ok((
+            HashJoinBench {
+                hashing_scheme: self.hashing_scheme,
+                hash_table_len: hash_table_len,
+                build_relation_key: inner_key.into(),
+                build_relation_payload: inner_payload.into(),
+                probe_relation_key: outer_key.into(),
+                probe_relation_payload: outer_payload.into(),
+            },
+            malloc_time,
+            gen_time,
+        ))
     }
 }
 
@@ -829,12 +895,15 @@ where
         hash_table_alloc: allocator::MemAllocFn<T>,
         build_dim: (GridSize, BlockSize),
         probe_dim: (GridSize, BlockSize),
-    ) -> Result<(f64, f64)> {
+    ) -> Result<HashJoinPoint> {
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
 
         // FIXME: specify load factor as argument
+        let ht_malloc_timer = Instant::now();
         let hash_table_mem = hash_table_alloc(self.hash_table_len);
         let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
+        let ht_malloc_time = ht_malloc_timer.elapsed();
+
         let mut result_counts = allocator::Allocator::alloc_mem(
             allocator::MemType::CudaUniMem,
             (probe_dim.0.x * probe_dim.1.x) as usize,
@@ -899,10 +968,12 @@ where
         let probe_millis = stop_event.elapsed_time_f32(&start_event)?;
 
         stream.synchronize()?;
-        Ok((
-            build_millis as f64 * 10_f64.powf(6.0),
-            probe_millis as f64 * 10_f64.powf(6.0),
-        ))
+        Ok(HashJoinPoint {
+            build_ns: Some(build_millis as f64 * 10_f64.powf(6.0)),
+            probe_ns: Some(probe_millis as f64 * 10_f64.powf(6.0)),
+            hash_table_malloc_ns: Some(ht_malloc_time.as_nanos() as f64),
+            ..Default::default()
+        })
     }
 
     fn cuda_streaming_hash_join(
@@ -912,9 +983,12 @@ where
         probe_dim: (GridSize, BlockSize),
         transfer_strategy: CudaTransferStrategy,
         chunk_len: usize,
-    ) -> Result<(f64, f64)> {
+    ) -> Result<HashJoinPoint> {
+        let ht_malloc_timer = Instant::now();
         let hash_table_mem = hash_table_alloc(self.hash_table_len);
         let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
+        let ht_malloc_time = ht_malloc_timer.elapsed();
+
         let mut result_counts = allocator::Allocator::alloc_mem(
             allocator::MemType::CudaUniMem,
             (probe_dim.0.x * probe_dim.1.x) as usize,
@@ -968,18 +1042,28 @@ where
         let mut probe_iter =
             probe_relation.into_cuda_iter_with_strategy(transfer_strategy, chunk_len)?;
 
-        let mut timer = Instant::now();
-        build_iter.fold(|(key, val), stream| hj_op.build(key, val, stream))?;
-        let mut dur = timer.elapsed();
-        let build_nanos = dur.as_secs() * 10_u64.pow(9) + dur.subsec_nanos() as u64;
+        let build_timer = Instant::now();
+        let build_mnts = build_iter.fold(|(key, val), stream| hj_op.build(key, val, stream))?;
+        let build_time = build_timer.elapsed();
 
-        timer = Instant::now();
-        probe_iter
+        let probe_timer = Instant::now();
+        let probe_mnts = probe_iter
             .fold(|(key, val), stream| hj_op.probe_count(key, val, &result_counts, stream))?;
-        dur = timer.elapsed();
-        let probe_nanos = dur.as_secs() * 10_u64.pow(9) + dur.subsec_nanos() as u64;
+        let probe_time = probe_timer.elapsed();
 
-        Ok((build_nanos as f64, probe_nanos as f64))
+        Ok(HashJoinPoint {
+            build_ns: Some(build_time.as_nanos() as f64),
+            probe_ns: Some(probe_time.as_nanos() as f64),
+            hash_table_malloc_ns: Some(ht_malloc_time.as_nanos() as f64),
+            build_warm_up_ns: build_mnts.warm_up_ns,
+            probe_warm_up_ns: probe_mnts.warm_up_ns,
+            build_copy_ns: build_mnts.copy_ns,
+            probe_copy_ns: probe_mnts.copy_ns,
+            build_compute_ns: build_mnts.compute_ns,
+            probe_compute_ns: probe_mnts.compute_ns,
+            build_cool_down_ns: build_mnts.cool_down_ns,
+            probe_cool_down_ns: probe_mnts.cool_down_ns,
+        })
     }
 
     fn cuda_streaming_unified_hash_join(
@@ -988,9 +1072,12 @@ where
         build_dim: (GridSize, BlockSize),
         probe_dim: (GridSize, BlockSize),
         chunk_len: usize,
-    ) -> Result<(f64, f64)> {
+    ) -> Result<HashJoinPoint> {
+        let ht_malloc_timer = Instant::now();
         let hash_table_mem = hash_table_alloc(self.hash_table_len);
         let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
+        let ht_malloc_time = ht_malloc_timer.elapsed();
+
         let mut result_counts = allocator::Allocator::alloc_mem(
             allocator::MemType::CudaUniMem,
             (probe_dim.0.x * probe_dim.1.x) as usize,
@@ -1028,35 +1115,44 @@ where
         let mut build_relation = (build_rel_key, build_rel_pay);
         let mut probe_relation = (probe_rel_key, probe_rel_pay);
 
-        let mut timer = Instant::now();
-
-        build_relation
+        let build_timer = Instant::now();
+        let build_mnts = build_relation
             .into_cuda_iter(chunk_len)?
             .fold(|(key, val), stream| hj_op.build(key, val, stream))?;
+        let build_time = build_timer.elapsed();
 
-        let mut dur = timer.elapsed();
-        let build_nanos = dur.as_secs() * 10_u64.pow(9) + dur.subsec_nanos() as u64;
-
-        timer = Instant::now();
-
-        probe_relation
+        let probe_timer = Instant::now();
+        let probe_mnts = probe_relation
             .into_cuda_iter(chunk_len)?
             .fold(|(key, val), stream| hj_op.probe_count(key, val, &result_counts, stream))?;
+        let probe_time = probe_timer.elapsed();
 
-        dur = timer.elapsed();
-        let probe_nanos = dur.as_secs() * 10_u64.pow(9) + dur.subsec_nanos() as u64;
-
-        Ok((build_nanos as f64, probe_nanos as f64))
+        Ok(HashJoinPoint {
+            build_ns: Some(build_time.as_nanos() as f64),
+            probe_ns: Some(probe_time.as_nanos() as f64),
+            hash_table_malloc_ns: Some(ht_malloc_time.as_nanos() as f64),
+            build_warm_up_ns: build_mnts.warm_up_ns,
+            probe_warm_up_ns: probe_mnts.warm_up_ns,
+            build_copy_ns: build_mnts.copy_ns,
+            probe_copy_ns: probe_mnts.copy_ns,
+            build_compute_ns: build_mnts.compute_ns,
+            probe_compute_ns: probe_mnts.compute_ns,
+            build_cool_down_ns: build_mnts.cool_down_ns,
+            probe_cool_down_ns: probe_mnts.cool_down_ns,
+        })
     }
 
     fn cpu_hash_join(
         &self,
         threads: usize,
         hash_table_alloc: allocator::DerefMemAllocFn<T>,
-    ) -> Result<(f64, f64)> {
+    ) -> Result<HashJoinPoint> {
+        let ht_malloc_timer = Instant::now();
         let mut hash_table_mem = hash_table_alloc(self.hash_table_len);
         T::ensure_physically_backed(hash_table_mem.as_mut_slice());
         let hash_table = hash_join::HashTable::new_on_cpu(hash_table_mem, self.hash_table_len)?;
+        let ht_malloc_time = ht_malloc_timer.elapsed();
+
         let mut result_counts = vec![0; threads];
 
         let thread_pool = rayon::ThreadPoolBuilder::new()
@@ -1103,8 +1199,7 @@ where
             .hashing_scheme(self.hashing_scheme)
             .hash_table(Arc::new(hash_table));
 
-        let mut timer = Instant::now();
-
+        let build_timer = Instant::now();
         thread_pool.scope(|s| {
             for ((_tid, rel), pay) in (0..threads).zip(build_rel_chunks).zip(build_pay_chunks) {
                 let mut hj_op = hj_builder.build();
@@ -1113,12 +1208,9 @@ where
                 });
             }
         });
+        let build_time = build_timer.elapsed();
 
-        let mut dur = timer.elapsed();
-        let build_nanos = dur.as_secs() * 10_u64.pow(9) + dur.subsec_nanos() as u64;
-
-        timer = Instant::now();
-
+        let probe_timer = Instant::now();
         thread_pool.scope(|s| {
             for (((_tid, rel), pay), res) in (0..threads)
                 .zip(probe_rel_chunks)
@@ -1133,10 +1225,13 @@ where
                 });
             }
         });
+        let probe_time = probe_timer.elapsed();
 
-        dur = timer.elapsed();
-        let probe_nanos = dur.as_secs() * 10_u64.pow(9) + dur.subsec_nanos() as u64;
-
-        Ok((build_nanos as f64, probe_nanos as f64))
+        Ok(HashJoinPoint {
+            build_ns: Some(build_time.as_nanos() as f64),
+            probe_ns: Some(probe_time.as_nanos() as f64),
+            hash_table_malloc_ns: Some(ht_malloc_time.as_nanos() as f64),
+            ..Default::default()
+        })
     }
 }

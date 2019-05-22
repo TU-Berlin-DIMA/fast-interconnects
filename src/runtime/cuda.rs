@@ -19,13 +19,16 @@ use crossbeam_utils::thread::{scope, ScopedJoinHandle};
 
 use rustacuda::context::CurrentContext;
 use rustacuda::error::CudaResult;
+use rustacuda::event::{Event, EventFlags};
 use rustacuda::memory::{
     AsyncCopyDestination, DeviceBuffer, DeviceCopy, LockedBuffer, UnifiedBuffer,
 };
 use rustacuda::stream::{Stream, StreamFlags};
 
 use std::cmp::min;
+use std::default::Default;
 use std::thread::Result as ThreadResult;
+use std::time::Instant;
 
 use crate::error::{ErrorKind, Result, ResultExt};
 use crate::runtime::cuda_wrapper::{host_register, host_unregister, prefetch_async};
@@ -125,6 +128,22 @@ pub trait IntoCudaIteratorWithStrategy<'a> {
         strategy: CudaTransferStrategy,
         chunk_len: usize,
     ) -> Result<Self::Iter>;
+}
+
+/// Timings of the `CudaTransferStrategy` phases
+#[derive(Debug, Default)]
+pub struct CudaTransferStrategyMeasurement {
+    /// Warm up phase in nanoseconds
+    pub warm_up_ns: Option<f64>,
+
+    /// Copy phase in nanoseconds
+    pub copy_ns: Option<f64>,
+
+    /// Compute phase (i.e., kernel execution) in nanoseconds
+    pub compute_ns: Option<f64>,
+
+    /// Cool down phase in nanoseconds
+    pub cool_down_ns: Option<f64>,
 }
 
 /// Converts a tuple of two mutable slices into a CUDA iterator.
@@ -560,7 +579,7 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
     /// let mut result_host = 0.0f32;
     /// result.copy_to(&mut result_host).unwrap();
     /// ```
-    pub fn fold<F>(&mut self, f: F) -> Result<()>
+    pub fn fold<F>(&mut self, f: F) -> Result<CudaTransferStrategyMeasurement>
     where
         // FIXME: should be using a mutable LaunchableSlice type
         F: Fn((LaunchableSlice<R>, LaunchableSlice<S>), &Stream) -> Result<()> + Send + Sync,
@@ -570,60 +589,111 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
         let chunk_len = self.chunk_len;
         let af = std::sync::Arc::new(f);
 
-        let result: ThreadResult<Result<()>> = scope(|scope| {
-            partitions
+        let summed_times: ThreadResult<Result<_>> = scope(|scope| {
+            let mut thread_handles = partitions
                 .iter_mut()
                 .zip(strategy_impls.iter_mut())
                 .map(
                     |((partition_fst, partition_snd), (strategy_fst, strategy_snd))| {
                         let pf = af.clone();
                         let unowned_context = CurrentContext::get_current()?;
-                        let _handle: ScopedJoinHandle<Result<()>> = scope.spawn(move |_| {
+                        let handle: ScopedJoinHandle<Result<_>> = scope.spawn(move |_| {
                             CurrentContext::set_current(&unowned_context)?;
                             let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
-                            partition_fst
+                            let times = partition_fst
                                 .chunks_mut(chunk_len)
                                 .zip(partition_snd.chunks_mut(chunk_len))
                                 .map(|(fst, snd)| {
+                                    let warm_up_timer = Instant::now();
                                     strategy_fst.warm_up(&fst)?;
                                     strategy_snd.warm_up(&snd).or_else(|err| {
                                         let _ = strategy_fst.cool_down(&fst);
                                         Err(err)
                                     })?;
+                                    let warm_up_ns = warm_up_timer.elapsed().as_nanos() as f64;
+
+                                    let begin_copy_event = Event::new(EventFlags::DEFAULT)?;
+                                    begin_copy_event.record(&stream)?;
 
                                     let fst_chunk = strategy_fst.copy_to_device(&fst, &stream)?;
                                     let snd_chunk = strategy_snd.copy_to_device(&snd, &stream)?;
 
-                                    // We must run cool_down(). Thus, we can't
-                                    // immediately return if we get an error result.
-                                    // Instead, save the result for later and run
-                                    // cool_down() next.
-                                    let result = pf((fst_chunk, snd_chunk), &stream);
+                                    let end_copy_event = Event::new(EventFlags::DEFAULT)?;
+                                    end_copy_event.record(&stream)?;
 
-                                    let fst_result = strategy_fst.cool_down(&fst);
+                                    let begin_comp_event = Event::new(EventFlags::DEFAULT)?;
+                                    begin_comp_event.record(&stream)?;
+
+                                    pf((fst_chunk, snd_chunk), &stream)?;
+
+                                    let end_comp_event = Event::new(EventFlags::DEFAULT)?;
+                                    end_comp_event.record(&stream)?;
+
+                                    // Wait for the copy to complete before
+                                    // cooling down resources created in the warm_up
+                                    end_copy_event.synchronize()?;
+                                    let copy_ns =
+                                        end_copy_event.elapsed_time_f32(&begin_copy_event)? as f64
+                                            * 10_f64.powf(6.0);
+
+                                    let cool_down_timer = Instant::now();
+                                    strategy_fst.cool_down(&fst)?;
                                     strategy_snd.cool_down(&snd)?;
+                                    let cool_down_ns = cool_down_timer.elapsed().as_nanos() as f64;
 
-                                    // Now we can return the results.
-                                    result?;
-                                    fst_result?;
-                                    Ok(())
+                                    end_comp_event.synchronize()?;
+                                    let comp_ns =
+                                        end_comp_event.elapsed_time_f32(&begin_comp_event)? as f64
+                                            * 10_f64.powf(6.0);
+
+                                    Ok((warm_up_ns, copy_ns, comp_ns, cool_down_ns))
                                 })
-                                .collect::<Result<()>>()?;
+                                .collect::<Result<Vec<(f64, f64, f64, f64)>>>()?;
                             stream.synchronize()?;
 
-                            Ok(())
+                            Ok(times)
                         });
 
-                        Ok(())
+                        Ok(handle)
                     },
                 )
-                .collect::<Result<()>>()?;
-            Ok(())
+                .collect::<Result<
+                    Vec<
+                        crossbeam_utils::thread::ScopedJoinHandle<
+                            '_,
+                            Result<Vec<(f64, f64, f64, f64)>>,
+                        >,
+                    >,
+                >>()?;
+
+            let thread_results = thread_handles
+                .drain(..)
+                .map(|handle| {
+                    let times = handle.join().expect("Failed to join thread");
+                    times
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            let summed_times = thread_results.iter().flatten().fold(
+                CudaTransferStrategyMeasurement {
+                    warm_up_ns: Some(0.0),
+                    copy_ns: Some(0.0),
+                    compute_ns: Some(0.0),
+                    cool_down_ns: Some(0.0),
+                },
+                |m, (warm_up, copy, comp, cool_down)| CudaTransferStrategyMeasurement {
+                    warm_up_ns: m.warm_up_ns.map(|ns| ns + warm_up),
+                    copy_ns: m.copy_ns.map(|ns| ns + copy),
+                    compute_ns: m.compute_ns.map(|ns| ns + comp),
+                    cool_down_ns: m.cool_down_ns.map(|ns| ns + cool_down),
+                    ..Default::default()
+                },
+            );
+
+            Ok(summed_times)
         });
 
-        // FIXME: Handle boxed error without unwrap()
-        result.unwrap()?;
-        Ok(())
+        summed_times.expect("Failure inside thread scope")
     }
 }
 
@@ -671,7 +741,7 @@ impl<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> CudaUnifiedIterator2<'a, R,
     /// user must ensure that the CUDA kernels are safe to execute on multiple
     /// CUDA streams, e.g. by using atomic operations when accessing device
     /// memory.
-    pub fn fold<F>(&mut self, mut f: F) -> Result<()>
+    pub fn fold<F>(&mut self, mut f: F) -> Result<CudaTransferStrategyMeasurement>
     where
         F: FnMut((LaunchableSlice<R>, LaunchableSlice<S>), &Stream) -> Result<()>,
     {
@@ -681,7 +751,7 @@ impl<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> CudaUnifiedIterator2<'a, R,
         let snd = &mut self.data.1;
         let streams = &self.streams;
 
-        (0..data_len)
+        let summed_times = (0..data_len)
             .step_by(chunk_len)
             .map(|start| {
                 let end = min(start + chunk_len, data_len);
@@ -692,23 +762,60 @@ impl<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> CudaUnifiedIterator2<'a, R,
                 let fst_ptr = unsafe { fst.as_unified_ptr().add(range.start) };
                 let snd_ptr = unsafe { snd.as_unified_ptr().add(range.start) };
 
+                let begin_prefetch_event = Event::new(EventFlags::DEFAULT)?;
+                begin_prefetch_event.record(&stream)?;
+
                 prefetch_async(fst_ptr, range.len(), stream)?;
                 prefetch_async(snd_ptr, range.len(), stream)?;
+
+                let end_prefetch_event = Event::new(EventFlags::DEFAULT)?;
+                end_prefetch_event.record(&stream)?;
 
                 let fst_chunk = fst.as_slice()[range.clone()].as_launchable_slice();
                 let snd_chunk = snd.as_slice()[range.clone()].as_launchable_slice();
 
+                let begin_comp_event = Event::new(EventFlags::DEFAULT)?;
+                begin_comp_event.record(&stream)?;
+
                 f((fst_chunk, snd_chunk), stream)?;
 
-                Ok(())
+                let end_comp_event = Event::new(EventFlags::DEFAULT)?;
+                end_comp_event.record(&stream)?;
+
+                end_comp_event.synchronize()?;
+                let prefetch_ns = end_prefetch_event.elapsed_time_f32(&begin_prefetch_event)?
+                    as f64
+                    * 10_f64.powf(6.0);
+                let comp_ns =
+                    end_comp_event.elapsed_time_f32(&begin_comp_event)? as f64 * 10_f64.powf(6.0);
+
+                Ok((prefetch_ns, comp_ns))
             })
-            .collect::<Result<_>>()?;
+            .fold(
+                Ok(CudaTransferStrategyMeasurement {
+                    warm_up_ns: None,
+                    copy_ns: Some(0.0),
+                    compute_ns: Some(0.0),
+                    cool_down_ns: None,
+                }),
+                |accum: Result<_>, times: Result<_>| {
+                    accum.and_then(|m| {
+                        times.and_then(|(prefetch, comp)| {
+                            Ok(CudaTransferStrategyMeasurement {
+                                copy_ns: m.copy_ns.map(|ns| ns + prefetch),
+                                compute_ns: m.compute_ns.map(|ns| ns + comp),
+                                ..Default::default()
+                            })
+                        })
+                    })
+                },
+            )?;
 
         streams
             .iter()
             .map(|stream| stream.synchronize())
             .collect::<CudaResult<()>>()?;
 
-        Ok(())
+        Ok(summed_times)
     }
 }
