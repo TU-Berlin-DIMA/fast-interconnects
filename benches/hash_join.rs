@@ -35,7 +35,7 @@ use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::cuda::{
     CudaTransferStrategy, IntoCudaIterator, IntoCudaIteratorWithStrategy,
 };
-use numa_gpu::runtime::cuda_wrapper::prefetch_async;
+use numa_gpu::runtime::cuda_wrapper::{mem_advise, prefetch_async, MemAdviseFlags, CPU_DEVICE_ID};
 use numa_gpu::runtime::hw_info::{cpu_codename, CudaDeviceInfo};
 use numa_gpu::runtime::memory::*;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
@@ -900,7 +900,16 @@ where
 
         // FIXME: specify load factor as argument
         let ht_malloc_timer = Instant::now();
-        let hash_table_mem = hash_table_alloc(self.hash_table_len);
+        let mut hash_table_mem = hash_table_alloc(self.hash_table_len);
+        if let CudaUniMem(ref mut mem) = hash_table_mem {
+            mem_advise(
+                mem.as_unified_ptr(),
+                mem.len(),
+                MemAdviseFlags::CU_MEM_ADVISE_SET_PREFERRED_LOCATION,
+                CPU_DEVICE_ID,
+            )?;
+            prefetch_async(mem.as_unified_ptr(), mem.len(), CPU_DEVICE_ID, &stream)?;
+        }
         let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
@@ -914,7 +923,7 @@ where
             c.iter_mut().map(|count| *count = 0).for_each(drop);
         }
 
-        // Tune memory locations
+        // Ensure that we measure unified memory transfers from CPU memory
         [
             &mut self.build_relation_key,
             &mut self.probe_relation_key,
@@ -929,7 +938,15 @@ where
                 None
             }
         })
-        .map(|mem| prefetch_async(mem.as_unified_ptr(), mem.len(), &stream))
+        .map(|mem| {
+            mem_advise(
+                mem.as_unified_ptr(),
+                mem.len(),
+                MemAdviseFlags::CU_MEM_ADVISE_SET_PREFERRED_LOCATION,
+                CPU_DEVICE_ID,
+            )?;
+            prefetch_async(mem.as_unified_ptr(), mem.len(), CPU_DEVICE_ID, &stream)
+        })
         .collect::<Result<()>>()?;
 
         stream.synchronize()?;
