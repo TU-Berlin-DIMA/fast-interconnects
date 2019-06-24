@@ -3,18 +3,19 @@
 extern crate cuda_sys;
 extern crate rustacuda;
 
-use rustacuda::context::CurrentContext;
-use rustacuda::device::DeviceAttribute;
 use rustacuda::memory::{DeviceCopy, UnifiedPointer};
 use rustacuda::stream::Stream;
 
 use self::cuda_sys::cuda::{
-    cuCtxGetDevice, cuMemHostRegister_v2, cuMemHostUnregister, cuMemPrefetchAsync, CUdevice,
-    CUstream, CU_MEMHOSTREGISTER_DEVICEMAP, CU_MEMHOSTREGISTER_PORTABLE,
+    cuCtxGetDevice, cuMemAdvise, cuMemHostRegister_v2, cuMemHostUnregister, cuMemPrefetchAsync,
+    CUdevice, CUstream, CU_MEMHOSTREGISTER_DEVICEMAP, CU_MEMHOSTREGISTER_PORTABLE,
 };
 
 use std::mem::{size_of, transmute_copy, zeroed};
 use std::os::raw::c_void;
+
+// re-export mem_advise enum
+pub use self::cuda_sys::cuda::CUmem_advise_enum as MemAdviseFlags;
 
 use crate::error::{Error, Result, ToResult};
 
@@ -49,38 +50,66 @@ pub unsafe fn host_unregister<T>(mem: &[T]) -> Result<()> {
         })
 }
 
+pub const CPU_DEVICE_ID: CUdevice = -1;
+
+pub fn current_device_id() -> Result<CUdevice> {
+    unsafe {
+        let mut cu_device: CUdevice = zeroed();
+        cuCtxGetDevice(&mut cu_device).to_result().map_err(|e| {
+            Error::with_chain::<Error, _>(e.into(), "Failed to get current CUDA device ID")
+        })?;
+        Ok(cu_device)
+    }
+}
+
 /// Prefetch memory to the device specified in the current context.
 pub fn prefetch_async<T: DeviceCopy>(
     mem: UnifiedPointer<T>,
     len: usize,
+    destination_device: CUdevice,
     stream: &Stream,
 ) -> Result<()> {
-    let is_concurrent_managed_access_supported =
-        CurrentContext::get_device()?.get_attribute(DeviceAttribute::ConcurrentManagedAccess)?;
-    if is_concurrent_managed_access_supported == 0 {
-        bail!("The CUDA device does not support concurrent managed access.");
-    }
-
     unsafe {
-        let mut cu_device: CUdevice = zeroed();
-        cuCtxGetDevice(&mut cu_device).to_result().map_err(|e| {
-            Error::with_chain::<Error, _>(e.into(), "Failed to get CUDA device in prefetch_async")
-        })?;
-
         // FIXME: Find a safer solution to replace transmute_copy!!!
         let cu_stream = transmute_copy::<Stream, CUstream>(stream);
         cuMemPrefetchAsync(
             mem.as_raw() as *const c_void as u64,
             len * size_of::<T>(),
-            cu_device,
+            destination_device,
             cu_stream,
         )
         .to_result()
         .map_err(|e| {
             Error::with_chain::<Error, _>(
                 e.into(),
-                format!("Failed to prefetch unified memory to device {}", cu_device),
+                format!(
+                    "Failed to prefetch unified memory to device {}",
+                    destination_device
+                ),
             )
+        })?;
+    }
+
+    Ok(())
+}
+
+/// Advise how the memory range will be used.
+pub fn mem_advise<T: DeviceCopy>(
+    mem: UnifiedPointer<T>,
+    len: usize,
+    advice: MemAdviseFlags,
+    device: CUdevice,
+) -> Result<()> {
+    unsafe {
+        cuMemAdvise(
+            mem.as_raw() as *const c_void as u64,
+            len * size_of::<T>(),
+            advice,
+            device,
+        )
+        .to_result()
+        .map_err(|e| {
+            Error::with_chain::<Error, _>(e.into(), format!("Failed to advise memory location"))
         })?;
     }
 

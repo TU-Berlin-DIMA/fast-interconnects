@@ -31,7 +31,9 @@ use std::thread::Result as ThreadResult;
 use std::time::Instant;
 
 use crate::error::{ErrorKind, Result, ResultExt};
-use crate::runtime::cuda_wrapper::{host_register, host_unregister, prefetch_async};
+use crate::runtime::cuda_wrapper::{
+    current_device_id, host_register, host_unregister, prefetch_async,
+};
 use crate::runtime::memory::{LaunchableMem, LaunchableSlice};
 
 /// Specify the CUDA transfer strategy.
@@ -750,6 +752,7 @@ impl<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> CudaUnifiedIterator2<'a, R,
         let fst = &mut self.data.0;
         let snd = &mut self.data.1;
         let streams = &self.streams;
+        let device_id = current_device_id()?;
 
         let summed_times = (0..data_len)
             .step_by(chunk_len)
@@ -765,8 +768,8 @@ impl<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> CudaUnifiedIterator2<'a, R,
                 let begin_prefetch_event = Event::new(EventFlags::DEFAULT)?;
                 begin_prefetch_event.record(&stream)?;
 
-                prefetch_async(fst_ptr, range.len(), stream)?;
-                prefetch_async(snd_ptr, range.len(), stream)?;
+                prefetch_async(fst_ptr, range.len(), device_id, stream)?;
+                prefetch_async(snd_ptr, range.len(), device_id, stream)?;
 
                 let end_prefetch_event = Event::new(EventFlags::DEFAULT)?;
                 end_prefetch_event.record(&stream)?;

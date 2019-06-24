@@ -84,6 +84,9 @@ pub trait CudaDeviceInfo {
 
     /// Returns the total number of cores that are in the device
     fn cores(&self) -> Result<u32>;
+
+    /// Returns `true` if concurrent managed access is supported by the device
+    fn concurrent_managed_access(&self) -> Result<bool>;
 }
 
 impl CudaDeviceInfo for Device {
@@ -109,5 +112,15 @@ impl CudaDeviceInfo for Device {
 
     fn cores(&self) -> Result<u32> {
         Ok(self.sm_cores()? * self.get_attribute(DeviceAttribute::MultiprocessorCount)? as u32)
+    }
+
+    fn concurrent_managed_access(&self) -> Result<bool> {
+        let is_supported = self.get_attribute(DeviceAttribute::ConcurrentManagedAccess)?;
+
+        Ok(match is_supported {
+            1 => true,
+            0 => false,
+            _ => unreachable!("Concurrent menaged access should return 0 or 1"),
+        })
     }
 }
