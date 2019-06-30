@@ -63,6 +63,8 @@ arg_enum! {
         Blanas4MB,
         Kim,
         Test,
+        Lutz2Gv32G,
+        Lutz32Gv32G,
     }
 }
 
@@ -584,6 +586,36 @@ where
             };
 
             (1000, 1000, Box::new(gen))
+        }
+        ArgDataSet::Lutz2Gv32G => {
+            let gen = |pk_rel: &mut [_], fk_rel: &mut [_]| {
+                datagen::relation::UniformRelation::gen_primary_key(pk_rel)?;
+                datagen::relation::UniformRelation::gen_foreign_key_from_primary_key(
+                    fk_rel, pk_rel,
+                );
+                Ok(())
+            };
+
+            (
+                2 * 2_usize.pow(30) / size_of::<T>(),
+                32 * 2_usize.pow(30) / size_of::<T>(),
+                Box::new(gen),
+            )
+        }
+        ArgDataSet::Lutz32Gv32G => {
+            let gen = |pk_rel: &mut [_], fk_rel: &mut [_]| {
+                datagen::relation::UniformRelation::gen_primary_key(pk_rel)?;
+                datagen::relation::UniformRelation::gen_foreign_key_from_primary_key(
+                    fk_rel, pk_rel,
+                );
+                Ok(())
+            };
+
+            (
+                32 * 2_usize.pow(30) / size_of::<T>(),
+                32 * 2_usize.pow(30) / size_of::<T>(),
+                Box::new(gen),
+            )
         }
     }
 }

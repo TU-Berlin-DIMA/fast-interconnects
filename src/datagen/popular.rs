@@ -73,7 +73,7 @@ impl Blanas {
         256 * 2_usize.pow(20)
     }
 
-    /// Generate the Kim data set.
+    /// Generate the Blanas data set.
     ///
     /// Requires a slice for the primary key attribute, and a slice for the
     /// foreign key attribute. Both slices must have the lengths specified by
