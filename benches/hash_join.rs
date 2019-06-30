@@ -804,6 +804,23 @@ impl HashJoinBenchBuilder {
                 len,
             );
 
+            // If user selected NumaLazyPinned, then pin the memory.
+            // If user selected Unified, then ensure that we measure unified memory transfers from CPU memory
+            match (mem_type, &mut mem) {
+                (ArgMemType::NumaLazyPinned, DerefMem::NumaMem(lazy_pinned_mem)) => lazy_pinned_mem
+                    .page_lock()
+                    .expect("Failed to lazily pin memory"),
+                (ArgMemType::Unified, DerefMem::CudaUniMem(mem)) => {
+                    mem_advise(
+                        mem.as_unified_ptr(),
+                        mem.len(),
+                        MemAdviseFlags::CU_MEM_ADVISE_SET_PREFERRED_LOCATION,
+                        CPU_DEVICE_ID,
+                    )?;
+                }
+                _ => {}
+            };
+
             // Force the OS to physically allocate the memory
             match mem {
                 DerefMem::SysMem(ref mut mem) => T::ensure_physically_backed(mem.as_mut_slice()),
@@ -811,20 +828,14 @@ impl HashJoinBenchBuilder {
                 DerefMem::CudaPinnedMem(ref mut mem) => {
                     T::ensure_physically_backed(mem.as_mut_slice())
                 }
-                _ => {}
+                DerefMem::CudaUniMem(ref mut mem) => {
+                    T::ensure_physically_backed(mem.as_mut_slice())
+                }
             };
 
-            // If user selected NumaLazyPinned, then pin the memory
-            match (mem_type, &mut mem) {
-                (ArgMemType::NumaLazyPinned, DerefMem::NumaMem(lazy_pinned_mem)) => lazy_pinned_mem
-                    .page_lock()
-                    .expect("Failed to lazily pin memory"),
-                _ => {}
-            };
-
-            mem
+            Ok(mem)
         })
-        .collect();
+        .collect::<Result<_>>()?;
         let malloc_time = malloc_timer.elapsed();
 
         let mut inner_key = memory.pop_front().ok_or_else(|| {
@@ -923,32 +934,6 @@ where
             c.iter_mut().map(|count| *count = 0).for_each(drop);
         }
 
-        // Ensure that we measure unified memory transfers from CPU memory
-        [
-            &mut self.build_relation_key,
-            &mut self.probe_relation_key,
-            &mut self.build_relation_payload,
-            &mut self.probe_relation_payload,
-        ]
-        .iter_mut()
-        .filter_map(|mem| {
-            if let CudaUniMem(m) = mem {
-                Some(m)
-            } else {
-                None
-            }
-        })
-        .map(|mem| {
-            mem_advise(
-                mem.as_unified_ptr(),
-                mem.len(),
-                MemAdviseFlags::CU_MEM_ADVISE_SET_PREFERRED_LOCATION,
-                CPU_DEVICE_ID,
-            )?;
-            prefetch_async(mem.as_unified_ptr(), mem.len(), CPU_DEVICE_ID, &stream)
-        })
-        .collect::<Result<()>>()?;
-
         stream.synchronize()?;
 
         let hj_op = hash_join::CudaHashJoinBuilder::<T>::default()
@@ -1002,7 +987,19 @@ where
         chunk_len: usize,
     ) -> Result<HashJoinPoint> {
         let ht_malloc_timer = Instant::now();
-        let hash_table_mem = hash_table_alloc(self.hash_table_len);
+        let mut hash_table_mem = hash_table_alloc(self.hash_table_len);
+        if let CudaUniMem(ref mut mem) = hash_table_mem {
+            mem_advise(
+                mem.as_unified_ptr(),
+                mem.len(),
+                MemAdviseFlags::CU_MEM_ADVISE_SET_PREFERRED_LOCATION,
+                CPU_DEVICE_ID,
+            )?;
+
+            let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
+            prefetch_async(mem.as_unified_ptr(), mem.len(), CPU_DEVICE_ID, &stream)?;
+            stream.synchronize()?;
+        }
         let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
