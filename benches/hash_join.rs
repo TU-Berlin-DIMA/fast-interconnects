@@ -35,7 +35,7 @@ use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::cuda::{
     CudaTransferStrategy, IntoCudaIterator, IntoCudaIteratorWithStrategy,
 };
-use numa_gpu::runtime::cuda_wrapper::{mem_advise, prefetch_async, MemAdviseFlags, CPU_DEVICE_ID};
+// use numa_gpu::runtime::cuda_wrapper::{mem_advise, prefetch_async, MemAdviseFlags, CPU_DEVICE_ID};
 use numa_gpu::runtime::hw_info::{cpu_codename, CudaDeviceInfo};
 use numa_gpu::runtime::memory::*;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
@@ -842,14 +842,14 @@ impl HashJoinBenchBuilder {
                 (ArgMemType::NumaLazyPinned, DerefMem::NumaMem(lazy_pinned_mem)) => lazy_pinned_mem
                     .page_lock()
                     .expect("Failed to lazily pin memory"),
-                (ArgMemType::Unified, DerefMem::CudaUniMem(mem)) => {
-                    mem_advise(
-                        mem.as_unified_ptr(),
-                        mem.len(),
-                        MemAdviseFlags::CU_MEM_ADVISE_SET_PREFERRED_LOCATION,
-                        CPU_DEVICE_ID,
-                    )?;
-                }
+                // (ArgMemType::Unified, DerefMem::CudaUniMem(mem)) => {
+                //     mem_advise(
+                //         mem.as_unified_ptr(),
+                //         mem.len(),
+                //         MemAdviseFlags::CU_MEM_ADVISE_SET_PREFERRED_LOCATION,
+                //         CPU_DEVICE_ID,
+                //     )?;
+                // }
                 _ => {}
             };
 
@@ -944,14 +944,14 @@ where
         // FIXME: specify load factor as argument
         let ht_malloc_timer = Instant::now();
         let mut hash_table_mem = hash_table_alloc(self.hash_table_len);
-        if let CudaUniMem(ref mut mem) = hash_table_mem {
-            mem_advise(
-                mem.as_unified_ptr(),
-                mem.len(),
-                MemAdviseFlags::CU_MEM_ADVISE_SET_PREFERRED_LOCATION,
-                CPU_DEVICE_ID,
-            )?;
-            prefetch_async(mem.as_unified_ptr(), mem.len(), CPU_DEVICE_ID, &stream)?;
+        if let CudaUniMem(ref mut _mem) = hash_table_mem {
+            // mem_advise(
+            //     mem.as_unified_ptr(),
+            //     mem.len(),
+            //     MemAdviseFlags::CU_MEM_ADVISE_SET_PREFERRED_LOCATION,
+            //     CPU_DEVICE_ID,
+            // )?;
+            // prefetch_async(mem.as_unified_ptr(), mem.len(), CPU_DEVICE_ID, &stream)?;
         }
         let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
         let ht_malloc_time = ht_malloc_timer.elapsed();
@@ -1020,17 +1020,17 @@ where
     ) -> Result<HashJoinPoint> {
         let ht_malloc_timer = Instant::now();
         let mut hash_table_mem = hash_table_alloc(self.hash_table_len);
-        if let CudaUniMem(ref mut mem) = hash_table_mem {
-            mem_advise(
-                mem.as_unified_ptr(),
-                mem.len(),
-                MemAdviseFlags::CU_MEM_ADVISE_SET_PREFERRED_LOCATION,
-                CPU_DEVICE_ID,
-            )?;
-
-            let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
-            prefetch_async(mem.as_unified_ptr(), mem.len(), CPU_DEVICE_ID, &stream)?;
-            stream.synchronize()?;
+        if let CudaUniMem(ref mut _mem) = hash_table_mem {
+            // mem_advise(
+            //     mem.as_unified_ptr(),
+            //     mem.len(),
+            //     MemAdviseFlags::CU_MEM_ADVISE_SET_PREFERRED_LOCATION,
+            //     CPU_DEVICE_ID,
+            // )?;
+            //
+            // let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
+            // prefetch_async(mem.as_unified_ptr(), mem.len(), CPU_DEVICE_ID, &stream)?;
+            // stream.synchronize()?;
         }
         let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
         let ht_malloc_time = ht_malloc_timer.elapsed();
