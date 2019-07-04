@@ -459,8 +459,8 @@ where
 
     if cmd.execution_method == ArgExecutionMethod::GpuStream {
         assert!(
-            cmd.mem_type == ArgMemType::System || cmd.mem_type == ArgMemType::Numa || cmd.mem_type == ArgMemType::Unified,
-            "Invalid memory type. Streaming execution method must be either System, Numa, or Unified."
+            cmd.mem_type != ArgMemType::Device,
+            "Invalid memory type. Streaming execution method cannot be used with device memory."
         );
         assert!(
             cmd.transfer_strategy != ArgTransferStrategy::Unified
