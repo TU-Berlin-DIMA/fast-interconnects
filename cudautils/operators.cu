@@ -251,7 +251,7 @@ void gpu_ht_probe_aggregate_linearprobing_int32(
         int32_t const *const __restrict__ hash_table,
         uint64_t const hash_table_entries,
         const int32_t *const __restrict__ join_attr_data,
-        const int32_t *const __restrict__ /* payload_attr_data */,
+        const int32_t *const __restrict__ payload_attr_data,
         uint64_t const data_length,
         uint64_t * __restrict__ aggregation_result
         )
@@ -279,7 +279,7 @@ void gpu_ht_probe_aggregate_linearprobing_int32(
               )
         {
             hash_table_use_last_index = true;
-            aggregation_result[global_idx] += 1;
+            aggregation_result[global_idx] += payload_attr_data[tuple_id];
         }
     }
 }
@@ -290,7 +290,7 @@ void gpu_ht_probe_aggregate_linearprobing_int64(
         int64_t const *const __restrict__ hash_table,
         uint64_t const hash_table_entries,
         const int64_t *const __restrict__ join_attr_data,
-        const int64_t *const __restrict__ /* payload_attr_data */,
+        const int64_t *const __restrict__ payload_attr_data,
         uint64_t const data_length,
         uint64_t * __restrict__ aggregation_result
         )
@@ -318,7 +318,7 @@ void gpu_ht_probe_aggregate_linearprobing_int64(
               )
         {
             hash_table_use_last_index = true;
-            aggregation_result[global_idx] += 1;
+            aggregation_result[global_idx] += payload_attr_data[tuple_id];
         }
     }
 }
@@ -371,7 +371,7 @@ void gpu_ht_probe_aggregate_perfect_int32(
         const int32_t *const __restrict__ hash_table,
         uint64_t const /* hash_table_entries */,
         const int32_t *const __restrict__ join_attribute_data,
-        const int32_t *const __restrict__ /* payload_attributed_data */,
+        const int32_t *const __restrict__ payload_attribute_data,
         uint64_t const data_length,
         uint64_t * __restrict__ aggregation_result
         )
@@ -382,7 +382,7 @@ void gpu_ht_probe_aggregate_perfect_int32(
     for (uint64_t i = global_idx; i < data_length; i += global_threads) {
         int32_t key = join_attribute_data[i];
         if (hash_table[key] != NULL_KEY_32) {
-            aggregation_result[global_idx] += 1;
+            aggregation_result[global_idx] += payload_attribute_data[i];
         }
     }
 }
@@ -393,7 +393,7 @@ void gpu_ht_probe_aggregate_perfect_int64(
         const int64_t *const __restrict__ hash_table,
         uint64_t const /* hash_table_entries */,
         const int64_t *const __restrict__ join_attribute_data,
-        const int64_t *const __restrict__ /* payload_attributed_data */,
+        const int64_t *const __restrict__ payload_attribute_data,
         uint64_t const data_length,
         uint64_t * __restrict__ aggregation_result
         )
@@ -404,7 +404,7 @@ void gpu_ht_probe_aggregate_perfect_int64(
     for (uint64_t i = global_idx; i < data_length; i += global_threads) {
         int64_t key = join_attribute_data[i];
         if (hash_table[key] != NULL_KEY_64) {
-            aggregation_result[global_idx] += 1;
+            aggregation_result[global_idx] += payload_attribute_data[i];
         }
     }
 }
