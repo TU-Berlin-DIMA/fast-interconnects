@@ -597,8 +597,8 @@ where
             };
 
             (
-                2 * 2_usize.pow(30) / size_of::<T>(),
-                32 * 2_usize.pow(30) / size_of::<T>(),
+                2 * 2_usize.pow(30) / (2 * size_of::<T>()),
+                32 * 2_usize.pow(30) / (2 * size_of::<T>()),
                 Box::new(gen),
             )
         }
@@ -612,8 +612,8 @@ where
             };
 
             (
-                32 * 2_usize.pow(30) / size_of::<T>(),
-                32 * 2_usize.pow(30) / size_of::<T>(),
+                32 * 2_usize.pow(30) / (2 * size_of::<T>()),
+                32 * 2_usize.pow(30) / (2 * size_of::<T>()),
                 Box::new(gen),
             )
         }
