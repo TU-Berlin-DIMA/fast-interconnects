@@ -8,7 +8,7 @@ use rustacuda::stream::Stream;
 
 use self::cuda_sys::cuda::{
     cuCtxGetDevice, cuMemAdvise, cuMemHostRegister_v2, cuMemHostUnregister, cuMemPrefetchAsync,
-    CUdevice, CUstream, CU_MEMHOSTREGISTER_DEVICEMAP, CU_MEMHOSTREGISTER_PORTABLE,
+    cuMemcpyAsync, CUdevice, CUstream, CU_MEMHOSTREGISTER_DEVICEMAP, CU_MEMHOSTREGISTER_PORTABLE,
 };
 
 use std::mem::{size_of, transmute_copy, zeroed};
@@ -111,6 +111,35 @@ pub fn mem_advise<T: DeviceCopy>(
         .map_err(|e| {
             Error::with_chain::<Error, _>(e.into(), format!("Failed to advise memory location"))
         })?;
+    }
+
+    Ok(())
+}
+
+/// Copy a slice using CUDA's memcpyAsync function.
+///
+/// CUDA infers the type of copy from the underlying pointers. E.g., host-to-host,
+/// host-to-device, and so on.
+pub fn async_copy<T: DeviceCopy>(dst: &mut [T], src: &[T], stream: &Stream) -> Result<()> {
+    assert!(
+        src.len() == dst.len(),
+        "Source and destination slices have different lengths"
+    );
+
+    unsafe {
+        // FIXME: Find a safer solution to replace transmute_copy!!!
+        let cu_stream = transmute_copy::<Stream, CUstream>(stream);
+
+        let bytes = size_of::<T>() * src.len();
+        if bytes != 0 {
+            cuMemcpyAsync(
+                dst.as_mut_ptr() as u64,
+                src.as_ptr() as u64,
+                bytes,
+                cu_stream,
+            )
+            .to_result()?
+        }
     }
 
     Ok(())

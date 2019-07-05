@@ -15,6 +15,8 @@ use self::cuda_sys::cuda::cudaError_t;
 
 use self::rustacuda::error::CudaError;
 
+use rayon::ThreadPoolBuildError;
+
 error_chain! {
     errors {
         InvalidArgument(msg: String) {
@@ -38,6 +40,7 @@ error_chain! {
     foreign_links {
         Cuda(CudaError);
         Io(::std::io::Error);
+        RayonThreadPoolBuild(ThreadPoolBuildError);
     }
 }
 

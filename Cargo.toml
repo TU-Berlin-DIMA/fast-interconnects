@@ -16,6 +16,7 @@ libc = "~0.2.43"
 num-traits = "~0.2.0"
 paste = "~0.1"
 rand = "~0.6.5"
+rayon = "~1.0.3"
 rustacuda = { git = "https://github.com/LutzCle/RustaCUDA", branch = "custom_mods" }
 zipf = "~5.0.1"
 

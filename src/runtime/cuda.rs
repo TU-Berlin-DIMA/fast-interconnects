@@ -17,6 +17,10 @@
 
 use crossbeam_utils::thread::{scope, ScopedJoinHandle};
 
+use rayon::iter::{IndexedParallelIterator, ParallelIterator};
+use rayon::slice::{ParallelSlice, ParallelSliceMut};
+use rayon::ThreadPoolBuilder;
+
 use rustacuda::context::CurrentContext;
 use rustacuda::error::CudaResult;
 use rustacuda::event::{Event, EventFlags};
@@ -26,6 +30,7 @@ use rustacuda::memory::{
 use rustacuda::stream::{Stream, StreamFlags};
 
 use std::cmp::min;
+use std::collections::LinkedList;
 use std::default::Default;
 use std::thread::Result as ThreadResult;
 use std::time::Instant;
@@ -35,6 +40,54 @@ use crate::runtime::cuda_wrapper::{
     current_device_id, host_register, host_unregister, prefetch_async,
 };
 use crate::runtime::memory::{LaunchableMem, LaunchableSlice};
+
+/// Timer based on CUDA events.
+///
+/// Times the duration of operations scheduled on a CUDA stream.
+///
+/// # Example:
+///
+/// ```
+/// # use numa_gpu::runtime::cuda::EventTimer;
+///
+/// # use rustacuda::quick_init;
+/// # use rustacuda::stream::{Stream, StreamFlags};
+/// #
+/// # let _ctx = quick_init().unwrap();
+/// # let stream = Stream::new(StreamFlags::NON_BLOCKING, None).unwrap();
+/// let timer = EventTimer::record_start(&stream).unwrap();
+/// // ... schedule some work on the queue ...
+/// timer.record_stop(&stream).unwrap();
+/// let time_in_ms = timer.synchronize_and_time().unwrap();
+/// ```
+pub struct EventTimer {
+    start: Event,
+    end: Event,
+}
+
+impl EventTimer {
+    /// Starts recording time.
+    pub fn record_start(stream: &Stream) -> CudaResult<Self> {
+        let start = Event::new(EventFlags::DEFAULT)?;
+        let end = Event::new(EventFlags::DEFAULT)?;
+
+        start.record(&stream)?;
+
+        Ok(Self { start, end })
+    }
+
+    /// Stops recording time.
+    pub fn record_stop(&self, stream: &Stream) -> CudaResult<()> {
+        self.end.record(stream)?;
+        Ok(())
+    }
+
+    /// Waits for the timer to finish and returns the duration in milliseconds.
+    pub fn synchronize_and_time(&self) -> CudaResult<f32> {
+        self.end.synchronize()?;
+        self.end.elapsed_time_f32(&self.start)
+    }
+}
 
 /// Specify the CUDA transfer strategy.
 ///
@@ -166,8 +219,8 @@ impl<'i, 'r, 's, R, S> IntoCudaIteratorWithStrategy<'i> for (&'r mut [R], &'s mu
 where
     'r: 'i,
     's: 'i,
-    R: Copy + DeviceCopy + Send + 'i,
-    S: Copy + DeviceCopy + Send + 'i,
+    R: Copy + DeviceCopy + Send + Sync + 'i,
+    S: Copy + DeviceCopy + Send + Sync + 'i,
 {
     type Iter = CudaIterator2<'i, R, S>;
 
@@ -178,16 +231,12 @@ where
     ) -> Result<CudaIterator2<'i, R, S>> {
         assert_eq!(self.0.len(), self.1.len());
 
+        let memcpy_threads = 8;
         let num_partitions = 4;
-        let data_len = self.0.len();
-        let part_len = (data_len + num_partitions - 1) / num_partitions;
 
-        let fst = &mut self.0;
-        let snd = &mut self.1;
-        let partitions = fst
-            .chunks_mut(part_len)
-            .zip(snd.chunks_mut(part_len))
-            .collect::<Vec<_>>();
+        let streams = std::iter::repeat_with(|| Stream::new(StreamFlags::NON_BLOCKING, None))
+            .take(3)
+            .collect::<CudaResult<Vec<Stream>>>()?;
 
         let strategy_impls = (0..num_partitions)
             .map(|_| {
@@ -198,9 +247,16 @@ where
             })
             .collect::<Result<Vec<_>>>()?;
 
+        // Error occurs after first call, because pool is already built
+        let _ignore_error = ThreadPoolBuilder::new()
+            .num_threads(memcpy_threads)
+            .build_global();
+
         Ok(CudaIterator2::<'i> {
+            data: (&mut self.0, &mut self.1),
             chunk_len,
-            partitions,
+            streams,
+            strategy,
             strategy_impls,
         })
     }
@@ -238,7 +294,7 @@ where
 
 /// Instantiates the concrete transfer strategy implementation as specified by
 /// the strategy enum.
-fn new_strategy_impl<'a, T: Copy + DeviceCopy + Send + 'a>(
+fn new_strategy_impl<'a, T: Copy + DeviceCopy + Send + Sync + 'a>(
     strategy: CudaTransferStrategy,
     chunk_len: usize,
 ) -> Result<Box<CudaTransferStrategyImpl<Item = T> + 'a>> {
@@ -276,9 +332,8 @@ fn new_strategy_impl<'a, T: Copy + DeviceCopy + Send + 'a>(
 ///
 /// # Parallelism
 ///
-/// `warm_up` and `cool_down` should execute as synchronous methods.
-/// In contrast, `copy_to_device` may execute asynchronously. To wait for it
-/// to complete, call `Stream::synchronize()` or other CUDA stream functions.
+/// All functions shall execute asynchronously. To wait for it to complete, call
+/// `Stream::synchronize()` or other CUDA stream functions.
 trait CudaTransferStrategyImpl: Send {
     /// The type of elements being iterator over.
     type Item: DeviceCopy;
@@ -286,7 +341,7 @@ trait CudaTransferStrategyImpl: Send {
     /// Prepare the chunk for copying.
     ///
     /// For example, copy to an itermediate buffer.
-    fn warm_up(&mut self, _chunk: &[Self::Item]) -> Result<()> {
+    fn warm_up(&mut self, _chunk: &[Self::Item], _stream: &Stream) -> Result<()> {
         Ok(())
     }
 
@@ -313,7 +368,7 @@ trait CudaTransferStrategyImpl: Send {
     /// Tear down any resources created in `warm_up`.
     ///
     /// For example, unpin a lazily pinned buffer.
-    fn cool_down(&mut self, _chunk: &[Self::Item]) -> Result<()> {
+    fn cool_down(&mut self, _chunk: &[Self::Item], _stream: &Stream) -> Result<()> {
         Ok(())
     }
 }
@@ -373,11 +428,22 @@ impl<T: Copy + DeviceCopy> CudaPinnedCopyStrategy<T> {
     }
 }
 
-impl<T: Copy + DeviceCopy> CudaTransferStrategyImpl for CudaPinnedCopyStrategy<T> {
+impl<T: Copy + DeviceCopy + Send + Sync> CudaTransferStrategyImpl for CudaPinnedCopyStrategy<T> {
     type Item = T;
 
-    fn warm_up(&mut self, chunk: &[T]) -> Result<()> {
-        self.host_buffer[0..chunk.len()].copy_from_slice(chunk);
+    fn warm_up(&mut self, chunk: &[T], stream: &Stream) -> Result<()> {
+        stream.synchronize()?;
+
+        let memcpy_threads = rayon::current_num_threads();
+        let par_chunk_len = (chunk.len() + memcpy_threads - 1) / memcpy_threads;
+
+        self.host_buffer[0..chunk.len()]
+            .par_chunks_mut(par_chunk_len)
+            .zip(chunk.par_chunks(par_chunk_len))
+            .for_each(|(dst, src)| {
+                dst.copy_from_slice(src);
+            });
+
         Ok(())
     }
 
@@ -414,7 +480,8 @@ impl<T: DeviceCopy> CudaLazyPinnedCopyStrategy<T> {
 impl<T: DeviceCopy> CudaTransferStrategyImpl for CudaLazyPinnedCopyStrategy<T> {
     type Item = T;
 
-    fn warm_up(&mut self, chunk: &[T]) -> Result<()> {
+    fn warm_up(&mut self, chunk: &[T], stream: &Stream) -> Result<()> {
+        stream.synchronize()?;
         unsafe {
             host_register(chunk).chain_err(|| {
                 ErrorKind::RuntimeError("Failed to page-lock NUMA memory region".to_string())
@@ -436,7 +503,8 @@ impl<T: DeviceCopy> CudaTransferStrategyImpl for CudaLazyPinnedCopyStrategy<T> {
         Ok(buffer_slice.as_launchable_slice())
     }
 
-    fn cool_down(&mut self, chunk: &[T]) -> Result<()> {
+    fn cool_down(&mut self, chunk: &[T], stream: &Stream) -> Result<()> {
+        stream.synchronize()?;
         unsafe {
             host_unregister(chunk)?;
         };
@@ -498,8 +566,11 @@ impl<T: DeviceCopy + Send> CudaTransferStrategyImpl for CudaCoherenceStrategy<T>
 /// `CudaIterator2` could be used as a template for iterators over less or more
 /// inputs, e.g. a `CudaIterator1` or `CudaIterator3`.
 pub struct CudaIterator2<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> {
+    data: (&'a mut [R], &'a mut [S]),
     chunk_len: usize,
-    partitions: Vec<(&'a mut [R], &'a mut [S])>,
+    streams: Vec<Stream>,
+    // partitions: Vec<(&'a mut [R], &'a mut [S])>,
+    strategy: CudaTransferStrategy,
     strategy_impls: Vec<(
         Box<CudaTransferStrategyImpl<Item = R> + 'a>,
         Box<CudaTransferStrategyImpl<Item = S> + 'a>,
@@ -524,13 +595,21 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
     /// As the transfer is performed as a parallel pipeline, i.e., transfer and
     /// execution overlap. Therefore, the function may be called by multiple
     /// threads at the same time, and must be thread-safe. Thread-safety is
-    /// specified through the `Send` and `Sync` marker traits.
+    /// specified through the `Send` marker trait.
     ///
     /// Furthermore, the CUDA kernel is executed on two or more CUDA streams,
     /// and must therefore be thread-safe. However, Rust cannot guarantee
     /// thread-safety of CUDA kernels. Thus, the user must ensure that the CUDA
     /// kernels are safe to execute on multiple CUDA streams, e.g. by using
     /// atomic operations when accessing device memory.
+    ///
+    /// # Internals
+    ///
+    /// The current implementation calls `fold_par()` if the `LazyPinnedCopy`
+    /// strategy is selected. For all other strategies, `fold_async()` is called.
+    /// The reason is that `LazyPinnedCopy` performs blocking calls, therefore
+    /// transfer-compute-overlapping requires multi-threading. In constrast, the
+    /// other strategies can be executed completely asynchronously by CUDA.
     ///
     /// # Example
     ///
@@ -586,7 +665,36 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
         // FIXME: should be using a mutable LaunchableSlice type
         F: Fn((LaunchableSlice<R>, LaunchableSlice<S>), &Stream) -> Result<()> + Send + Sync,
     {
-        let partitions = &mut self.partitions;
+        match self.strategy {
+            CudaTransferStrategy::LazyPinnedCopy | CudaTransferStrategy::PageableCopy => {
+                self.fold_par(f)
+            }
+            _ => self.fold_async(f),
+        }
+    }
+
+    /// A parallel implementation of `fold()`.
+    ///
+    /// Transfer-compute-overlapping is performed by multi-threading the pipeline
+    /// stages parallelism. As we configure at least as many threads as there
+    /// are pipeline stages, each thread may execute the complete pipeline
+    /// synchronously.
+    pub fn fold_par<F>(&mut self, f: F) -> Result<CudaTransferStrategyMeasurement>
+    where
+        // FIXME: should be using a mutable LaunchableSlice type
+        F: Fn((LaunchableSlice<R>, LaunchableSlice<S>), &Stream) -> Result<()> + Send + Sync,
+    {
+        let num_partitions = self.strategy_impls.len();
+        let data_fst = &mut self.data.0;
+        let data_snd = &mut self.data.1;
+        let data_len = data_fst.len();
+        let part_len = (data_len + num_partitions - 1) / num_partitions;
+
+        let mut partitions = data_fst
+            .chunks_mut(part_len)
+            .zip(data_snd.chunks_mut(part_len))
+            .collect::<Vec<_>>();
+
         let strategy_impls = &mut self.strategy_impls;
         let chunk_len = self.chunk_len;
         let af = std::sync::Arc::new(f);
@@ -607,11 +715,8 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
                                 .zip(partition_snd.chunks_mut(chunk_len))
                                 .map(|(fst, snd)| {
                                     let warm_up_timer = Instant::now();
-                                    strategy_fst.warm_up(&fst)?;
-                                    strategy_snd.warm_up(&snd).or_else(|err| {
-                                        let _ = strategy_fst.cool_down(&fst);
-                                        Err(err)
-                                    })?;
+                                    strategy_fst.warm_up(&fst, &stream)?;
+                                    strategy_snd.warm_up(&snd, &stream)?;
                                     let warm_up_ns = warm_up_timer.elapsed().as_nanos() as f64;
 
                                     let begin_copy_event = Event::new(EventFlags::DEFAULT)?;
@@ -639,8 +744,8 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
                                             * 10_f64.powf(6.0);
 
                                     let cool_down_timer = Instant::now();
-                                    strategy_fst.cool_down(&fst)?;
-                                    strategy_snd.cool_down(&snd)?;
+                                    strategy_fst.cool_down(&fst, &stream)?;
+                                    strategy_snd.cool_down(&snd, &stream)?;
                                     let cool_down_ns = cool_down_timer.elapsed().as_nanos() as f64;
 
                                     end_comp_event.synchronize()?;
@@ -674,7 +779,7 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
                     let times = handle.join().expect("Failed to join thread");
                     times
                 })
-                .collect::<Result<Vec<_>>>()?;
+                .collect::<Result<LinkedList<_>>>()?;
 
             let summed_times = thread_results.iter().flatten().fold(
                 CudaTransferStrategyMeasurement {
@@ -696,6 +801,101 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
         });
 
         summed_times.expect("Failure inside thread scope")
+    }
+}
+
+impl<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> CudaIterator2<'a, R, S> {
+    /// An asynchronous implementation of `fold()`.
+    ///
+    /// Transfer-compute-overlapping is achieved by calling asynchronous CUDA
+    /// functions. If not all functions are asynchronous, the pipeline is
+    /// executed synchronously.
+    ///
+    /// # Correctness
+    ///
+    /// If a blocking function is scheduled as part of a strategy, then that
+    /// function must enforce synchronous execution, e.g. by calling
+    /// `stream.synchronize()`.
+    pub fn fold_async<F>(&mut self, mut f: F) -> Result<CudaTransferStrategyMeasurement>
+    where
+        F: FnMut((LaunchableSlice<R>, LaunchableSlice<S>), &Stream) -> Result<()>,
+    {
+        let chunk_len = self.chunk_len;
+        let fst = &mut self.data.0;
+        let snd = &mut self.data.1;
+        let streams = &self.streams;
+        let (strategy_fst, strategy_snd) = &mut self.strategy_impls[0];
+
+        let timers = fst
+            .chunks_mut(chunk_len)
+            .zip(snd.chunks_mut(chunk_len))
+            .zip(streams.iter().cycle())
+            .map(|((fst, snd), stream)| {
+                // Warm-up
+                let warm_up_timer = EventTimer::record_start(&stream)?;
+                strategy_fst.warm_up(&fst, &stream)?;
+                strategy_snd.warm_up(&snd, &stream)?;
+                warm_up_timer.record_stop(&stream)?;
+
+                // Copy to device
+                let copy_timer = EventTimer::record_start(&stream)?;
+                let fst_chunk = strategy_fst.copy_to_device(&fst, &stream)?;
+                let snd_chunk = strategy_snd.copy_to_device(&snd, &stream)?;
+                copy_timer.record_stop(&stream)?;
+
+                // Launch kernel
+                let comp_timer = EventTimer::record_start(&stream)?;
+                f((fst_chunk, snd_chunk), stream)?;
+                comp_timer.record_stop(&stream)?;
+
+                // Cool down
+                let cool_down_timer = EventTimer::record_start(&stream)?;
+                strategy_fst.cool_down(&fst, &stream)?;
+                strategy_snd.cool_down(&snd, &stream)?;
+                cool_down_timer.record_stop(&stream)?;
+
+                // Collect timers
+                Ok((warm_up_timer, copy_timer, comp_timer, cool_down_timer))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let summed_times = timers
+            .iter()
+            .map(|(warm_up, copy, comp, cool_down)| {
+                Ok((
+                    warm_up.synchronize_and_time()? as f64 * 10_f64.powf(6.0),
+                    copy.synchronize_and_time()? as f64 * 10_f64.powf(6.0),
+                    comp.synchronize_and_time()? as f64 * 10_f64.powf(6.0),
+                    cool_down.synchronize_and_time()? as f64 * 10_f64.powf(6.0),
+                ))
+            })
+            .fold(
+                Ok(CudaTransferStrategyMeasurement {
+                    warm_up_ns: Some(0.0),
+                    copy_ns: Some(0.0),
+                    compute_ns: Some(0.0),
+                    cool_down_ns: Some(0.0),
+                }),
+                |accum: Result<_>, times: Result<_>| {
+                    accum.and_then(|m| {
+                        times.and_then(|(warm_up, copy, comp, cool_down)| {
+                            Ok(CudaTransferStrategyMeasurement {
+                                warm_up_ns: m.warm_up_ns.map(|ns| ns + warm_up),
+                                copy_ns: m.copy_ns.map(|ns| ns + copy),
+                                compute_ns: m.compute_ns.map(|ns| ns + comp),
+                                cool_down_ns: m.cool_down_ns.map(|ns| ns + cool_down),
+                            })
+                        })
+                    })
+                },
+            )?;
+
+        streams
+            .iter()
+            .map(|stream| stream.synchronize())
+            .collect::<CudaResult<()>>()?;
+
+        Ok(summed_times)
     }
 }
 
@@ -754,7 +954,7 @@ impl<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> CudaUnifiedIterator2<'a, R,
         let streams = &self.streams;
         let device_id = current_device_id()?;
 
-        let summed_times = (0..data_len)
+        let timers = (0..data_len)
             .step_by(chunk_len)
             .map(|start| {
                 let end = min(start + chunk_len, data_len);
@@ -765,34 +965,31 @@ impl<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> CudaUnifiedIterator2<'a, R,
                 let fst_ptr = unsafe { fst.as_unified_ptr().add(range.start) };
                 let snd_ptr = unsafe { snd.as_unified_ptr().add(range.start) };
 
-                let begin_prefetch_event = Event::new(EventFlags::DEFAULT)?;
-                begin_prefetch_event.record(&stream)?;
-
+                // Prefetch chunk to device
+                let prefetch_timer = EventTimer::record_start(&stream)?;
                 prefetch_async(fst_ptr, range.len(), device_id, stream)?;
                 prefetch_async(snd_ptr, range.len(), device_id, stream)?;
-
-                let end_prefetch_event = Event::new(EventFlags::DEFAULT)?;
-                end_prefetch_event.record(&stream)?;
+                prefetch_timer.record_stop(&stream)?;
 
                 let fst_chunk = fst.as_slice()[range.clone()].as_launchable_slice();
                 let snd_chunk = snd.as_slice()[range.clone()].as_launchable_slice();
 
-                let begin_comp_event = Event::new(EventFlags::DEFAULT)?;
-                begin_comp_event.record(&stream)?;
-
+                // Launch kernel
+                let comp_timer = EventTimer::record_start(&stream)?;
                 f((fst_chunk, snd_chunk), stream)?;
+                comp_timer.record_stop(&stream)?;
 
-                let end_comp_event = Event::new(EventFlags::DEFAULT)?;
-                end_comp_event.record(&stream)?;
+                Ok((prefetch_timer, comp_timer))
+            })
+            .collect::<Result<LinkedList<_>>>()?;
 
-                end_comp_event.synchronize()?;
-                let prefetch_ns = end_prefetch_event.elapsed_time_f32(&begin_prefetch_event)?
-                    as f64
-                    * 10_f64.powf(6.0);
-                let comp_ns =
-                    end_comp_event.elapsed_time_f32(&begin_comp_event)? as f64 * 10_f64.powf(6.0);
-
-                Ok((prefetch_ns, comp_ns))
+        let summed_times = timers
+            .iter()
+            .map(|(prefetch, comp)| {
+                Ok((
+                    prefetch.synchronize_and_time()? as f64 * 10_f64.powf(6.0),
+                    comp.synchronize_and_time()? as f64 * 10_f64.powf(6.0),
+                ))
             })
             .fold(
                 Ok(CudaTransferStrategyMeasurement {

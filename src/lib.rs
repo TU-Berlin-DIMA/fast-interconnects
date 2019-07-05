@@ -13,6 +13,7 @@ extern crate crossbeam_utils;
 extern crate error_chain;
 #[macro_use]
 extern crate rustacuda;
+extern crate rayon;
 
 pub mod datagen;
 pub mod error;
