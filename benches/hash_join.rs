@@ -680,41 +680,63 @@ fn measure(
 
     let time_stats: Estimator = measurements
         .iter()
-        .filter_map(|row| row.probe_ns)
-        .map(|probe_ns| probe_ns / 10_f64.powf(6.0))
+        .filter(|row| row.warm_up == Some(false))
+        .filter_map(|row| row.build_ns.and_then(|b| row.probe_ns.map(|p| b + p)))
+        .map(|hj_ns| hj_ns / 10_f64.powf(6.0))
+        .collect();
+
+    let bw_stats: Estimator = measurements
+        .iter()
+        .filter(|row| row.warm_up == Some(false))
+        .filter_map(|row| {
+            row.probe_bytes.and_then(|bytes| {
+                row.build_ns
+                    .and_then(|build_ns| row.probe_ns.map(|probe_ns| (bytes, build_ns + probe_ns)))
+            })
+        })
+        .map(|(output_bytes, hj_ns)| (output_bytes as f64, hj_ns))
+        .map(|(output_bytes, hj_ns)| output_bytes / hj_ns / 2.0_f64.powf(30.0) * 10.0_f64.powf(9.0))
         .collect();
 
     let tput_stats: Estimator = measurements
         .iter()
+        .filter(|row| row.warm_up == Some(false))
         .filter_map(|row| {
-            row.probe_bytes
-                .and_then(|bytes| row.probe_ns.and_then(|ns| Some((bytes, ns))))
+            row.probe_tuples.and_then(|tuples| {
+                row.build_ns
+                    .and_then(|build_ns| row.probe_ns.map(|probe_ns| (tuples, build_ns + probe_ns)))
+            })
         })
-        .map(|(probe_bytes, probe_ns)| (probe_bytes as f64, probe_ns))
-        .map(|(bytes, ms)| bytes / ms / 2.0_f64.powf(30.0) * 10.0_f64.powf(9.0))
+        .map(|(output_tuples, hj_ns)| (output_tuples as f64, hj_ns))
+        .map(|(output_tuples, hj_ns)| output_tuples / hj_ns)
         .collect();
 
     println!(
         r#"Bench: {}
 Sample size: {}
-               Time            Throughput
-                ms              GiB/s
-Mean:          {:6.2}          {:6.2}
-Stddev:        {:6.2}          {:6.2}
-Median:        {:6.2}          {:6.2}
-Min:           {:6.2}          {:6.2}
-Max:           {:6.2}          {:6.2}"#,
+               Time            Bandwidth            Throughput
+                ms              GiB/s                GTuples/s
+Mean:          {:6.2}          {:6.2}               {:6.2}
+Stddev:        {:6.2}          {:6.2}               {:6.2}
+Median:        {:6.2}          {:6.2}               {:6.2}
+Min:           {:6.2}          {:6.2}               {:6.2}
+Max:           {:6.2}          {:6.2}               {:6.2}"#,
         name.replace("_", " "),
         measurements.len(),
         time_stats.mean(),
+        bw_stats.mean(),
         tput_stats.mean(),
         time_stats.error(),
+        bw_stats.error(),
         tput_stats.error(),
         time_stats.quantile(),
+        bw_stats.quantile(),
         tput_stats.quantile(),
         time_stats.min(),
+        bw_stats.min(),
         tput_stats.min(),
         time_stats.max(),
+        bw_stats.max(),
         tput_stats.max(),
     );
 
