@@ -1,7 +1,10 @@
 [workspace]
 members = [
-        "numa-gpu",
         "hashjoin",
+        "numa-gpu",
+]
+exclude = [
+        "microbench",
 ]
 
 [profile.release]
