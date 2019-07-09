@@ -28,15 +28,17 @@
 
 use cuda_sys::cuda::cuMemsetD32_v2;
 
+use error_chain::ensure;
+
 use num_traits::cast::AsPrimitive;
 
+use numa_gpu::error;
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::memory::*;
-use numa_gpu::error;
 
 use rustacuda::function::{BlockSize, GridSize};
-use rustacuda::memory::DeviceCopy;
 use rustacuda::launch;
+use rustacuda::memory::DeviceCopy;
 use rustacuda::prelude::*;
 
 use std::ffi::CString;

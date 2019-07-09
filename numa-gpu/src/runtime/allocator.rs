@@ -7,9 +7,7 @@
 //! The allocated memory is of type Mem, and specialized to DerefMem whenever
 //! possible.
 
-extern crate rustacuda;
-
-use self::rustacuda::memory::{DeviceBuffer, DeviceCopy, LockedBuffer, UnifiedBuffer};
+use rustacuda::memory::{DeviceBuffer, DeviceCopy, LockedBuffer, UnifiedBuffer};
 
 use std::default::Default;
 use std::mem::size_of;

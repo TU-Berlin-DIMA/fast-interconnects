@@ -8,9 +8,7 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-extern crate rustacuda;
-
-use self::rustacuda::memory::{
+use rustacuda::memory::{
     DeviceBuffer, DeviceCopy, DevicePointer, DeviceSlice, LockedBuffer, UnifiedBuffer,
     UnifiedPointer,
 };

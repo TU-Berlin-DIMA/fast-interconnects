@@ -8,9 +8,6 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-extern crate libc;
-extern crate rustacuda;
-
 use rustacuda::device::{Device, DeviceAttribute};
 
 use std::fmt;

@@ -8,12 +8,11 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-extern crate cuda_sys;
-extern crate rustacuda;
+use cuda_sys::cuda::cudaError_t;
 
-use self::cuda_sys::cuda::cudaError_t;
+use error_chain::error_chain;
 
-use self::rustacuda::error::CudaError;
+use rustacuda::error::CudaError;
 
 use rayon::ThreadPoolBuildError;
 

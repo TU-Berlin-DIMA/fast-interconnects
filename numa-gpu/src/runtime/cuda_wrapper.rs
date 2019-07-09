@@ -1,21 +1,18 @@
 //! Collection of Rust-ified wrappers for commonly-used CUDA functions.
 
-extern crate cuda_sys;
-extern crate rustacuda;
-
-use rustacuda::memory::{DeviceCopy, UnifiedPointer};
-use rustacuda::stream::Stream;
-
-use self::cuda_sys::cuda::{
+use cuda_sys::cuda::{
     cuCtxGetDevice, cuMemAdvise, cuMemHostRegister_v2, cuMemHostUnregister, cuMemPrefetchAsync,
     cuMemcpyAsync, CUdevice, CUstream, CU_MEMHOSTREGISTER_DEVICEMAP, CU_MEMHOSTREGISTER_PORTABLE,
 };
+
+use rustacuda::memory::{DeviceCopy, UnifiedPointer};
+use rustacuda::stream::Stream;
 
 use std::mem::{size_of, transmute_copy, zeroed};
 use std::os::raw::c_void;
 
 // re-export mem_advise enum
-pub use self::cuda_sys::cuda::CUmem_advise_enum as MemAdviseFlags;
+pub use cuda_sys::cuda::CUmem_advise_enum as MemAdviseFlags;
 
 use crate::error::{Error, Result, ToResult};
 

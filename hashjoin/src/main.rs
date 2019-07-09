@@ -8,32 +8,16 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-#[macro_use]
-extern crate average;
-#[macro_use]
-extern crate clap;
-extern crate core; // Required by average::concatenate!{} macro
-extern crate csv;
-extern crate cuda_sys;
-#[macro_use]
-extern crate error_chain;
-extern crate hostname;
-extern crate numa_gpu;
-extern crate paste;
-extern crate rayon;
-extern crate rustacuda;
-#[macro_use]
-extern crate serde_derive;
-extern crate serde;
-extern crate serde_repr;
-extern crate structopt;
-
 pub mod datagen;
 pub mod operators;
 
 use crate::operators::hash_join;
 
-use average::{Estimate, Max, Min, Quantile, Variance};
+use average::{concatenate, impl_from_iterator, Estimate, Max, Min, Quantile, Variance};
+
+use clap::{_clap_count_exprs, arg_enum};
+
+use error_chain::ensure;
 
 use numa_gpu::error::{ErrorKind, Result};
 use numa_gpu::runtime::allocator;
@@ -52,6 +36,7 @@ use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
 use rustacuda::prelude::*;
 
+use serde_derive::Serialize;
 use serde_repr::Serialize_repr;
 
 use std::collections::vec_deque::VecDeque;
