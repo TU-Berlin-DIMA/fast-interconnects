@@ -12,20 +12,16 @@
 //!
 //! The generators produce relation attributes following a random distribution.
 
-extern crate num_traits;
-extern crate rand;
-extern crate zipf;
+use num_traits::FromPrimitive;
 
-use self::num_traits::FromPrimitive;
+use numa_gpu::error::{ErrorKind, Result};
 
-use self::rand::distributions::uniform::SampleUniform;
-use self::rand::distributions::{Distribution, Uniform};
-use self::rand::seq::SliceRandom;
-use self::rand::thread_rng;
+use rand::distributions::uniform::SampleUniform;
+use rand::distributions::{Distribution, Uniform};
+use rand::seq::SliceRandom;
+use rand::thread_rng;
 
-use self::zipf::ZipfDistribution;
-
-use crate::error::{ErrorKind, Result};
+use zipf::ZipfDistribution;
 
 pub trait Integer {}
 

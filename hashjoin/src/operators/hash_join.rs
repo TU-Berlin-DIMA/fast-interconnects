@@ -26,27 +26,25 @@
 //! can also be parallelized over multiple GPUs by calling the methods multiple
 //! times using different CUDA devices.
 
-extern crate cuda_sys;
-extern crate num_traits;
-extern crate paste;
-extern crate rustacuda;
-
 use cuda_sys::cuda::cuMemsetD32_v2;
 
-use self::num_traits::cast::AsPrimitive;
+use num_traits::cast::AsPrimitive;
 
-use self::rustacuda::function::{BlockSize, GridSize};
-use self::rustacuda::memory::DeviceCopy;
-use self::rustacuda::prelude::*;
+use numa_gpu::runtime::allocator;
+use numa_gpu::runtime::memory::*;
+use numa_gpu::error;
+
+use rustacuda::function::{BlockSize, GridSize};
+use rustacuda::memory::DeviceCopy;
+use rustacuda::launch;
+use rustacuda::prelude::*;
 
 use std::ffi::CString;
 use std::mem::size_of;
 use std::os::raw::{c_uint, c_void};
 use std::sync::Arc;
 
-use crate::error::{Error, ErrorKind, Result, ToResult};
-use crate::runtime::allocator;
-use crate::runtime::memory::*;
+use error::{Error, ErrorKind, Result, ToResult};
 
 extern "C" {
     fn cpu_ht_build_linearprobing_int32(

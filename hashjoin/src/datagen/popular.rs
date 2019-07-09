@@ -11,13 +11,11 @@
 //! A collection of data set generators for data sets frequently found in
 //! published papers.
 
-extern crate num_traits;
+use num_traits::FromPrimitive;
 
-use self::num_traits::FromPrimitive;
+use numa_gpu::error::Result;
 
 use super::relation::UniformRelation;
-
-use crate::error::Result;
 
 /// Generator for the Kim data set.
 ///
