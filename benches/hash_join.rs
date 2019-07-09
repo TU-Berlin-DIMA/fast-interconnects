@@ -35,7 +35,7 @@ use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::cuda::{
     CudaTransferStrategy, IntoCudaIterator, IntoCudaIteratorWithStrategy,
 };
-use numa_gpu::runtime::cuda_wrapper::{mem_advise, MemAdviseFlags};
+// use numa_gpu::runtime::cuda_wrapper::{mem_advise, MemAdviseFlags};
 // use numa_gpu::runtime::cuda_wrapper::{prefetch_async, CPU_DEVICE_ID};
 use numa_gpu::runtime::hw_info::{cpu_codename, CudaDeviceInfo};
 use numa_gpu::runtime::memory::*;
@@ -865,16 +865,16 @@ impl HashJoinBenchBuilder {
                 (ArgMemType::NumaLazyPinned, DerefMem::NumaMem(lazy_pinned_mem)) => lazy_pinned_mem
                     .page_lock()
                     .expect("Failed to lazily pin memory"),
-                (ArgMemType::Unified, DerefMem::CudaUniMem(mem)) => {
-                    mem_advise(
-                        mem.as_unified_ptr(),
-                        mem.len(),
-                        MemAdviseFlags::CU_MEM_ADVISE_SET_READ_MOSTLY,
-                        0,
-                        //         MemAdviseFlags::CU_MEM_ADVISE_SET_PREFERRED_LOCATION,
-                        //         CPU_DEVICE_ID,
-                    )?;
-                }
+                // (ArgMemType::Unified, DerefMem::CudaUniMem(mem)) => {
+                //     mem_advise(
+                //         mem.as_unified_ptr(),
+                //         mem.len(),
+                //         MemAdviseFlags::CU_MEM_ADVISE_SET_READ_MOSTLY,
+                //         0,
+                //         MemAdviseFlags::CU_MEM_ADVISE_SET_PREFERRED_LOCATION,
+                //         CPU_DEVICE_ID,
+                //     )?;
+                // }
                 _ => {}
             };
 
