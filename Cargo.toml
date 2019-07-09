@@ -3,3 +3,7 @@ members = [
         "numa-gpu",
         "hashjoin",
 ]
+
+[profile.release]
+debug = true
+opt-level = 3
