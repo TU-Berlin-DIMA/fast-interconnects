@@ -14,5 +14,4 @@ pub mod cuda_wrapper;
 pub mod hw_info;
 pub mod memory;
 pub mod numa;
-pub mod store;
 pub mod utils;
