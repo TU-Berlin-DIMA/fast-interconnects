@@ -34,3 +34,16 @@ impl EnsurePhysicallyBacked for i64 {
         data.iter_mut().by_ref().zip(0..).for_each(|(x, i)| *x = i);
     }
 }
+
+impl EnsurePhysicallyBacked for u32 {
+    #[inline(never)]
+    fn ensure_physically_backed(data: &mut [u32]) {
+        data.iter_mut().by_ref().zip(0..).for_each(|(x, i)| *x = i);
+    }
+}
+
+impl EnsurePhysicallyBacked for u64 {
+    fn ensure_physically_backed(data: &mut [u64]) {
+        data.iter_mut().by_ref().zip(0..).for_each(|(x, i)| *x = i);
+    }
+}

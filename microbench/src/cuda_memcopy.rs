@@ -1,5 +1,6 @@
-extern crate accel;
 extern crate cuda_sys;
+extern crate numa_gpu;
+extern crate rustacuda;
 
 use std::ffi::c_void;
 use std::iter;
@@ -8,19 +9,20 @@ use std::ptr::null_mut;
 use std::slice;
 use std::time::Instant;
 
-use self::accel::device::Device;
-use self::accel::error::Check;
-
-use self::cuda_sys::cudart::{
-    cudaEventCreate, cudaEventDestroy, cudaEventElapsedTime, cudaEventRecord, cudaEvent_t,
-    cudaFree, cudaFreeHost, cudaHostRegister, cudaHostRegisterDefault, cudaHostUnregister,
-    cudaMalloc, cudaMallocHost, cudaMemGetInfo, cudaMemcpyAsync, cudaMemcpyKind, cudaStreamCreate,
-    cudaStreamDestroy, cudaStreamSynchronize, cudaStream_t,
+use self::cuda_sys::cuda::{
+    cuEventCreate, cuEventDestroy_v2, cuEventElapsedTime, cuEventRecord, cuMemAllocHost_v2,
+    cuMemAlloc_v2, cuMemFreeHost, cuMemFree_v2, cuMemGetInfo_v2, cuMemHostRegister_v2,
+    cuMemHostUnregister, cuMemcpyAsync, cuStreamCreate, cuStreamDestroy_v2, cuStreamSynchronize,
+    CUevent, CUstream,
 };
 
+use self::numa_gpu::error::ToResult;
+use self::numa_gpu::runtime::numa::NumaMemory;
+use self::numa_gpu::runtime::utils::EnsurePhysicallyBacked;
+
+use self::rustacuda::prelude::*;
+
 use crate::types::*;
-use crate::utils::numa::NumaMemory;
-use crate::utils::workarounds::ensure_physically_backed;
 
 #[derive(Clone, Debug, Default, Serialize)]
 struct DataPoint<'h, 'c> {
@@ -57,11 +59,14 @@ enum HostMem {
 }
 
 impl CudaMemcopy {
-    pub fn measure<W>(device_id: i32, memory_node: u16, repeat: u32, writer: Option<&mut W>)
+    pub fn measure<W>(device_id: u32, memory_node: u16, repeat: u32, writer: Option<&mut W>)
     where
         W: std::io::Write,
     {
-        Device::set(device_id).expect("Couldn't set CUDA device");
+        let device = Device::get_device(device_id).expect("Couldn't set CUDA device");
+        let _context =
+            Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)
+                .expect("Couldn't create CUDA context");
 
         let alloc_types = vec![
             MemoryAllocationType::Pageable,
@@ -77,8 +82,8 @@ impl CudaMemcopy {
         let free_dmem_bytes = unsafe {
             let mut free = 0;
             let mut total = 0;
-            cudaMemGetInfo(&mut free, &mut total)
-                .check()
+            cuMemGetInfo_v2(&mut free, &mut total)
+                .to_result()
                 .expect("Couldn't get free device memory size");
             free
         };
@@ -88,10 +93,7 @@ impl CudaMemcopy {
             .collect();
 
         let hostname = hostname::get_hostname().expect("Couldn't get hostname");
-        let device_codename = Device::current()
-            .expect("Couldn't get current device")
-            .name()
-            .expect("Couldn't get device code name");
+        let device_codename = device.name().expect("Couldn't get device code name");
 
         let template = DataPoint {
             hostname: hostname.as_str(),
@@ -188,8 +190,8 @@ impl<'h, 'c> Measurement<'h, 'c> {
             MemoryAllocationType::Pinned => unsafe {
                 let timer = Instant::now();
                 let mut ptr = zeroed();
-                cudaMallocHost(&mut ptr, buf_bytes)
-                    .check()
+                cuMemAllocHost_v2(&mut ptr, buf_bytes)
+                    .to_result()
                     .expect("Couldn't allocate pinned host memory");
                 let duration = timer.elapsed();
                 let ns: u64 = duration.as_secs() * 10_u64.pow(9) + duration.subsec_nanos() as u64;
@@ -204,15 +206,9 @@ impl<'h, 'c> Measurement<'h, 'c> {
                     alloc_duration.as_secs() * 10_u64.pow(9) + alloc_duration.subsec_nanos() as u64;
 
                 let pin_timer = Instant::now();
-                unsafe {
-                    cudaHostRegister(
-                        m.as_mut_ptr() as *mut c_void,
-                        buf_bytes,
-                        cudaHostRegisterDefault,
-                    )
-                }
-                .check()
-                .expect("Couldn't dynamically pin memory");
+                unsafe { cuMemHostRegister_v2(m.as_mut_ptr() as *mut c_void, buf_bytes, 0) }
+                    .to_result()
+                    .expect("Couldn't dynamically pin memory");
                 let pin_duration = pin_timer.elapsed();
                 let pin_ns: u64 =
                     pin_duration.as_secs() * 10_u64.pow(9) + pin_duration.subsec_nanos() as u64;
@@ -221,48 +217,45 @@ impl<'h, 'c> Measurement<'h, 'c> {
             }
         };
 
-        ensure_physically_backed(unsafe { slice::from_raw_parts_mut(hmem.as_mut_ptr(), buf_len) });
+        u32::ensure_physically_backed(unsafe {
+            slice::from_raw_parts_mut(hmem.as_mut_ptr(), buf_len)
+        });
 
         let mut dmem: *mut c_void = null_mut();
-        unsafe { cudaMalloc(&mut dmem as *mut *mut c_void, buf_bytes) }
-            .check()
+        unsafe { cuMemAlloc_v2(&mut dmem as *mut *mut c_void as *mut u64, buf_bytes) }
+            .to_result()
             .expect("Couldn't allocate device memory");
 
-        let mut stream_0: cudaStream_t = unsafe { zeroed() };
-        let mut stream_1: cudaStream_t = unsafe { zeroed() };
+        let mut stream_0: CUstream = unsafe { zeroed() };
+        let mut stream_1: CUstream = unsafe { zeroed() };
         unsafe {
-            cudaStreamCreate(&mut stream_0)
-                .check()
+            cuStreamCreate(&mut stream_0, 1)
+                .to_result()
                 .expect("Couldn't create stream");
-            cudaStreamCreate(&mut stream_1)
-                .check()
+            cuStreamCreate(&mut stream_1, 1)
+                .to_result()
                 .expect("Couldn't create stream");
         }
 
         let (copy_ms, transfers_overlap) = match copy_method {
             CopyMethod::HostToDevice => unsafe {
-                let (start_event, stop_event) = Self::time_cuda_memcpy(
-                    dmem as *mut u32,
-                    hmem.as_ptr(),
-                    buf_len,
-                    cudaMemcpyKind::cudaMemcpyHostToDevice,
-                    stream_0,
-                );
+                let (start_event, stop_event) =
+                    Self::time_cuda_memcpy(dmem as *mut u32, hmem.as_ptr(), buf_len, stream_0);
 
-                cudaStreamSynchronize(stream_0)
-                    .check()
+                cuStreamSynchronize(stream_0)
+                    .to_result()
                     .expect("Couldn't sync CUDA stream");
 
                 let mut ms = 0.0;
-                cudaEventElapsedTime(&mut ms, start_event, stop_event)
-                    .check()
+                cuEventElapsedTime(&mut ms, start_event, stop_event)
+                    .to_result()
                     .expect("Couldn't calculate elapsed time");
 
-                cudaEventDestroy(start_event)
-                    .check()
+                cuEventDestroy_v2(start_event)
+                    .to_result()
                     .expect("Couldn't destroy CUDA event");
-                cudaEventDestroy(stop_event)
-                    .check()
+                cuEventDestroy_v2(stop_event)
+                    .to_result()
                     .expect("Couldn't destroy CUDA event");
 
                 (Some(ms), None)
@@ -272,71 +265,64 @@ impl<'h, 'c> Measurement<'h, 'c> {
                     hmem.as_mut_ptr(),
                     dmem as *const u32,
                     buf_len,
-                    cudaMemcpyKind::cudaMemcpyDeviceToHost,
                     stream_0,
                 );
 
-                cudaStreamSynchronize(stream_0)
-                    .check()
+                cuStreamSynchronize(stream_0)
+                    .to_result()
                     .expect("Couldn't sync CUDA stream");
 
                 let mut ms = 0.0;
-                cudaEventElapsedTime(&mut ms, start_event, stop_event)
-                    .check()
+                cuEventElapsedTime(&mut ms, start_event, stop_event)
+                    .to_result()
                     .expect("Couldn't calculate elapsed time");
 
-                cudaEventDestroy(start_event)
-                    .check()
+                cuEventDestroy_v2(start_event)
+                    .to_result()
                     .expect("Couldn't destroy CUDA event");
-                cudaEventDestroy(stop_event)
-                    .check()
+                cuEventDestroy_v2(stop_event)
+                    .to_result()
                     .expect("Couldn't destroy CUDA event");
 
                 (Some(ms), None)
             },
             CopyMethod::Bidirectional => unsafe {
-                let (h2d_start_event, h2d_stop_event) = Self::time_cuda_memcpy(
-                    dmem as *mut u32,
-                    hmem.as_ptr(),
-                    buf_len / 2,
-                    cudaMemcpyKind::cudaMemcpyHostToDevice,
-                    stream_0,
-                );
+                let (h2d_start_event, h2d_stop_event) =
+                    Self::time_cuda_memcpy(dmem as *mut u32, hmem.as_ptr(), buf_len / 2, stream_0);
                 let (d2h_start_event, d2h_stop_event) = Self::time_cuda_memcpy(
                     hmem.as_mut_ptr().offset((buf_len / 2) as isize),
                     (dmem as *const u32).offset((buf_len / 2) as isize),
                     buf_len / 2,
-                    cudaMemcpyKind::cudaMemcpyDeviceToHost,
                     stream_1,
                 );
 
-                cudaStreamSynchronize(stream_0)
-                    .check()
+                cuStreamSynchronize(stream_0)
+                    .to_result()
                     .expect("Couldn't sync CUDA stream");
-                cudaStreamSynchronize(stream_1)
-                    .check()
+                cuStreamSynchronize(stream_1)
+                    .to_result()
                     .expect("Couldn't sync CUDA stream");
 
                 let mut h2d_ms = 0.0;
-                cudaEventElapsedTime(&mut h2d_ms, h2d_start_event, h2d_stop_event)
-                    .check()
+                cuEventElapsedTime(&mut h2d_ms, h2d_start_event, h2d_stop_event)
+                    .to_result()
                     .expect("Couldn't calculate elapsed time");
                 let mut ms = 0.0;
-                cudaEventElapsedTime(&mut ms, h2d_start_event, d2h_stop_event)
-                    .check()
+                cuEventElapsedTime(&mut ms, h2d_start_event, d2h_stop_event)
+                    .to_result()
                     .expect("Couldn't calculate elapsed time");
 
-                cudaEventDestroy(h2d_start_event)
-                    .check()
+                cuEventDestroy_v2(h2d_start_event)
+                    .to_result()
                     .expect("Couldn't destroy CUDA event");
-                cudaEventDestroy(h2d_stop_event)
-                    .check()
+                cuEventDestroy_v2(h2d_stop_event)
+                    .to_result()
                     .expect("Couldn't destroy CUDA event");
-                cudaEventDestroy(d2h_start_event)
-                    .check()
+                cuEventDestroy_v2(d2h_start_event)
+                    .to_result()
                     .expect("Couldn't destroy CUDA event");
-                cudaEventDestroy(d2h_stop_event)
-                    .check()
+                cuEventDestroy_v2(d2h_stop_event)
+                    .to_result()
                     .expect("Couldn't destroy CUDA event");
 
                 if h2d_ms * 1.5 < ms {
@@ -349,25 +335,27 @@ impl<'h, 'c> Measurement<'h, 'c> {
         };
 
         if alloc_type == MemoryAllocationType::DynamicallyPinned {
-            unsafe { cudaHostUnregister(hmem.as_mut_ptr() as *mut c_void) }
-                .check()
+            unsafe { cuMemHostUnregister(hmem.as_mut_ptr() as *mut c_void) }
+                .to_result()
                 .expect("Couldn't unregister dynamically pinned memory");
         }
 
         if let HostMem::PinnedMem(ptr) = hmem {
-            unsafe { cudaFreeHost(ptr as *mut c_void) }
-                .check()
+            unsafe { cuMemFreeHost(ptr as *mut c_void) }
+                .to_result()
                 .expect("Couldn't free pinned host memory");
         }
 
         unsafe {
-            cudaStreamDestroy(stream_0)
-                .check()
+            cuStreamDestroy_v2(stream_0)
+                .to_result()
                 .expect("Couldn't destroy stream");
-            cudaStreamDestroy(stream_1)
-                .check()
+            cuStreamDestroy_v2(stream_1)
+                .to_result()
                 .expect("Couldn't destroy stream");
-            cudaFree(dmem).check().expect("Couldn't free device memory");
+            cuMemFree_v2(dmem as u64)
+                .to_result()
+                .expect("Couldn't free device memory");
         }
 
         (malloc_ns, dynamic_pin_ns, copy_ms, transfers_overlap)
@@ -377,32 +365,30 @@ impl<'h, 'c> Measurement<'h, 'c> {
         dst: *mut T,
         src: *const T,
         len: usize,
-        kind: cudaMemcpyKind,
-        stream: cudaStream_t,
-    ) -> (cudaEvent_t, cudaEvent_t) {
+        stream: CUstream,
+    ) -> (CUevent, CUevent) {
         let element_bytes = size_of::<T>();
 
-        let mut start_event: cudaEvent_t = zeroed();
-        let mut stop_event: cudaEvent_t = zeroed();
-        cudaEventCreate(&mut start_event)
-            .check()
+        let mut start_event: CUevent = zeroed();
+        let mut stop_event: CUevent = zeroed();
+        cuEventCreate(&mut start_event, 0)
+            .to_result()
             .expect("Couldn't create event");
-        cudaEventCreate(&mut stop_event)
-            .check()
+        cuEventCreate(&mut stop_event, 0)
+            .to_result()
             .expect("Couldn't create event");
 
-        cudaEventRecord(start_event, stream);
-        cudaMemcpyAsync(
-            dst as *mut c_void,
-            src as *const c_void,
+        cuEventRecord(start_event, stream);
+        cuMemcpyAsync(
+            dst as *mut c_void as u64,
+            src as *const c_void as u64,
             len * element_bytes,
-            kind,
             stream,
         )
-        .check()
+        .to_result()
         .expect("Couldn't perform async CUDA memcpy");
-        cudaEventRecord(stop_event, stream)
-            .check()
+        cuEventRecord(stop_event, stream)
+            .to_result()
             .expect("Couldn't record event");
 
         (start_event, stop_event)

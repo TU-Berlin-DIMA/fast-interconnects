@@ -1,4 +1,3 @@
-extern crate accel;
 #[macro_use]
 extern crate average;
 #[macro_use]
@@ -6,24 +5,20 @@ extern crate clap;
 extern crate core; // Required by average::concatenate!{} macro
 #[macro_use]
 extern crate serde_derive;
+extern crate rustacuda;
 extern crate structopt;
 
-use accel::device::Device;
-
+use rustacuda::prelude::*;
 use structopt::StructOpt;
 
 pub mod cuda_memcopy;
-pub mod device_information;
 pub mod memory_bandwidth;
 pub mod memory_latency;
 pub mod numa_memcopy;
-pub mod scratchpad;
 pub mod sync_latency;
 pub mod types;
-pub mod utils;
 
 use crate::cuda_memcopy::CudaMemcopy;
-use crate::device_information::print_current_device_information;
 use crate::memory_bandwidth::MemoryBandwidth;
 use crate::memory_latency::MemoryLatency;
 use crate::numa_memcopy::NumaMemcopy;
@@ -77,10 +72,6 @@ enum Command {
     #[structopt(name = "cudacopy")]
     /// GPU interconnect bandwidth test based on cudaMemcpy
     CudaCopy(CmdCudaCopy),
-
-    #[structopt(name = "devinfo")]
-    /// Print device information
-    DevInfo(CmdDevInfo),
 }
 
 #[derive(StructOpt)]
@@ -215,7 +206,7 @@ struct CmdLatency {
 struct CmdSync {
     #[structopt(short = "d", long = "device", default_value = "0")]
     /// CUDA device
-    device: i32,
+    device: u32,
 
     #[structopt(short = "i", long = "iters", default_value = "10")]
     /// Number of times to move value back and forth
@@ -260,15 +251,10 @@ struct CmdCudaCopy {
     repeat: u32,
 }
 
-#[derive(StructOpt)]
-struct CmdDevInfo {
-    #[structopt(short = "d", long = "device", default_value = "0")]
-    /// CUDA device
-    device: i32,
-}
-
 fn main() {
     let options = Options::from_args();
+
+    rustacuda::init(CudaFlags::empty()).expect("Couldn't initialize CUDA");
 
     let kb = 2_usize.pow(10);
     let mb = 2_usize.pow(20);
@@ -282,7 +268,7 @@ fn main() {
         Command::Bandwidth(ref bw) => {
             let device = match bw.device_type {
                 ArgDeviceType::CPU => DeviceId::Cpu(bw.device_id),
-                ArgDeviceType::GPU => DeviceId::Gpu(bw.device_id as i32),
+                ArgDeviceType::GPU => DeviceId::Gpu(bw.device_id.into()),
             };
 
             let mem_loc = match bw.mem_type {
@@ -305,7 +291,7 @@ fn main() {
         Command::Latency(ref lat) => {
             let device = match lat.device_type {
                 ArgDeviceType::CPU => DeviceId::Cpu(lat.device_id),
-                ArgDeviceType::GPU => DeviceId::Gpu(lat.device_id as i32),
+                ArgDeviceType::GPU => DeviceId::Gpu(lat.device_id.into()),
             };
 
             let mem_loc = match lat.mem_type {
@@ -323,10 +309,7 @@ fn main() {
             );
         }
         Command::Sync(ref sync) => {
-            Device::set(sync.device)
-                .expect("Cannot set CUDA device. Perhaps CUDA is not installed?");
-
-            let r = uvm_sync_latency(sync.iterations);
+            let r = uvm_sync_latency(sync.device, sync.iterations);
             println!("{:?}", r);
         }
         Command::NumaCopy(ref ncpy) => {
@@ -343,17 +326,11 @@ fn main() {
         }
         Command::CudaCopy(ref ccpy) => {
             CudaMemcopy::measure(
-                ccpy.device_id as i32,
+                ccpy.device_id.into(),
                 ccpy.mem_location,
                 ccpy.repeat,
                 csv_file.as_mut(),
             );
-        }
-        Command::DevInfo(dinfo) => {
-            Device::set(dinfo.device)
-                .expect("Cannot set CUDA device. Perhaps CUDA is not installed?");
-
-            print_current_device_information();
         }
     }
 }

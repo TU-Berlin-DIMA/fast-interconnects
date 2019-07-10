@@ -1,10 +1,11 @@
-extern crate accel;
 extern crate nvml_wrapper;
-
-use self::accel::device::sync;
-use self::accel::UVec;
+extern crate rustacuda;
 
 use self::nvml_wrapper::{enum_wrappers::device::Clock, NVML};
+
+use self::rustacuda::context::CurrentContext;
+use self::rustacuda::memory::{DeviceCopy, UnifiedBuffer};
+use self::rustacuda::prelude::*;
 
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::thread;
@@ -14,6 +15,7 @@ extern "C" {
     pub fn cpu_loop(data: *mut CacheLine, iterations: u32, signal: *mut Signal, result: *mut u64);
 }
 
+#[derive(Clone, Copy, Debug)]
 #[repr(u32)]
 pub enum PingPong {
     None = 0,
@@ -21,17 +23,25 @@ pub enum PingPong {
     GPU = 2,
 }
 
+unsafe impl DeviceCopy for PingPong {}
+
+#[derive(Clone, Copy, Debug)]
 #[repr(u32)]
 pub enum Signal {
     Wait = 0,
     Start = 1,
 }
 
+unsafe impl DeviceCopy for Signal {}
+
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct CacheLine {
     value: PingPong,
     other: [u32; 31],
 }
+
+unsafe impl DeviceCopy for CacheLine {}
 
 #[derive(Debug)]
 pub struct DataPoint {
@@ -55,8 +65,11 @@ fn cpu_worker(data: AtomicPtr<CacheLine>, iterations: u32, signal: AtomicPtr<Sig
     cpu_result
 }
 
-pub fn uvm_sync_latency(iterations: u32) -> DataPoint {
-    let device_id: u32 = 0;
+pub fn uvm_sync_latency(device_id: u32, iterations: u32) -> DataPoint {
+    let device = Device::get_device(device_id).expect("Couldn't set CUDA device");
+    let _context =
+        Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)
+            .expect("Couldn't create CUDA context");
 
     let nvml = NVML::init().expect("Couldn't initialize NVML");
 
@@ -65,14 +78,16 @@ pub fn uvm_sync_latency(iterations: u32) -> DataPoint {
         .expect("Couldn't get NVML device");
 
     // Allocate UVM pinned memory
-    let mut data = UVec::<CacheLine>::new(1).unwrap();
-    let mut signal = UVec::<Signal>::new(1).unwrap();
-    let mut gpu_result = UVec::<u64>::new(1).unwrap();
-
-    // Initialize
-    data[0].value = PingPong::None;
-    signal[0] = Signal::Wait;
-    gpu_result[0] = 0;
+    let mut data = UnifiedBuffer::new(
+        &CacheLine {
+            value: PingPong::None,
+            other: [0; 31],
+        },
+        1,
+    )
+    .unwrap();
+    let mut signal = UnifiedBuffer::new(&Signal::Wait, 1).unwrap();
+    let mut gpu_result = UnifiedBuffer::new(&0_u64, 1).unwrap();
 
     // Make Rust think we're thread-safe
     // Note that we must handle thread-safety outside of Rust
@@ -98,7 +113,7 @@ pub fn uvm_sync_latency(iterations: u32) -> DataPoint {
     signal[0] = Signal::Start;
 
     // Wait on GPU
-    sync().unwrap();
+    CurrentContext::synchronize().unwrap();
 
     // Get GPU clock rate that applications run at
     let clock_rate_mhz = nvml_device

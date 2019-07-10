@@ -1,12 +1,13 @@
 extern crate average;
 extern crate csv;
 extern crate hostname;
+extern crate numa_gpu;
 extern crate rayon;
 extern crate serde;
 
-use crate::utils::numa::{run_on_node, NumaMemory};
-
 use self::average::{Estimate, Max, Min, Quantile, Variance};
+
+use self::numa_gpu::runtime::numa::{self, NumaMemory};
 
 use std::io;
 use std::mem::size_of;
@@ -41,7 +42,7 @@ impl NumaMemcopy {
         num_threads: usize,
     ) -> Self {
         // Force OS to allocate memory on the NUMA node that we say
-        NumaMemory::<u8>::set_strict();
+        numa::set_strict(true);
 
         // Allocate NUMA memory
         let mut src = NumaMemory::alloc_on_node(size, src_node);
@@ -58,7 +59,7 @@ impl NumaMemcopy {
         // Build thread pool
         let thread_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(num_threads)
-            .start_handler(move |_tid| run_on_node(cpu_node))
+            .start_handler(move |_tid| numa::run_on_node(cpu_node).expect("Couldn't set NUMA node"))
             .build()
             .expect("Couldn't build Rayon thread pool");
 
@@ -71,7 +72,7 @@ impl NumaMemcopy {
     }
 
     fn run_sequential(&mut self) -> Duration {
-        run_on_node(self.cpu_node);
+        numa::run_on_node(self.cpu_node).expect("Couldn't set NUMA node");
 
         let timer = Instant::now();
         unsafe {
@@ -85,7 +86,7 @@ impl NumaMemcopy {
     }
 
     fn run_rayon(&mut self) -> Duration {
-        run_on_node(self.cpu_node);
+        numa::run_on_node(self.cpu_node).expect("Couldn't set NUMA node");
 
         let threads = self.thread_pool.current_num_threads();
         let chunk_size = (self.src.len() + threads - 1) / threads;

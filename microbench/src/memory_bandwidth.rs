@@ -1,6 +1,7 @@
-extern crate accel;
+extern crate numa_gpu;
 extern crate nvml_wrapper;
 extern crate rayon;
+extern crate rustacuda;
 
 use std::iter;
 use std::mem::size_of;
@@ -8,16 +9,18 @@ use std::ops::RangeInclusive;
 use std::rc::Rc;
 use std::time::Instant;
 
-use self::accel::device::{sync, Device};
-use self::accel::UVec;
+use self::numa_gpu::runtime::allocator::{Allocator, DerefMemType};
+use self::numa_gpu::runtime::hw_info;
+use self::numa_gpu::runtime::numa;
+use self::numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 
 use self::nvml_wrapper::{enum_wrappers::device::Clock, NVML};
 
+use self::rustacuda::context::CurrentContext;
+use self::rustacuda::device::DeviceAttribute;
+use self::rustacuda::prelude::*;
+
 use crate::types::*;
-use crate::utils::cuda::DeviceProp;
-use crate::utils::hw_info::cpu_codename;
-use crate::utils::memory::*;
-use crate::utils::numa::{run_on_node, NumaMemory};
 
 extern "C" {
     fn cpu_bandwidth_seq(
@@ -121,7 +124,7 @@ struct CpuMemoryBandwidth {
 
 #[derive(Debug)]
 struct GpuMemoryBandwidth {
-    device_id: i32,
+    device_id: u32,
     nvml: nvml_wrapper::NVML,
 }
 
@@ -139,6 +142,18 @@ impl MemoryBandwidth {
     ) where
         W: std::io::Write,
     {
+        let gpu_id = match device_id {
+            DeviceId::Gpu(id) => id,
+            _ => 0,
+        };
+
+        let device = Device::get_device(gpu_id).expect("Couldn't set CUDA device");
+        let _context =
+            Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)
+                .expect("Couldn't create CUDA context");
+
+        numa::set_strict(true);
+
         let element_bytes = size_of::<u32>();
         let buffer_len = bytes / element_bytes;
 
@@ -148,11 +163,8 @@ impl MemoryBandwidth {
             DeviceId::Gpu(_) => ("GPU", None),
         };
         let device_codename = match device_id {
-            DeviceId::Cpu(_) => cpu_codename(),
-            DeviceId::Gpu(_) => Device::current()
-                .expect("Couldn't get current device")
-                .name()
-                .expect("Couldn't get device code name"),
+            DeviceId::Cpu(_) => hw_info::cpu_codename(),
+            DeviceId::Gpu(_) => device.name().expect("Couldn't get device code name"),
         };
         let (memory_type, memory_node) = match mem_loc {
             MemoryLocation::Unified => ("Unified", None),
@@ -171,19 +183,15 @@ impl MemoryBandwidth {
         };
 
         let mut mem = match mem_loc {
-            MemoryLocation::Unified => DerefMem::CudaUniMem(
-                UVec::<u32>::new(buffer_len).expect("Couldn't allocate CUDA memory"),
-            ),
+            MemoryLocation::Unified => {
+                Allocator::alloc_deref_mem::<u32>(DerefMemType::CudaUniMem, buffer_len)
+            }
             MemoryLocation::System(node) => {
-                NumaMemory::<u32>::set_strict();
-                let mut mem = DerefMem::NumaMem(NumaMemory::alloc_on_node(buffer_len, node));
+                let mut mem =
+                    Allocator::alloc_deref_mem::<u32>(DerefMemType::NumaMem(node), buffer_len);
+                u32::ensure_physically_backed(mem.as_mut_slice());
 
-                // Ensure that data is backed by physical pages
-                mem.iter_mut()
-                    .by_ref()
-                    .enumerate()
-                    .for_each(|(i, x)| *x = i as u32);
-                mem
+                mem.into()
             }
         };
 
@@ -213,10 +221,14 @@ impl MemoryBandwidth {
                 )
             }
             DeviceId::Gpu(did) => {
-                Device::set(did).expect("Cannot set CUDA device. Perhaps CUDA is not installed?");
-
-                let warp_size = DeviceProp::warp_size(device_id.clone()).unwrap();
-                let sm_count = DeviceProp::multi_processor_count(device_id.clone()).unwrap();
+                let warp_size = Warp(
+                    device
+                        .get_attribute(DeviceAttribute::WarpSize)
+                        .expect("Couldn't get device warp size"),
+                );
+                let sm_count = SM(device
+                    .get_attribute(DeviceAttribute::MultiprocessorCount)
+                    .expect("Couldn't get device multiprocessor count"));
                 let mnt = GpuMeasurement::new(
                     oversub_ratio,
                     warp_mul,
@@ -392,7 +404,9 @@ impl<'h, 'd, 'c, 'n, 't> CpuMeasurement<'h, 'd, 'c, 'n, 't> {
                         let thread_pool = Rc::new(
                             rayon::ThreadPoolBuilder::new()
                                 .num_threads(t)
-                                .start_handler(move |_tid| run_on_node(cpu_node))
+                                .start_handler(move |_tid| {
+                                    numa::run_on_node(cpu_node).expect("Couldn't set NUMA node")
+                                })
                                 .build()
                                 .expect("Couldn't build Rayon thread pool"),
                         );
@@ -424,7 +438,7 @@ impl<'h, 'd, 'c, 'n, 't> CpuMeasurement<'h, 'd, 'c, 'n, 't> {
 }
 
 impl GpuMemoryBandwidth {
-    fn new(device_id: i32) -> Self {
+    fn new(device_id: u32) -> Self {
         let nvml = NVML::init().expect("Couldn't initialize NVML");
 
         Self { device_id, nvml }
@@ -451,7 +465,7 @@ impl GpuMemoryBandwidth {
             )
         };
 
-        sync().unwrap();
+        CurrentContext::synchronize().unwrap();
 
         // Get GPU clock rate that applications run at
         let clock_rate_mhz = state

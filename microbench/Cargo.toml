@@ -4,25 +4,24 @@ version = "0.1.0"
 authors = ["Clemens Lutz <lutzcle@cml.li>"]
 description = "Performance microbenchmarks for NVLink 2.0 on POWER9"
 readme = "../README.md"
-links = "numa"
 edition = "2018"
 
 [dependencies]
-accel = { git = "https://github.com/LutzCle/accel.git" }
 average = "~0.9.2"
-clap = "~2.32.0"
-structopt = "0.2.13"
+clap = "*"
 csv = "~1.0.1"
-cuda-sys = { git = "https://github.com/LutzCle/accel.git" }
+cuda-sys = { git = "https://github.com/LutzCle/cuda-sys", branch = "cuda-10.0" }
 hostname = "~0.1.5"
 libc = "~0.2.43"
-nvml-wrapper = "~0.4.0"
+nvml-wrapper = "~0.4.1"
+rayon = "~1.0.3"
+rustacuda = { git = "https://github.com/LutzCle/RustaCUDA", branch = "custom_mods" }
 serde = "~1.0.76"
 serde_derive = "~1.0.76"
-rayon = "~1.0"
+structopt = "~0.2"
 
-[target.'cfg(target_arch = "x86_64")'.dependencies]
-raw-cpuid = "~6.1.0"
+[dependencies.numa-gpu]
+path = "../numa-gpu"
 
 [build-dependencies]
-cc = { version = "1.0", features = ["parallel"] }
+cc = { version = "~1.0", features = ["parallel"] }

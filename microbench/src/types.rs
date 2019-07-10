@@ -5,7 +5,7 @@
 #[derive(Debug, Clone, Serialize, Eq, PartialEq)]
 pub enum DeviceId {
     Cpu(u16),
-    Gpu(i32),
+    Gpu(u32),
 }
 
 /// The memory buffer type and it's location

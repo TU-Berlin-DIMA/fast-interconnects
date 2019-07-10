@@ -1,27 +1,27 @@
-extern crate accel;
 extern crate csv;
 extern crate cuda_sys;
 extern crate hostname;
+extern crate numa_gpu;
 extern crate nvml_wrapper;
+extern crate rustacuda;
 extern crate serde;
 
-use self::accel::device::{sync, Device};
-use self::accel::error::Check;
-use self::accel::UVec;
-
-use self::cuda_sys::cudart::cudaMemPrefetchAsync;
+use self::numa_gpu::runtime::allocator::{Allocator, DerefMemType};
+use self::numa_gpu::runtime::cuda_wrapper;
+use self::numa_gpu::runtime::hw_info;
+use self::numa_gpu::runtime::memory::DerefMem;
+use self::numa_gpu::runtime::numa;
 
 use self::nvml_wrapper::{enum_wrappers::device::Clock, NVML};
 
+use self::rustacuda::context::CurrentContext;
+use self::rustacuda::prelude::*;
+
 use std;
-use std::mem::{size_of, size_of_val};
+use std::mem::size_of;
 use std::ops::RangeInclusive;
-use std::os::raw::c_void;
 
 use crate::types::*;
-use crate::utils::hw_info::cpu_codename;
-use crate::utils::memory::*;
-use crate::utils::numa::{run_on_node, NumaMemory};
 
 extern "C" {
     pub fn gpu_stride(data: *mut u32, iterations: u32);
@@ -41,6 +41,18 @@ impl MemoryLatency {
     ) where
         W: std::io::Write,
     {
+        let gpu_id = match device_id {
+            DeviceId::Gpu(id) => id,
+            _ => 0,
+        };
+
+        let device = Device::get_device(gpu_id).expect("Couldn't set CUDA device {}");
+        let _context =
+            Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)
+                .expect("Couldn't create CUDA context");
+
+        numa::set_strict(true);
+
         let buffer_bytes = *range.end() + 1;
         let element_bytes = size_of::<u32>();
         let buffer_len = buffer_bytes / element_bytes;
@@ -51,11 +63,8 @@ impl MemoryLatency {
             DeviceId::Gpu(_) => "GPU",
         };
         let device_codename = match device_id {
-            DeviceId::Cpu(_) => cpu_codename(),
-            DeviceId::Gpu(_) => Device::current()
-                .expect("Couldn't get current device")
-                .name()
-                .expect("Couldn't get device code name"),
+            DeviceId::Cpu(_) => hw_info::cpu_codename(),
+            DeviceId::Gpu(_) => device.name().expect("Couldn't get device code name"),
         };
         let memory_node = match device_id {
             DeviceId::Cpu(node) => Some(node),
@@ -73,12 +82,11 @@ impl MemoryLatency {
         let mnt = Measurement::new(range, stride, template);
 
         let mut mem = match mem_loc {
-            MemoryLocation::Unified => DerefMem::CudaUniMem(
-                UVec::<u32>::new(buffer_len).expect("Couldn't allocate CUDA memory"),
-            ),
+            MemoryLocation::Unified => {
+                Allocator::alloc_deref_mem::<u32>(DerefMemType::CudaUniMem, buffer_len)
+            }
             MemoryLocation::System(node) => {
-                NumaMemory::<u32>::set_strict();
-                DerefMem::NumaMem(NumaMemory::alloc_on_node(buffer_len, node))
+                Allocator::alloc_deref_mem::<u32>(DerefMemType::NumaMem(node), buffer_len)
             }
         };
 
@@ -86,7 +94,7 @@ impl MemoryLatency {
             DeviceId::Cpu(did) => {
                 let ml = CpuMemoryLatency::new(did);
                 mnt.measure(
-                    mem.as_mut_slice(),
+                    &mut mem,
                     ml,
                     CpuMemoryLatency::prepare,
                     CpuMemoryLatency::run,
@@ -94,20 +102,12 @@ impl MemoryLatency {
                 )
             }
             DeviceId::Gpu(did) => {
-                Device::set(did).expect("Cannot set CUDA device. Perhaps CUDA is not installed?");
-
                 let ml = GpuMemoryLatency::new(did);
                 let prepare = match mem_loc {
                     MemoryLocation::Unified => GpuMemoryLatency::prepare_prefetch,
                     MemoryLocation::System(_) => GpuMemoryLatency::prepare,
                 };
-                mnt.measure(
-                    mem.as_mut_slice(),
-                    ml,
-                    prepare,
-                    GpuMemoryLatency::run,
-                    repeat,
-                )
+                mnt.measure(&mut mem, ml, prepare, GpuMemoryLatency::run, repeat)
             }
         };
 
@@ -144,7 +144,7 @@ struct Measurement<'h, 'd, 'c> {
 
 #[derive(Debug)]
 struct GpuMemoryLatency {
-    device_id: i32,
+    device_id: u32,
     nvml: nvml_wrapper::NVML,
 }
 
@@ -175,15 +175,15 @@ impl<'h, 'd, 'c> Measurement<'h, 'd, 'c> {
 
     fn measure<P, R, S>(
         &self,
-        mem: &mut [u32],
+        mem: &mut DerefMem<u32>,
         mut state: S,
         prepare: P,
         run: R,
         repeat: u32,
     ) -> Vec<DataPoint>
     where
-        P: Fn(&mut S, &mut [u32], &MeasurementParameters),
-        R: Fn(&mut S, &mut [u32], &MeasurementParameters) -> (u64, u64),
+        P: Fn(&mut S, &mut DerefMem<u32>, &MeasurementParameters),
+        R: Fn(&mut S, &mut DerefMem<u32>, &MeasurementParameters) -> (u64, u64),
     {
         let stride_iter = self.stride.clone();
         let range_iter = self.range.clone();
@@ -236,50 +236,38 @@ impl<'h, 'd, 'c> Measurement<'h, 'd, 'c> {
 }
 
 impl GpuMemoryLatency {
-    fn new(device_id: i32) -> Self {
+    fn new(device_id: u32) -> Self {
         let nvml = NVML::init().expect("Couldn't initialize NVML");
 
         Self { device_id, nvml }
     }
 
-    fn prepare(_state: &mut Self, mem: &mut [u32], mp: &MeasurementParameters) {
+    fn prepare(_state: &mut Self, mem: &mut DerefMem<u32>, mp: &MeasurementParameters) {
         write_strides(mem, mp.stride);
     }
 
-    fn prepare_prefetch(state: &mut Self, mem: &mut [u32], mp: &MeasurementParameters) {
+    fn prepare_prefetch(_state: &mut Self, mem: &mut DerefMem<u32>, mp: &MeasurementParameters) {
         write_strides(mem, mp.stride);
 
-        let pmap = Device::current()
-            .expect("Couldn't get current CUDA device")
-            .get_property()
-            .expect("Couldn't get CUDA device property map");
-
-        // Prefetch data to GPU
-        if pmap.concurrentManagedAccess != 0 {
-            let element_bytes = size_of_val(&mem[0]);
-            unsafe {
-                cudaMemPrefetchAsync(
-                    mem.as_ptr() as *const c_void,
-                    mem.len() * element_bytes,
-                    state.device_id,
-                    std::mem::zeroed(),
-                )
-            }
-            .check()
-            .unwrap();
-            sync().unwrap();
+        if let DerefMem::CudaUniMem(um) = mem {
+            let device_id = cuda_wrapper::current_device_id().expect("Couldn't get CUDA device id");
+            let stream =
+                Stream::new(StreamFlags::NON_BLOCKING, None).expect("Couldn't create CUDA stream");
+            cuda_wrapper::prefetch_async(um.as_unified_ptr(), um.len(), device_id, &stream)
+                .expect("Couldn't prefetch unified memory to device");
+            stream.synchronize().unwrap();
         }
     }
 
-    fn run(state: &mut Self, mem: &mut [u32], mp: &MeasurementParameters) -> (u64, u64) {
+    fn run(state: &mut Self, mem: &mut DerefMem<u32>, mp: &MeasurementParameters) -> (u64, u64) {
         // Refresh first values that we override with result
-        let element_bytes = size_of_val(&mem[0]);
+        let element_bytes = size_of::<u32>();
         mem[0] = (mp.stride / element_bytes) as u32;
 
         // Launch GPU code
         unsafe { gpu_stride(mem.as_mut_ptr(), mp.iterations) };
 
-        sync().unwrap();
+        CurrentContext::synchronize().unwrap();
 
         // Get GPU clock rate that applications run at
         let clock_rate_mhz = state
@@ -298,13 +286,12 @@ impl GpuMemoryLatency {
 
 impl CpuMemoryLatency {
     fn new(device_id: u16) -> Self {
-        NumaMemory::<u32>::set_strict();
-        run_on_node(device_id);
+        numa::run_on_node(device_id).expect("Couldn't set NUMA node");
 
         Self { device_id }
     }
 
-    fn run(_state: &mut Self, mem: &mut [u32], mp: &MeasurementParameters) -> (u64, u64) {
+    fn run(_state: &mut Self, mem: &mut DerefMem<u32>, mp: &MeasurementParameters) -> (u64, u64) {
         // Launch CPU code
         let ns = unsafe { cpu_stride(mem.as_ptr(), mp.iterations) };
 
@@ -313,16 +300,17 @@ impl CpuMemoryLatency {
         (cycles, ns)
     }
 
-    fn prepare(_state: &mut Self, mem: &mut [u32], mp: &MeasurementParameters) {
+    fn prepare(_state: &mut Self, mem: &mut DerefMem<u32>, mp: &MeasurementParameters) {
         write_strides(mem, mp.stride);
     }
 }
 
-fn write_strides(data: &mut [u32], stride: usize) -> usize {
-    let element_bytes = size_of_val(&data[0]);
-    let len = data.len();
+fn write_strides(data: &mut DerefMem<u32>, stride: usize) -> usize {
+    let slice = data.as_mut_slice();
+    let element_bytes = size_of::<u32>();
+    let len = slice.len();
 
-    let number_of_strides = data
+    let number_of_strides = slice
         .iter_mut()
         .zip((stride / element_bytes)..)
         .map(|(it, next)| *it = (next % len) as u32)
