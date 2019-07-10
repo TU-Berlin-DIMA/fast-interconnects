@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Clemens Lutz <lutzcle@cml.li>"]
 license = "MPL-2.0"
 repository = "https://github.com/TU-Berlin-DIMA/numa-gpu"
-description = "Joins and morsel-driven parallelism using NVLink 2.0 on POWER9"
+description = "A hash join implementation optimized for NVLink 2.0 on POWER9"
 readme = "../README.md"
 edition = "2018"
 
