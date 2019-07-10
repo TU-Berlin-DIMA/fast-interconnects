@@ -1,6 +1,17 @@
-extern crate cuda_sys;
-extern crate numa_gpu;
-extern crate rustacuda;
+use cuda_sys::cuda::{
+    cuEventCreate, cuEventDestroy_v2, cuEventElapsedTime, cuEventRecord, cuMemAllocHost_v2,
+    cuMemAlloc_v2, cuMemFreeHost, cuMemFree_v2, cuMemGetInfo_v2, cuMemHostRegister_v2,
+    cuMemHostUnregister, cuMemcpyAsync, cuStreamCreate, cuStreamDestroy_v2, cuStreamSynchronize,
+    CUevent, CUstream,
+};
+
+use numa_gpu::error::ToResult;
+use numa_gpu::runtime::numa::NumaMemory;
+use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
+
+use rustacuda::prelude::*;
+
+use serde_derive::Serialize;
 
 use std::ffi::c_void;
 use std::iter;
@@ -8,19 +19,6 @@ use std::mem::{size_of, zeroed};
 use std::ptr::null_mut;
 use std::slice;
 use std::time::Instant;
-
-use self::cuda_sys::cuda::{
-    cuEventCreate, cuEventDestroy_v2, cuEventElapsedTime, cuEventRecord, cuMemAllocHost_v2,
-    cuMemAlloc_v2, cuMemFreeHost, cuMemFree_v2, cuMemGetInfo_v2, cuMemHostRegister_v2,
-    cuMemHostUnregister, cuMemcpyAsync, cuStreamCreate, cuStreamDestroy_v2, cuStreamSynchronize,
-    CUevent, CUstream,
-};
-
-use self::numa_gpu::error::ToResult;
-use self::numa_gpu::runtime::numa::NumaMemory;
-use self::numa_gpu::runtime::utils::EnsurePhysicallyBacked;
-
-use self::rustacuda::prelude::*;
 
 use crate::types::*;
 

@@ -1,3 +1,5 @@
+use serde_derive::Serialize;
+
 /// The device type and it's ID
 ///
 /// Used to specify where a task should be run.

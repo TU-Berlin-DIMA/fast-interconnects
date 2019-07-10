@@ -1,16 +1,3 @@
-#[macro_use]
-extern crate average;
-#[macro_use]
-extern crate clap;
-extern crate core; // Required by average::concatenate!{} macro
-#[macro_use]
-extern crate serde_derive;
-extern crate rustacuda;
-extern crate structopt;
-
-use rustacuda::prelude::*;
-use structopt::StructOpt;
-
 pub mod cuda_memcopy;
 pub mod memory_bandwidth;
 pub mod memory_latency;
@@ -24,6 +11,10 @@ use crate::memory_latency::MemoryLatency;
 use crate::numa_memcopy::NumaMemcopy;
 use crate::sync_latency::uvm_sync_latency;
 use crate::types::*;
+
+use clap::{_clap_count_exprs, arg_enum};
+use rustacuda::prelude::*;
+use structopt::StructOpt;
 
 arg_enum! {
     #[derive(Copy, Clone, Debug, PartialEq)]

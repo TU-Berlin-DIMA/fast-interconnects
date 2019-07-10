@@ -1,11 +1,8 @@
-extern crate nvml_wrapper;
-extern crate rustacuda;
+use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
 
-use self::nvml_wrapper::{enum_wrappers::device::Clock, NVML};
-
-use self::rustacuda::context::CurrentContext;
-use self::rustacuda::memory::{DeviceCopy, UnifiedBuffer};
-use self::rustacuda::prelude::*;
+use rustacuda::context::CurrentContext;
+use rustacuda::memory::{DeviceCopy, UnifiedBuffer};
+use rustacuda::prelude::*;
 
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::thread;

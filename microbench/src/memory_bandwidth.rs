@@ -1,24 +1,20 @@
-extern crate numa_gpu;
-extern crate nvml_wrapper;
-extern crate rayon;
-extern crate rustacuda;
+use numa_gpu::runtime::allocator::{Allocator, DerefMemType};
+use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
+use numa_gpu::runtime::{hw_info, numa};
+
+use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
+
+use rustacuda::context::CurrentContext;
+use rustacuda::device::DeviceAttribute;
+use rustacuda::prelude::*;
+
+use serde_derive::Serialize;
 
 use std::iter;
 use std::mem::size_of;
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 use std::time::Instant;
-
-use self::numa_gpu::runtime::allocator::{Allocator, DerefMemType};
-use self::numa_gpu::runtime::hw_info;
-use self::numa_gpu::runtime::numa;
-use self::numa_gpu::runtime::utils::EnsurePhysicallyBacked;
-
-use self::nvml_wrapper::{enum_wrappers::device::Clock, NVML};
-
-use self::rustacuda::context::CurrentContext;
-use self::rustacuda::device::DeviceAttribute;
-use self::rustacuda::prelude::*;
 
 use crate::types::*;
 

@@ -1,21 +1,13 @@
-extern crate csv;
-extern crate cuda_sys;
-extern crate hostname;
-extern crate numa_gpu;
-extern crate nvml_wrapper;
-extern crate rustacuda;
-extern crate serde;
+use numa_gpu::runtime::allocator::{Allocator, DerefMemType};
+use numa_gpu::runtime::memory::DerefMem;
+use numa_gpu::runtime::{cuda_wrapper, hw_info, numa};
 
-use self::numa_gpu::runtime::allocator::{Allocator, DerefMemType};
-use self::numa_gpu::runtime::cuda_wrapper;
-use self::numa_gpu::runtime::hw_info;
-use self::numa_gpu::runtime::memory::DerefMem;
-use self::numa_gpu::runtime::numa;
+use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
 
-use self::nvml_wrapper::{enum_wrappers::device::Clock, NVML};
+use rustacuda::context::CurrentContext;
+use rustacuda::prelude::*;
 
-use self::rustacuda::context::CurrentContext;
-use self::rustacuda::prelude::*;
+use serde_derive::Serialize;
 
 use std;
 use std::mem::size_of;

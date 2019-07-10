@@ -1,13 +1,8 @@
-extern crate average;
-extern crate csv;
-extern crate hostname;
-extern crate numa_gpu;
-extern crate rayon;
-extern crate serde;
+use average::{concatenate, impl_from_iterator, Estimate, Max, Min, Quantile, Variance};
 
-use self::average::{Estimate, Max, Min, Quantile, Variance};
+use numa_gpu::runtime::numa::{self, NumaMemory};
 
-use self::numa_gpu::runtime::numa::{self, NumaMemory};
+use serde_derive::Serialize;
 
 use std::io;
 use std::mem::size_of;
