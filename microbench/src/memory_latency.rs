@@ -1,15 +1,19 @@
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType};
+use numa_gpu::runtime::hw_info;
 use numa_gpu::runtime::memory::DerefMem;
-use numa_gpu::runtime::{cuda_wrapper, hw_info, numa};
 
+#[cfg(feature = "nvml")]
 use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
+#[cfg(not(feature = "nvml"))]
+use numa_gpu::runtime::hw_info::CudaDeviceInfo;
+
+use numa_gpu::runtime::{cuda_wrapper, numa};
 
 use rustacuda::context::CurrentContext;
 use rustacuda::prelude::*;
 
 use serde_derive::Serialize;
 
-use std;
 use std::mem::size_of;
 use std::ops::RangeInclusive;
 
@@ -137,6 +141,8 @@ struct Measurement<'h, 'd, 'c> {
 #[derive(Debug)]
 struct GpuMemoryLatency {
     device_id: u32,
+
+    #[cfg(feature = "nvml")]
     nvml: nvml_wrapper::NVML,
 }
 
@@ -228,10 +234,16 @@ impl<'h, 'd, 'c> Measurement<'h, 'd, 'c> {
 }
 
 impl GpuMemoryLatency {
+    #[cfg(feature = "nvml")]
     fn new(device_id: u32) -> Self {
         let nvml = NVML::init().expect("Couldn't initialize NVML");
 
         Self { device_id, nvml }
+    }
+
+    #[cfg(not(feature = "nvml"))]
+    fn new(device_id: u32) -> Self {
+        Self { device_id }
     }
 
     fn prepare(_state: &mut Self, mem: &mut DerefMem<u32>, mp: &MeasurementParameters) {
@@ -262,12 +274,19 @@ impl GpuMemoryLatency {
         CurrentContext::synchronize().unwrap();
 
         // Get GPU clock rate that applications run at
+        #[cfg(feature = "nvml")]
         let clock_rate_mhz = state
             .nvml
             .device_by_index(state.device_id as u32)
             .expect("Couldn't get NVML device")
             .clock_info(Clock::SM)
             .expect("Couldn't get clock rate with NVML");
+
+        #[cfg(not(feature = "nvml"))]
+        let clock_rate_mhz = CurrentContext::get_device()
+            .expect("Couldn't get CUDA device")
+            .clock_rate()
+            .expect("Couldn't get clock rate");
 
         let cycles: u64 = mem[0] as u64;
         let ns: u64 = cycles * 1000 / (clock_rate_mhz as u64);

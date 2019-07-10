@@ -84,6 +84,12 @@ pub trait CudaDeviceInfo {
 
     /// Returns `true` if concurrent managed access is supported by the device
     fn concurrent_managed_access(&self) -> Result<bool>;
+
+    /// Returns the default clock rate of the streaming multiprocessor in megahertz
+    fn clock_rate(&self) -> Result<u32>;
+
+    /// Returns the default memory clock rate of the GPU in megahertz
+    fn memory_clock_rate(&self) -> Result<u32>;
 }
 
 impl CudaDeviceInfo for Device {
@@ -119,5 +125,13 @@ impl CudaDeviceInfo for Device {
             0 => false,
             _ => unreachable!("Concurrent menaged access should return 0 or 1"),
         })
+    }
+
+    fn clock_rate(&self) -> Result<u32> {
+        Ok(self.get_attribute(DeviceAttribute::ClockRate)? as u32 / 1000)
+    }
+
+    fn memory_clock_rate(&self) -> Result<u32> {
+        Ok(self.get_attribute(DeviceAttribute::MemoryClockRate)? as u32 / 1000)
     }
 }

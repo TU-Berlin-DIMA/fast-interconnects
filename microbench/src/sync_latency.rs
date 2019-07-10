@@ -1,4 +1,7 @@
+#[cfg(feature = "nvml")]
 use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
+#[cfg(not(feature = "nvml"))]
+use numa_gpu::runtime::hw_info::CudaDeviceInfo;
 
 use rustacuda::context::CurrentContext;
 use rustacuda::memory::{DeviceCopy, UnifiedBuffer};
@@ -68,8 +71,10 @@ pub fn uvm_sync_latency(device_id: u32, iterations: u32) -> DataPoint {
         Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)
             .expect("Couldn't create CUDA context");
 
+    #[cfg(feature = "nvml")]
     let nvml = NVML::init().expect("Couldn't initialize NVML");
 
+    #[cfg(feature = "nvml")]
     let nvml_device = nvml
         .device_by_index(device_id)
         .expect("Couldn't get NVML device");
@@ -113,9 +118,16 @@ pub fn uvm_sync_latency(device_id: u32, iterations: u32) -> DataPoint {
     CurrentContext::synchronize().unwrap();
 
     // Get GPU clock rate that applications run at
+    #[cfg(feature = "nvml")]
     let clock_rate_mhz = nvml_device
         .applications_clock(Clock::SM)
         .expect("Couldn't get clock rate with NVML");
+
+    #[cfg(not(feature = "nvml"))]
+    let clock_rate_mhz = CurrentContext::get_device()
+        .expect("Couldn't get CUDA device")
+        .clock_rate()
+        .expect("Couldn't get clock rate");
 
     // Wait on CPU
     let cpu_result = handle.join().unwrap();

@@ -1,7 +1,9 @@
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType};
+use numa_gpu::runtime::hw_info::{self, CudaDeviceInfo};
+use numa_gpu::runtime::numa;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
-use numa_gpu::runtime::{hw_info, numa};
 
+#[cfg(feature = "nvml")]
 use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
 
 use rustacuda::context::CurrentContext;
@@ -121,6 +123,8 @@ struct CpuMemoryBandwidth {
 #[derive(Debug)]
 struct GpuMemoryBandwidth {
     device_id: u32,
+
+    #[cfg(feature = "nvml")]
     nvml: nvml_wrapper::NVML,
 }
 
@@ -149,6 +153,12 @@ impl MemoryBandwidth {
                 .expect("Couldn't create CUDA context");
 
         numa::set_strict(true);
+
+        let clock_rate_khz = CurrentContext::get_device()
+            .expect("Couldn't get CUDA device")
+            .clock_rate()
+            .expect("Couldn't get clock rate");
+        println!("Clock rate: {} kHz", clock_rate_khz);
 
         let element_bytes = size_of::<u32>();
         let buffer_len = bytes / element_bytes;
@@ -434,10 +444,16 @@ impl<'h, 'd, 'c, 'n, 't> CpuMeasurement<'h, 'd, 'c, 'n, 't> {
 }
 
 impl GpuMemoryBandwidth {
+    #[cfg(feature = "nvml")]
     fn new(device_id: u32) -> Self {
         let nvml = NVML::init().expect("Couldn't initialize NVML");
 
         Self { device_id, nvml }
+    }
+
+    #[cfg(not(feature = "nvml"))]
+    fn new(device_id: u32) -> Self {
+        Self { device_id }
     }
 
     fn run(
@@ -464,12 +480,19 @@ impl GpuMemoryBandwidth {
         CurrentContext::synchronize().unwrap();
 
         // Get GPU clock rate that applications run at
+        #[cfg(feature = "nvml")]
         let clock_rate_mhz = state
             .nvml
             .device_by_index(state.device_id as u32)
             .expect("Couldn't get NVML device")
             .clock_info(Clock::SM)
             .expect("Couldn't get clock rate with NVML");
+
+        #[cfg(not(feature = "nvml"))]
+        let clock_rate_mhz = CurrentContext::get_device()
+            .expect("Couldn't get CUDA device")
+            .clock_rate()
+            .expect("Couldn't get clock rate");
 
         let cycles: u64 = mem[0] as u64;
         let ns: u64 = cycles * 1000 / (clock_rate_mhz as u64);
