@@ -1,7 +1,7 @@
-#[cfg(feature = "nvml")]
-use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
 #[cfg(not(feature = "nvml"))]
 use numa_gpu::runtime::hw_info::CudaDeviceInfo;
+#[cfg(feature = "nvml")]
+use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
 
 use rustacuda::context::CurrentContext;
 use rustacuda::memory::{DeviceCopy, UnifiedBuffer};

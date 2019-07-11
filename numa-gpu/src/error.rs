@@ -22,6 +22,10 @@ error_chain! {
             description("Invalid argument error")
             display("Aborted with: {}", msg)
         }
+        InvalidConversion(msg: &'static str) {
+            description("Conversion error")
+            display("Aborting with: {}", msg)
+        }
         IntegerOverflow(msg: String) {
             description("Integer overflow error")
             display("Aborted with: {}", msg)

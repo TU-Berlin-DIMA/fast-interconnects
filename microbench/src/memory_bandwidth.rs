@@ -1,5 +1,6 @@
-use numa_gpu::runtime::allocator::{Allocator, DerefMemType};
+use numa_gpu::runtime::allocator::{Allocator, MemType};
 use numa_gpu::runtime::hw_info::{self, CudaDeviceInfo};
+use numa_gpu::runtime::memory::{DerefMem, Mem};
 use numa_gpu::runtime::numa;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 
@@ -8,10 +9,12 @@ use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
 
 use rustacuda::context::CurrentContext;
 use rustacuda::device::DeviceAttribute;
+use rustacuda::memory::DeviceBox;
 use rustacuda::prelude::*;
 
 use serde_derive::Serialize;
 
+use std::convert::{TryFrom, TryInto};
 use std::iter;
 use std::mem::size_of;
 use std::ops::RangeInclusive;
@@ -28,7 +31,14 @@ extern "C" {
         tid: usize,
         num_threads: usize,
     );
-    fn gpu_bandwidth_seq(op: MemoryOperation, data: *mut u32, size: u32, grid: u32, block: u32);
+    fn gpu_bandwidth_seq(
+        op: MemoryOperation,
+        data: *mut u32,
+        size: u32,
+        cycles: *mut u64,
+        grid: u32,
+        block: u32,
+    );
     fn cpu_bandwidth_lcg(
         op: MemoryOperation,
         data: *mut u32,
@@ -36,11 +46,24 @@ extern "C" {
         tid: usize,
         num_threads: usize,
     );
-    fn gpu_bandwidth_lcg(op: MemoryOperation, data: *mut u32, size: u32, grid: u32, block: u32);
+    fn gpu_bandwidth_lcg(
+        op: MemoryOperation,
+        data: *mut u32,
+        size: u32,
+        cycles: *mut u64,
+        grid: u32,
+        block: u32,
+    );
 }
 
-type GpuBandwidthFn =
-    unsafe extern "C" fn(op: MemoryOperation, data: *mut u32, size: u32, grid: u32, block: u32);
+type GpuBandwidthFn = unsafe extern "C" fn(
+    op: MemoryOperation,
+    data: *mut u32,
+    size: u32,
+    cycles: *mut u64,
+    grid: u32,
+    block: u32,
+);
 type CpuBandwidthFn = unsafe extern "C" fn(
     op: MemoryOperation,
     data: *mut u32,
@@ -73,14 +96,14 @@ enum MemoryOperation {
 pub struct MemoryBandwidth;
 
 #[derive(Clone, Debug, Default, Serialize)]
-struct DataPoint<'h, 'd, 'c, 'n, 't> {
+struct DataPoint<'h, 'd, 'c, 'n> {
     pub hostname: &'h str,
     pub device_type: &'d str,
     pub device_codename: &'c str,
     pub function_name: &'n str,
     pub memory_operation: Option<MemoryOperation>,
     pub cpu_node: Option<u16>,
-    pub memory_type: &'t str,
+    pub memory_type: Option<BareMemType>,
     pub memory_node: Option<u16>,
     pub warm_up: bool,
     pub bytes: usize,
@@ -93,18 +116,18 @@ struct DataPoint<'h, 'd, 'c, 'n, 't> {
 }
 
 #[allow(dead_code)]
-struct GpuMeasurement<'h, 'd, 'c, 'n, 't> {
+struct GpuMeasurement<'h, 'd, 'c, 'n> {
     oversub_ratio: RangeInclusive<OversubRatio>,
     warp_mul: RangeInclusive<WarpMul>,
     warp_size: Warp,
     sm_count: SM,
     ilp: RangeInclusive<Ilp>,
-    template: DataPoint<'h, 'd, 'c, 'n, 't>,
+    template: DataPoint<'h, 'd, 'c, 'n>,
 }
 
-struct CpuMeasurement<'h, 'd, 'c, 'n, 't> {
+struct CpuMeasurement<'h, 'd, 'c, 'n> {
     threads: RangeInclusive<ThreadCount>,
-    template: DataPoint<'h, 'd, 'c, 'n, 't>,
+    template: DataPoint<'h, 'd, 'c, 'n>,
 }
 
 #[allow(dead_code)]
@@ -131,7 +154,7 @@ struct GpuMemoryBandwidth {
 impl MemoryBandwidth {
     pub fn measure<W>(
         device_id: DeviceId,
-        mem_loc: MemoryLocation,
+        mem_type: MemType,
         bytes: usize,
         threads: RangeInclusive<ThreadCount>,
         oversub_ratio: RangeInclusive<OversubRatio>,
@@ -172,40 +195,33 @@ impl MemoryBandwidth {
             DeviceId::Cpu(_) => hw_info::cpu_codename(),
             DeviceId::Gpu(_) => device.name().expect("Couldn't get device code name"),
         };
-        let (memory_type, memory_node) = match mem_loc {
-            MemoryLocation::Unified => ("Unified", None),
-            MemoryLocation::System(id) => ("System", Some(id)),
-        };
+        let mem_type_description: MemTypeDescription = (&mem_type).into();
 
         let template = DataPoint {
             hostname: hostname.as_str(),
             device_type,
             device_codename: device_codename.as_str(),
             cpu_node,
-            memory_node,
-            memory_type,
+            memory_node: mem_type_description.location,
+            memory_type: Some(mem_type_description.bare_mem_type),
             bytes,
             ..Default::default()
         };
 
-        let mut mem = match mem_loc {
-            MemoryLocation::Unified => {
-                Allocator::alloc_deref_mem::<u32>(DerefMemType::CudaUniMem, buffer_len)
+        let mem = match DerefMem::<u32>::try_from(Allocator::alloc_mem(mem_type, buffer_len)) {
+            Ok(mut demem) => {
+                u32::ensure_physically_backed(demem.as_mut_slice());
+                demem.into()
             }
-            MemoryLocation::System(node) => {
-                let mut mem =
-                    Allocator::alloc_deref_mem::<u32>(DerefMemType::NumaMem(node), buffer_len);
-                u32::ensure_physically_backed(mem.as_mut_slice());
-
-                mem.into()
-            }
+            Err((_, mem)) => mem,
         };
 
         let latencies = match device_id {
             DeviceId::Cpu(cpu_node) => {
                 let mnt = CpuMeasurement::new(threads, template);
+                let demem: DerefMem<_> = mem.try_into().expect("Cannot run benchmark on CPU with the given type of memory. Did you specify GPU device memory?");
                 mnt.measure(
-                    mem.as_mut_slice(),
+                    &demem,
                     CpuMemoryBandwidth::new(cpu_node),
                     CpuMemoryBandwidth::run,
                     vec![
@@ -246,7 +262,7 @@ impl MemoryBandwidth {
 
                 let ml = GpuMemoryBandwidth::new(did);
                 let l = mnt.measure(
-                    mem.as_mut_slice(),
+                    &mem,
                     ml,
                     GpuMemoryBandwidth::run,
                     vec![
@@ -280,14 +296,14 @@ impl MemoryBandwidth {
     }
 }
 
-impl<'h, 'd, 'c, 'n, 't> GpuMeasurement<'h, 'd, 'c, 'n, 't> {
+impl<'h, 'd, 'c, 'n> GpuMeasurement<'h, 'd, 'c, 'n> {
     fn new(
         oversub_ratio: RangeInclusive<OversubRatio>,
         warp_mul: RangeInclusive<WarpMul>,
         warp_size: Warp,
         sm_count: SM,
         ilp: RangeInclusive<Ilp>,
-        template: DataPoint<'h, 'd, 'c, 'n, 't>,
+        template: DataPoint<'h, 'd, 'c, 'n>,
     ) -> Self {
         Self {
             oversub_ratio,
@@ -301,19 +317,19 @@ impl<'h, 'd, 'c, 'n, 't> GpuMeasurement<'h, 'd, 'c, 'n, 't> {
 
     fn measure<R, S>(
         &self,
-        mem: &mut [u32],
+        mem: &Mem<u32>,
         mut state: S,
         run: R,
         futs: Vec<GpuNamedBandwidthFn<'n>>,
         ops: Vec<MemoryOperation>,
         repeat: u32,
-    ) -> Vec<DataPoint<'h, 'd, 'c, 'n, 't>>
+    ) -> Vec<DataPoint<'h, 'd, 'c, 'n>>
     where
         R: Fn(
             GpuBandwidthFn,
             MemoryOperation,
             &mut S,
-            &mut [u32],
+            &Mem<u32>,
             &GpuMeasurementParameters,
         ) -> (u64, u64),
     {
@@ -381,22 +397,28 @@ impl<'h, 'd, 'c, 'n, 't> GpuMeasurement<'h, 'd, 'c, 'n, 't> {
     }
 }
 
-impl<'h, 'd, 'c, 'n, 't> CpuMeasurement<'h, 'd, 'c, 'n, 't> {
-    fn new(threads: RangeInclusive<ThreadCount>, template: DataPoint<'h, 'd, 'c, 'n, 't>) -> Self {
+impl<'h, 'd, 'c, 'n> CpuMeasurement<'h, 'd, 'c, 'n> {
+    fn new(threads: RangeInclusive<ThreadCount>, template: DataPoint<'h, 'd, 'c, 'n>) -> Self {
         Self { threads, template }
     }
 
     fn measure<R, S>(
         &self,
-        mem: &mut [u32],
+        mem: &DerefMem<u32>,
         mut state: S,
         run: R,
         futs: Vec<CpuNamedBandwidthFn<'n>>,
         ops: Vec<MemoryOperation>,
         repeat: u32,
-    ) -> Vec<DataPoint<'h, 'd, 'c, 'n, 't>>
+    ) -> Vec<DataPoint<'h, 'd, 'c, 'n>>
     where
-        R: Fn(CpuBandwidthFn, MemoryOperation, &mut S, &[u32], Rc<rayon::ThreadPool>) -> (u64, u64),
+        R: Fn(
+            CpuBandwidthFn,
+            MemoryOperation,
+            &mut S,
+            &DerefMem<u32>,
+            Rc<rayon::ThreadPool>,
+        ) -> (u64, u64),
     {
         let (ThreadCount(threads_l), ThreadCount(threads_u)) = self.threads.clone().into_inner();
         let cpu_node = 0;
@@ -460,18 +482,21 @@ impl GpuMemoryBandwidth {
         f: GpuBandwidthFn,
         op: MemoryOperation,
         state: &mut Self,
-        mem: &mut [u32],
+        mem: &Mem<u32>,
         mp: &GpuMeasurementParameters,
     ) -> (u64, u64) {
         assert!(
             mem.len().is_power_of_two(),
             "Data size must be a power of two!"
         );
+
+        let mut device_cycles = DeviceBox::new(&0_u64).expect("Couldn't allocate device memory");
         unsafe {
             f(
                 op,
-                mem.as_mut_ptr(),
+                mem.as_ptr() as *mut u32,
                 mem.len() as u32,
+                device_cycles.as_device_ptr().as_raw_mut(),
                 mp.grid_size.0,
                 mp.block_size.0,
             )
@@ -494,7 +519,10 @@ impl GpuMemoryBandwidth {
             .clock_rate()
             .expect("Couldn't get clock rate");
 
-        let cycles: u64 = mem[0] as u64;
+        let mut cycles = 0;
+        device_cycles
+            .copy_to(&mut cycles)
+            .expect("Couldn't transfer result from device");
         let ns: u64 = cycles * 1000 / (clock_rate_mhz as u64);
 
         (cycles, ns)
@@ -506,12 +534,11 @@ impl CpuMemoryBandwidth {
         Self { cpu_node }
     }
 
-    // FIXME: use &mut [AtomicU32] once it's stablized
     fn run(
         f: CpuBandwidthFn,
         op: MemoryOperation,
         _state: &mut Self,
-        mem: &[u32],
+        mem: &DerefMem<u32>,
         thread_pool: Rc<rayon::ThreadPool>,
     ) -> (u64, u64) {
         let threads = thread_pool.current_num_threads();

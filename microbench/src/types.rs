@@ -1,3 +1,5 @@
+use numa_gpu::runtime::allocator;
+
 use serde_derive::Serialize;
 
 /// The device type and it's ID
@@ -10,15 +12,36 @@ pub enum DeviceId {
     Gpu(u32),
 }
 
-/// The memory buffer type and it's location
-///
-/// Used to specify where memory should be allocated before performing
-/// the allocation.
-/// For example, the numactl ID.
-#[derive(Debug, Clone, Serialize, Eq, PartialEq)]
-pub enum MemoryLocation {
-    System(u16),
+#[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+pub enum BareMemType {
+    System,
+    Numa,
+    Pinned,
     Unified,
+    Device,
+}
+
+#[derive(Debug)]
+pub struct MemTypeDescription {
+    pub bare_mem_type: BareMemType,
+    pub location: Option<u16>,
+}
+
+impl From<&allocator::MemType> for MemTypeDescription {
+    fn from(mem_type: &allocator::MemType) -> Self {
+        let (bare_mem_type, location) = match mem_type {
+            allocator::MemType::SysMem => (BareMemType::System, None),
+            allocator::MemType::NumaMem(loc) => (BareMemType::Numa, Some(*loc)),
+            allocator::MemType::CudaPinnedMem => (BareMemType::Pinned, None),
+            allocator::MemType::CudaUniMem => (BareMemType::Unified, None),
+            allocator::MemType::CudaDevMem => (BareMemType::Device, None),
+        };
+
+        Self {
+            bare_mem_type,
+            location,
+        }
+    }
 }
 
 /// The memory allocation method

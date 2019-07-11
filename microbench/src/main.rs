@@ -13,6 +13,7 @@ use crate::sync_latency::uvm_sync_latency;
 use crate::types::*;
 
 use clap::{_clap_count_exprs, arg_enum};
+use numa_gpu::runtime::allocator;
 use rustacuda::prelude::*;
 use structopt::StructOpt;
 
@@ -26,9 +27,30 @@ arg_enum! {
 
 arg_enum! {
     #[derive(Copy, Clone, Debug, PartialEq)]
-    enum ArgMemType {
-        Unified,
+    pub enum ArgMemType {
         System,
+        Numa,
+        Pinned,
+        Unified,
+        Device,
+    }
+}
+
+#[derive(Debug)]
+pub struct ArgMemTypeHelper {
+    mem_type: ArgMemType,
+    location: u16,
+}
+
+impl From<ArgMemTypeHelper> for allocator::MemType {
+    fn from(ArgMemTypeHelper { mem_type, location }: ArgMemTypeHelper) -> Self {
+        match mem_type {
+            ArgMemType::System => allocator::MemType::SysMem,
+            ArgMemType::Numa => allocator::MemType::NumaMem(location),
+            ArgMemType::Pinned => allocator::MemType::CudaPinnedMem,
+            ArgMemType::Unified => allocator::MemType::CudaUniMem,
+            ArgMemType::Device => allocator::MemType::CudaDevMem,
+        }
     }
 }
 
@@ -262,14 +284,14 @@ fn main() {
                 ArgDeviceType::GPU => DeviceId::Gpu(bw.device_id.into()),
             };
 
-            let mem_loc = match bw.mem_type {
-                ArgMemType::Unified => MemoryLocation::Unified,
-                ArgMemType::System => MemoryLocation::System(bw.mem_location),
+            let mem_type_helper = ArgMemTypeHelper {
+                mem_type: bw.mem_type,
+                location: bw.mem_location,
             };
 
             MemoryBandwidth::measure(
                 device,
-                mem_loc,
+                mem_type_helper.into(),
                 bw.size * mb,
                 ThreadCount(bw.threads_lower)..=ThreadCount(bw.threads_upper),
                 OversubRatio(bw.oversub_ratio_lower)..=OversubRatio(bw.oversub_ratio_upper),
@@ -285,14 +307,14 @@ fn main() {
                 ArgDeviceType::GPU => DeviceId::Gpu(lat.device_id.into()),
             };
 
-            let mem_loc = match lat.mem_type {
-                ArgMemType::Unified => MemoryLocation::Unified,
-                ArgMemType::System => MemoryLocation::System(lat.mem_location),
+            let mem_type_helper = ArgMemTypeHelper {
+                mem_type: lat.mem_type,
+                location: lat.mem_location,
             };
 
             MemoryLatency::measure(
                 device,
-                mem_loc,
+                mem_type_helper.into(),
                 (lat.range_lower * kb)..=(lat.range_upper * kb),
                 (lat.stride_lower)..=(lat.stride_upper),
                 lat.repeat,

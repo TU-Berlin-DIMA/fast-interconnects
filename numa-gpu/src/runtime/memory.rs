@@ -13,11 +13,12 @@ use rustacuda::memory::{
     UnifiedPointer,
 };
 
+use std::convert::{TryFrom, TryInto};
 use std::ops::Deref;
 use std::ops::DerefMut;
 
 use super::numa::NumaMemory;
-use crate::error::Result;
+use crate::error::{Error, ErrorKind, Result};
 
 /// A trait for memory that can be page-locked by CUDA.
 ///
@@ -100,6 +101,41 @@ impl<T: DeviceCopy> Mem<T> {
     }
 }
 
+impl<'t, T: DeviceCopy> TryInto<&'t [T]> for &'t Mem<T> {
+    type Error = (Error, &'t DeviceBuffer<T>);
+
+    fn try_into(self) -> std::result::Result<&'t [T], Self::Error> {
+        match self {
+            Mem::SysMem(m) => Ok(m.as_slice()),
+            Mem::NumaMem(m) => Ok(m.as_slice()),
+            Mem::CudaPinnedMem(m) => Ok(m.as_slice()),
+            Mem::CudaUniMem(m) => Ok(m.as_slice()),
+            Mem::CudaDevMem(m) => Err((
+                ErrorKind::InvalidConversion("Cannot convert device memory to &[T] slice").into(),
+                m,
+            )),
+        }
+    }
+}
+
+impl<'t, T: DeviceCopy> TryInto<&'t mut [T]> for &'t mut Mem<T> {
+    type Error = (Error, &'t mut DeviceBuffer<T>);
+
+    fn try_into(self) -> std::result::Result<&'t mut [T], Self::Error> {
+        match self {
+            Mem::SysMem(m) => Ok(m.as_mut_slice()),
+            Mem::NumaMem(m) => Ok(m.as_mut_slice()),
+            Mem::CudaPinnedMem(m) => Ok(m.as_mut_slice()),
+            Mem::CudaUniMem(m) => Ok(m.as_mut_slice()),
+            Mem::CudaDevMem(m) => Err((
+                ErrorKind::InvalidConversion("Cannot convert device memory to &mut [T] slice")
+                    .into(),
+                m,
+            )),
+        }
+    }
+}
+
 impl<T: DeviceCopy> From<DerefMem<T>> for Mem<T> {
     fn from(demem: DerefMem<T>) -> Mem<T> {
         match demem {
@@ -159,6 +195,23 @@ impl<T: DeviceCopy> DerefMut for DerefMem<T> {
             DerefMem::NumaMem(m) => m.as_mut_slice(),
             DerefMem::CudaPinnedMem(m) => m.as_mut_slice(),
             DerefMem::CudaUniMem(m) => m.as_mut_slice(),
+        }
+    }
+}
+
+impl<T: DeviceCopy> TryFrom<Mem<T>> for DerefMem<T> {
+    type Error = (Error, Mem<T>);
+
+    fn try_from(mem: Mem<T>) -> std::result::Result<Self, Self::Error> {
+        match mem {
+            Mem::SysMem(m) => Ok(DerefMem::SysMem(m)),
+            Mem::NumaMem(m) => Ok(DerefMem::NumaMem(m)),
+            Mem::CudaPinnedMem(m) => Ok(DerefMem::CudaPinnedMem(m)),
+            Mem::CudaUniMem(m) => Ok(DerefMem::CudaUniMem(m)),
+            Mem::CudaDevMem(_) => Err((
+                ErrorKind::InvalidConversion("Cannot convert device memory to DerefMem").into(),
+                mem,
+            )),
         }
     }
 }

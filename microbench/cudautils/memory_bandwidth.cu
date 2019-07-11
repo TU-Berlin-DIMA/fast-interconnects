@@ -16,9 +16,9 @@ enum MemoryOperation { Read, Write, CompareAndSwap };
  *  - None
  *
  * Postconditions:
- *  - Clock cycles are written to data[0]
+ *  - Clock cycles are written to cycles
  */
-__global__ void gpu_read_bandwidth_seq_kernel(uint32_t *data, uint32_t size) {
+__global__ void gpu_read_bandwidth_seq_kernel(uint32_t *data, uint32_t size, uint64_t *cycles) {
     uint32_t const global_size = gridDim.x * blockDim.x;
     uint32_t const gid = threadIdx.x + blockIdx.x * blockDim.x;
     uint64_t sum = 0;
@@ -36,7 +36,7 @@ __global__ void gpu_read_bandwidth_seq_kernel(uint32_t *data, uint32_t size) {
     sum = stop - start;
 
     // Write result
-    data[0] = sum;
+    *cycles = sum;
 
     // Prevent compiler optimization
     if (sum == 0) {
@@ -53,10 +53,10 @@ __global__ void gpu_read_bandwidth_seq_kernel(uint32_t *data, uint32_t size) {
  *  - None
  *
  * Postconditions:
- *  - Clock cycles are written to data[0]
+ *  - Clock cycles are written to cycles
  *  - All array elements are filled with unspecified data
  */
-__global__ void gpu_write_bandwidth_seq_kernel(uint32_t *data, uint32_t size) {
+__global__ void gpu_write_bandwidth_seq_kernel(uint32_t *data, uint32_t size, uint64_t *cycles) {
     uint32_t const global_size = gridDim.x * blockDim.x;
     uint32_t const gid = threadIdx.x + blockIdx.x * blockDim.x;
     uint64_t sum = 0;
@@ -73,7 +73,7 @@ __global__ void gpu_write_bandwidth_seq_kernel(uint32_t *data, uint32_t size) {
     sum = stop - start;
 
     // Write result
-    data[0] = sum;
+    *cycles = sum;
 
     // Prevent compiler optimization
     if (sum == 0) {
@@ -90,10 +90,10 @@ __global__ void gpu_write_bandwidth_seq_kernel(uint32_t *data, uint32_t size) {
  *  - None
  *
  * Postconditions:
- *  - Clock cycles are written to data[0]
+ *  - Clock cycles are written to cycles
  *  - All array elements are filled with unspecified data
  */
-__global__ void gpu_cas_bandwidth_seq_kernel(uint32_t *data, uint32_t size) {
+__global__ void gpu_cas_bandwidth_seq_kernel(uint32_t *data, uint32_t size, uint64_t *cycles) {
     uint32_t const global_size = gridDim.x * blockDim.x;
     uint32_t const gid = threadIdx.x + blockIdx.x * blockDim.x;
     uint64_t sum = 0;
@@ -110,7 +110,7 @@ __global__ void gpu_cas_bandwidth_seq_kernel(uint32_t *data, uint32_t size) {
     sum = stop - start;
 
     // Write result
-    data[0] = sum;
+    *cycles = sum;
 }
 
 /*
@@ -118,17 +118,24 @@ __global__ void gpu_cas_bandwidth_seq_kernel(uint32_t *data, uint32_t size) {
  *
  * See specific functions for pre- and postcondition details.
  */
-extern "C" void gpu_bandwidth_seq(MemoryOperation op, uint32_t *data, uint32_t size, uint32_t grid, uint32_t block)
+extern "C" void gpu_bandwidth_seq(
+        MemoryOperation op,
+        uint32_t *data,
+        uint32_t size,
+        uint64_t *cycles,
+        uint32_t grid,
+        uint32_t block
+        )
 {
     switch (op) {
         case Read:
-            gpu_read_bandwidth_seq_kernel<<<grid, block>>>(data, size);
+            gpu_read_bandwidth_seq_kernel<<<grid, block>>>(data, size, cycles);
             break;
         case Write:
-            gpu_write_bandwidth_seq_kernel<<<grid, block>>>(data, size);
+            gpu_write_bandwidth_seq_kernel<<<grid, block>>>(data, size, cycles);
             break;
         case CompareAndSwap:
-            gpu_cas_bandwidth_seq_kernel<<<grid, block>>>(data, size);
+            gpu_cas_bandwidth_seq_kernel<<<grid, block>>>(data, size, cycles);
             break;
         default:
             throw "Unimplemented operation!";
@@ -145,9 +152,9 @@ extern "C" void gpu_bandwidth_seq(MemoryOperation op, uint32_t *data, uint32_t s
  *  - size is a power of 2, i.e. 2^x
  *
  * Postconditions:
- *  - Clock cycles are written to data[0]
+ *  - Clock cycles are written to cycles
  */
-__global__ void gpu_read_bandwidth_lcg_kernel(uint32_t *data, uint32_t size) {
+__global__ void gpu_read_bandwidth_lcg_kernel(uint32_t *data, uint32_t size, uint64_t *cycles) {
     uint32_t global_size = gridDim.x * blockDim.x;
     uint32_t gid = threadIdx.x + blockIdx.x * blockDim.x;
     uint64_t sum = 0;
@@ -180,7 +187,7 @@ __global__ void gpu_read_bandwidth_lcg_kernel(uint32_t *data, uint32_t size) {
     sum = stop - start;
 
     // Write result
-    data[0] = sum;
+    *cycles = sum;
 
     // Prevent compiler optimization
     if (sum == 0) {
@@ -201,7 +208,7 @@ __global__ void gpu_read_bandwidth_lcg_kernel(uint32_t *data, uint32_t size) {
  *  - Clock cycles are written to data[0]
  *  - All other array elements are (probably) filled with random numbers
  */
-__global__ void gpu_write_bandwidth_lcg_kernel(uint32_t *data, uint32_t size) {
+__global__ void gpu_write_bandwidth_lcg_kernel(uint32_t *data, uint32_t size, uint64_t *cycles) {
     uint32_t global_size = gridDim.x * blockDim.x;
     uint32_t gid = threadIdx.x + blockIdx.x * blockDim.x;
     uint64_t sum = 0;
@@ -233,7 +240,7 @@ __global__ void gpu_write_bandwidth_lcg_kernel(uint32_t *data, uint32_t size) {
     sum = stop - start;
 
     // Write result
-    data[0] = sum;
+    *cycles = sum;
 
     // Prevent compiler optimization
     if (sum == 0) {
@@ -254,7 +261,7 @@ __global__ void gpu_write_bandwidth_lcg_kernel(uint32_t *data, uint32_t size) {
  *  - Clock cycles are written to data[0]
  *  - All array elements are filled with unspecified data
  */
-__global__ void gpu_cas_bandwidth_lcg_kernel(uint32_t *data, uint32_t size) {
+__global__ void gpu_cas_bandwidth_lcg_kernel(uint32_t *data, uint32_t size, uint64_t *cycles) {
     uint32_t global_size = gridDim.x * blockDim.x;
     uint32_t gid = threadIdx.x + blockIdx.x * blockDim.x;
     uint64_t sum = 0;
@@ -286,7 +293,7 @@ __global__ void gpu_cas_bandwidth_lcg_kernel(uint32_t *data, uint32_t size) {
     sum = stop - start;
 
     // Write result
-    data[0] = sum;
+    *cycles = sum;
 }
 
 /*
@@ -294,17 +301,24 @@ __global__ void gpu_cas_bandwidth_lcg_kernel(uint32_t *data, uint32_t size) {
  *
  * See specific functions for pre- and postcondition details.
  */
-extern "C" void gpu_bandwidth_lcg(MemoryOperation op, uint32_t *data, uint32_t size, uint32_t grid, uint32_t block)
+extern "C" void gpu_bandwidth_lcg(
+        MemoryOperation op,
+        uint32_t *data,
+        uint32_t size,
+        uint64_t *cycles,
+        uint32_t grid,
+        uint32_t block
+        )
 {
     switch (op) {
         case Read:
-            gpu_read_bandwidth_lcg_kernel<<<grid, block>>>(data, size);
+            gpu_read_bandwidth_lcg_kernel<<<grid, block>>>(data, size, cycles);
             break;
         case Write:
-            gpu_write_bandwidth_lcg_kernel<<<grid, block>>>(data, size);
+            gpu_write_bandwidth_lcg_kernel<<<grid, block>>>(data, size, cycles);
             break;
         case CompareAndSwap:
-            gpu_cas_bandwidth_lcg_kernel<<<grid, block>>>(data, size);
+            gpu_cas_bandwidth_lcg_kernel<<<grid, block>>>(data, size, cycles);
             break;
         default:
             throw "Unimplemented operation!";
