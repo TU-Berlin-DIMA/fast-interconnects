@@ -181,7 +181,6 @@ impl MemoryBandwidth {
             .expect("Couldn't get CUDA device")
             .clock_rate()
             .expect("Couldn't get clock rate");
-        println!("Clock rate: {} kHz", clock_rate_khz);
 
         let element_bytes = size_of::<u32>();
         let buffer_len = bytes / element_bytes;
