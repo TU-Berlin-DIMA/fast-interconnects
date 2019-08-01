@@ -10,225 +10,38 @@
 
 //! Rust bindings to Linux's 'numa' library.
 
-use bitflags::bitflags;
+use super::cuda_wrapper::{host_register, host_unregister};
+use super::hw_info::ProcessorCache;
+use super::linux_wrapper::{mbind, CpuSet, MemBindFlags, MemPolicyModes};
+use super::memory::PageLock;
+use crate::error::{ErrorKind, Result, ResultExt};
 
 use libc::{mmap, munmap};
 
-use std::io;
 use std::io::Error as IoError;
 use std::mem::size_of;
 use std::ops::{Deref, DerefMut};
-use std::os::raw::{c_int, c_long, c_uint, c_ulong, c_void};
+use std::os::raw::{c_int, c_void};
 use std::ptr;
 use std::slice;
 
-use crate::error::{Error, ErrorKind, Result, ResultExt};
-use crate::runtime::cuda_wrapper::{host_register, host_unregister};
-use crate::runtime::hw_info::ProcessorCache;
-use crate::runtime::memory::PageLock;
-
 use num_rational::Ratio;
 
-#[link(name = "numa")]
-extern "C" {
-    pub fn numa_run_on_node(node: c_int) -> c_int;
-    pub fn numa_set_strict(strict: c_int);
-    pub fn numa_alloc_onnode(size: usize, node: c_int) -> *mut c_void;
-    pub fn numa_free(start: *mut c_void, size: usize);
-    pub fn numa_tonode_memory(start: *mut c_void, size: usize, node: c_int);
-    pub fn mbind(
-        addr: *mut c_void,
-        len: c_ulong,
-        mode: c_int,
-        nodemask: *const c_ulong,
-        maxnode: c_ulong,
-        flags: c_uint,
-    ) -> c_long;
-}
+mod bindings {
+    use super::*;
 
-bitflags! {
-/// Flags for set_mempolicy
-///
-/// See `linux/mempolicy.h` for definition.
-pub struct MemPolicyFlags: c_uint {
-    const DEFAULT = 0x0;
-}
-}
-
-bitflags! {
-/// Flags for `mbind`
-///
-/// See `numaif.h` for definition.
-pub struct MemBindFlags: c_uint {
-    /// Default
-    const DEFAULT = 0x0;
-
-    /// Verify existing pages in the mapping
-    const STRICT = 0x1;
-
-    /// Move pages owned by this process to conform to mapping
-    const MOVE = 0x2;
-
-    /// Move every page to conform to mapping
-    const MOVE_ALL = 0x4;
-}
-}
-
-bitflags! {
-/// Memory policies
-///
-/// See `numaif.h` and `linux/mempolicy.h` for definition.
-pub struct MemPolicyModes: c_int {
-    /// Restores default behavior by removing any previously requested policy.
-    const DEFAULT = 0x0;
-
-    /// Specifies that pages should first try to be allocated on a node in the
-    /// node mask. If free memory is low on these nodes, the pages will be
-    /// allocated on another node.
-    const PREFERRED = 0x1;
-
-    /// Specifies a strict policy that restricts memory allocation to the nodes
-    /// specified in the node mask. Pages will not be allocated from any node
-    /// not in the node mask.
-    const BIND = 0x2;
-
-    /// Specifies that page allocations should be interleaved over the nodes in
-    /// the node mask. This often leads to higher bandwidth at the cost of higher
-    /// latency.
-    const INTERLEAVE = 0x3;
-
-    /// Specifies that pages should be allocated locally on the node that
-    /// triggers the allocation. If free memory is low on the local node, pages
-    /// will be allocated on another node.
-    const LOCAL = 0x4;
-
-    /// Specifies that the nodes should be interpreted as physical node IDs.
-    /// Thus, the operating system does not reinterpret the node set when the
-    /// thread moves to a different cpuset context.
-    ///
-    /// Optional and cannot be combined with RELATIVE_NODES.
-    const STATIC_NODES = (1 << 15);
-
-    /// Speficies that the nodes should be interpreted relative to the thread's
-    /// cpuset context.
-    ///
-    /// Optional and cannot be combined with STATIC_NODES.
-    const RELATIVE_NODES = (1 << 14);
-}
-}
-
-/// CPU set to create CPU and NUMA node masks.
-///
-/// Inspired by Linux's `cpu_set_t`, see the `cpu_set` manual page.
-///
-/// Limitations
-/// ===========
-///
-/// The set is currently restricted to a single 64-bit integer. Therefore, IDs
-/// must be smaller or equal to 63.
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
-pub struct CpuSet {
-    mask: u64,
-}
-
-impl CpuSet {
-    /// Create an empty CPU set.
-    pub fn new() -> Self {
-        Self { mask: 0 }
-    }
-
-    /// Add an ID to the set.
-    pub fn add(&mut self, id: u16) {
-        assert!(id <= 63);
-        self.mask = self.mask | (1 << id);
-    }
-
-    /// Remove an ID from the set.
-    pub fn remove(&mut self, id: u16) {
-        assert!(id <= 63);
-        self.mask = self.mask & !(1 << id);
-    }
-
-    /// Query if an ID is included in the set.
-    pub fn is_set(&self, id: u16) -> bool {
-        assert!(id <= 63);
-        (self.mask & (1 << id)) != 0
-    }
-
-    /// Returns the number of IDs in the set
-    pub fn count(&self) -> usize {
-        self.mask.count_ones() as usize
-    }
-
-    /// Reset the set to zero.
-    pub fn zero(&mut self) {
-        self.mask = 0;
-    }
-
-    /// Query the maximum amount of nodes currently in the set.
-    pub fn max_node(&self) -> u16 {
-        64 - self.mask.leading_zeros() as u16
-    }
-
-    /// Get the set as a slice.
-    pub fn as_slice(&self) -> &[u64] {
-        slice::from_ref(&self.mask)
+    #[link(name = "numa")]
+    extern "C" {
+        pub fn numa_alloc_onnode(size: usize, node: c_int) -> *mut c_void;
+        pub fn numa_free(start: *mut c_void, size: usize);
     }
 }
 
-impl std::ops::BitAnd for CpuSet {
-    type Output = Self;
-
-    fn bitand(self, rhs: Self) -> Self::Output {
-        Self {
-            mask: self.mask & rhs.mask,
-        }
-    }
-}
-
-impl std::ops::BitOr for CpuSet {
-    type Output = Self;
-
-    fn bitor(self, rhs: Self) -> Self::Output {
-        Self {
-            mask: self.mask | rhs.mask,
-        }
-    }
-}
-
-impl std::ops::BitXor for CpuSet {
-    type Output = Self;
-
-    fn bitxor(self, rhs: Self) -> Self::Output {
-        Self {
-            mask: self.mask ^ rhs.mask,
-        }
-    }
-}
-
-pub fn rust_mbind<T>(
-    data: &[T],
-    mode: MemPolicyModes,
-    nodes: CpuSet,
-    flags: MemBindFlags,
-) -> Result<()> {
-    unsafe {
-        if mbind(
-            data.as_ptr() as *mut T as *mut c_void,
-            (data.len() * size_of::<T>()) as u64,
-            mode.bits(),
-            &nodes.mask,
-            64,
-            // nodes.max_node().into(),
-            flags.bits(),
-        ) == -1
-        {
-            Err(ErrorKind::Io(IoError::last_os_error()))?;
-        }
-
-        Ok(())
-    }
-}
+/// Re-export Linux's NUMA bindings
+pub use super::linux_wrapper::{
+    numa_run_on_node as run_on_node, numa_set_strict as set_strict,
+    numa_tonode_memory as tonode_memory,
+};
 
 /// A contiguous memory region that is dynamically allocated on the specified
 /// NUMA node.
@@ -252,7 +65,7 @@ impl<T> NumaMemory<T> {
         assert_ne!(len, 0);
 
         let size = len * size_of::<T>();
-        let pointer = unsafe { numa_alloc_onnode(size, node.into()) } as *mut T;
+        let pointer = unsafe { bindings::numa_alloc_onnode(size, node.into()) } as *mut T;
         if pointer.is_null() {
             panic!("Couldn't allocate memory on NUMA node {}", node);
         }
@@ -328,7 +141,7 @@ impl<T> Drop for NumaMemory<T> {
         }
 
         let size = self.len * size_of::<T>();
-        unsafe { numa_free(self.pointer as *mut c_void, size) };
+        unsafe { bindings::numa_free(self.pointer as *mut c_void, size) };
     }
 }
 
@@ -432,7 +245,7 @@ impl<T> DistributedNumaMemory<T> {
                         page_len as usize * page_size,
                     );
 
-                    rust_mbind(
+                    mbind(
                         slice,
                         MemPolicyModes::PREFERRED,
                         node_set,
@@ -528,95 +341,6 @@ impl<T> PageLock for DistributedNumaMemory<T> {
             }
             self.is_page_locked = false;
         }
-        Ok(())
-    }
-}
-
-/// NUMA allocations will fail if the memory cannot be allocated on the target
-/// NUMA node. The default behavior is to fall back on other nodes.
-pub fn set_strict(strict: bool) {
-    unsafe { numa_set_strict(strict.into()) };
-}
-
-/// Run the current thread on the specified NUMA node.
-pub fn run_on_node(node: u16) -> Result<()> {
-    let ret = unsafe { numa_run_on_node(node.into()) };
-    if ret == -1 {
-        Err(Error::with_chain(
-            io::Error::last_os_error(),
-            "Couldn't bind thread to CPU node",
-        ))?;
-    }
-    Ok(())
-}
-
-/// Put memory on a specific node.
-///
-/// ```
-/// # use numa_gpu::runtime::numa::tonode_memory;
-/// let data = vec!(1; 1024);
-/// tonode_memory(&data, 0);
-/// ```
-pub fn tonode_memory<T>(mem: &[T], node: u16) {
-    unsafe {
-        numa_tonode_memory(
-            mem.as_ptr() as *mut T as *mut c_void,
-            mem.len() * size_of::<T>(),
-            node.into(),
-        )
-    };
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use libc::{mmap, munmap};
-    use std::alloc::{alloc, dealloc, Layout};
-    use std::mem::size_of;
-    use std::ptr;
-    use std::slice;
-
-    #[test]
-    fn test_mbind() -> Result<()> {
-        let bytes = 2_usize.pow(20);
-        let aligned = unsafe {
-            let ptr = mmap(
-                ptr::null_mut(),
-                bytes,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                0,
-                0,
-            );
-            if ptr == libc::MAP_FAILED {
-                Err(ErrorKind::Io(IoError::last_os_error()))?;
-            }
-            slice::from_raw_parts_mut(ptr as *mut usize, bytes / size_of::<usize>())
-        };
-
-        let mut nodes = CpuSet::new();
-        nodes.add(0);
-        rust_mbind(
-            aligned,
-            MemPolicyModes::PREFERRED,
-            nodes,
-            MemBindFlags::STRICT,
-        )?;
-
-        aligned.iter_mut().enumerate().for_each(|(id, val)| {
-            *val = id;
-        });
-
-        unsafe {
-            if munmap(
-                aligned.as_ptr() as *mut usize as *mut libc::c_void,
-                aligned.len() * size_of::<usize>(),
-            ) == -1
-            {
-                Err(ErrorKind::Io(IoError::last_os_error()))?;
-            }
-        }
-
         Ok(())
     }
 }

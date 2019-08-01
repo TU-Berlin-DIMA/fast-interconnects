@@ -12,6 +12,7 @@ pub mod allocator;
 pub mod cuda;
 pub mod cuda_wrapper;
 pub mod hw_info;
+pub mod linux_wrapper;
 pub mod memory;
 pub mod numa;
 pub mod utils;
