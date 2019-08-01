@@ -32,6 +32,7 @@ impl From<&allocator::MemType> for MemTypeDescription {
         let (bare_mem_type, location) = match mem_type {
             allocator::MemType::SysMem => (BareMemType::System, None),
             allocator::MemType::NumaMem(loc) => (BareMemType::Numa, Some(*loc)),
+            allocator::MemType::DistributedNumaMem(_node_ratios) => unimplemented!(),
             allocator::MemType::CudaPinnedMem => (BareMemType::Pinned, None),
             allocator::MemType::CudaUniMem => (BareMemType::Unified, None),
             allocator::MemType::CudaDevMem => (BareMemType::Device, None),

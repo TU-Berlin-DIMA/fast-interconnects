@@ -1,5 +1,5 @@
 use numa_gpu::runtime::allocator::{Allocator, MemType};
-use numa_gpu::runtime::hw_info::{self, CudaDeviceInfo};
+use numa_gpu::runtime::hw_info;
 use numa_gpu::runtime::memory::{DerefMem, Mem};
 use numa_gpu::runtime::numa;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
@@ -176,11 +176,6 @@ impl MemoryBandwidth {
                 .expect("Couldn't create CUDA context");
 
         numa::set_strict(true);
-
-        let clock_rate_khz = CurrentContext::get_device()
-            .expect("Couldn't get CUDA device")
-            .clock_rate()
-            .expect("Couldn't get clock rate");
 
         let element_bytes = size_of::<u32>();
         let buffer_len = bytes / element_bytes;

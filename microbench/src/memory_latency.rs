@@ -40,7 +40,7 @@ impl MemoryLatency {
     ) where
         W: std::io::Write,
     {
-        if let (MemType::CudaDevMem, DeviceId::Cpu(_)) = (mem_type, &device_id) {
+        if let (MemType::CudaDevMem, DeviceId::Cpu(_)) = (mem_type.clone(), &device_id) {
             panic!("Cannot run benchmark on CPU with the given type of memory. Did you specify GPU device memory?");
         }
 

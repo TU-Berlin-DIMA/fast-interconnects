@@ -23,6 +23,7 @@ use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
 use rustacuda::stream::{Stream, StreamFlags};
 use std::collections::vec_deque::VecDeque;
+use std::convert::TryInto;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -164,6 +165,9 @@ impl HashJoinBenchBuilder {
             match mem {
                 DerefMem::SysMem(ref mut mem) => T::ensure_physically_backed(mem.as_mut_slice()),
                 DerefMem::NumaMem(ref mut mem) => T::ensure_physically_backed(mem.as_mut_slice()),
+                DerefMem::DistributedNumaMem(ref mut mem) => {
+                    T::ensure_physically_backed(mem.as_mut_slice())
+                }
                 DerefMem::CudaPinnedMem(ref mut mem) => {
                     T::ensure_physically_backed(mem.as_mut_slice())
                 }
@@ -352,34 +356,22 @@ where
             c.iter_mut().map(|count| *count = 0).for_each(drop);
         }
 
-        let build_rel_key = match self.build_relation_key {
-            Mem::CudaUniMem(ref mut m) => m.as_mut_slice(),
-            Mem::SysMem(ref mut m) => m.as_mut_slice(),
-            Mem::NumaMem(ref mut m) => m.as_mut_slice(),
-            Mem::CudaPinnedMem(ref mut m) => m.as_mut_slice(),
-            Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
-        };
-        let build_rel_pay = match self.build_relation_payload {
-            Mem::CudaUniMem(ref mut m) => m.as_mut_slice(),
-            Mem::SysMem(ref mut m) => m.as_mut_slice(),
-            Mem::NumaMem(ref mut m) => m.as_mut_slice(),
-            Mem::CudaPinnedMem(ref mut m) => m.as_mut_slice(),
-            Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
-        };
-        let probe_rel_key = match self.probe_relation_key {
-            Mem::CudaUniMem(ref mut m) => m.as_mut_slice(),
-            Mem::SysMem(ref mut m) => m.as_mut_slice(),
-            Mem::NumaMem(ref mut m) => m.as_mut_slice(),
-            Mem::CudaPinnedMem(ref mut m) => m.as_mut_slice(),
-            Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
-        };
-        let probe_rel_pay = match self.probe_relation_payload {
-            Mem::CudaUniMem(ref mut m) => m.as_mut_slice(),
-            Mem::SysMem(ref mut m) => m.as_mut_slice(),
-            Mem::NumaMem(ref mut m) => m.as_mut_slice(),
-            Mem::CudaPinnedMem(ref mut m) => m.as_mut_slice(),
-            Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
-        };
+        let build_rel_key: &mut [T] = (&mut self.build_relation_key)
+            .try_into()
+            .map_err(|(err, _)| err)
+            .expect("Can't use CUDA device memory on CPU!");
+        let build_rel_pay: &mut [T] = (&mut self.build_relation_payload)
+            .try_into()
+            .map_err(|(err, _)| err)
+            .expect("Can't use CUDA device memory on CPU!");
+        let probe_rel_key: &mut [T] = (&mut self.probe_relation_key)
+            .try_into()
+            .map_err(|(err, _)| err)
+            .expect("Can't use CUDA device memory on CPU!");
+        let probe_rel_pay: &mut [T] = (&mut self.probe_relation_payload)
+            .try_into()
+            .map_err(|(err, _)| err)
+            .expect("Can't use CUDA device memory on CPU!");
 
         let hj_op = hash_join::CudaHashJoinBuilder::<T>::default()
             .hashing_scheme(self.hashing_scheme)
@@ -514,38 +506,31 @@ where
             .map_err(|_| ErrorKind::RuntimeError("Failed to create thread pool".to_string()))?;
         let build_chunk_size = (self.build_relation_key.len() + threads - 1) / threads;
         let probe_chunk_size = (self.probe_relation_key.len() + threads - 1) / threads;
-        let build_rel_chunks: Vec<_> = match self.build_relation_key {
-            Mem::CudaUniMem(ref m) => m.chunks(build_chunk_size),
-            Mem::SysMem(ref m) => m.chunks(build_chunk_size),
-            Mem::NumaMem(ref m) => m.as_slice().chunks(build_chunk_size),
-            Mem::CudaPinnedMem(ref m) => m.chunks(build_chunk_size),
-            Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
-        }
-        .collect();
-        let build_pay_chunks: Vec<_> = match self.build_relation_payload {
-            Mem::CudaUniMem(ref m) => m.chunks(build_chunk_size),
-            Mem::SysMem(ref m) => m.chunks(build_chunk_size),
-            Mem::NumaMem(ref m) => m.as_slice().chunks(build_chunk_size),
-            Mem::CudaPinnedMem(ref m) => m.chunks(build_chunk_size),
-            Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
-        }
-        .collect();
-        let probe_rel_chunks: Vec<_> = match self.probe_relation_key {
-            Mem::CudaUniMem(ref m) => m.chunks(probe_chunk_size),
-            Mem::SysMem(ref m) => m.chunks(probe_chunk_size),
-            Mem::NumaMem(ref m) => m.as_slice().chunks(probe_chunk_size),
-            Mem::CudaPinnedMem(ref m) => m.chunks(probe_chunk_size),
-            Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
-        }
-        .collect();
-        let probe_pay_chunks: Vec<_> = match self.probe_relation_payload {
-            Mem::CudaUniMem(ref m) => m.chunks(probe_chunk_size),
-            Mem::SysMem(ref m) => m.chunks(probe_chunk_size),
-            Mem::NumaMem(ref m) => m.as_slice().chunks(probe_chunk_size),
-            Mem::CudaPinnedMem(ref m) => m.chunks(probe_chunk_size),
-            Mem::CudaDevMem(_) => panic!("Can't use CUDA device memory on CPU!"),
-        }
-        .collect();
+
+        let build_rel_key: &[T] = (&self.build_relation_key)
+            .try_into()
+            .map_err(|(err, _)| err)
+            .expect("Can't use CUDA device memory on CPU!");
+        let build_rel_chunks: Vec<_> = build_rel_key.chunks(build_chunk_size).collect();
+
+        let build_rel_pay: &[T] = (&self.build_relation_payload)
+            .try_into()
+            .map_err(|(err, _)| err)
+            .expect("Can't use CUDA device memory on CPU!");
+        let build_pay_chunks: Vec<_> = build_rel_pay.chunks(build_chunk_size).collect();
+
+        let probe_rel_key: &[T] = (&self.probe_relation_key)
+            .try_into()
+            .map_err(|(err, _)| err)
+            .expect("Can't use CUDA device memory on CPU!");
+        let probe_rel_chunks: Vec<_> = probe_rel_key.chunks(probe_chunk_size).collect();
+
+        let probe_rel_pay: &[T] = (&self.probe_relation_payload)
+            .try_into()
+            .map_err(|(err, _)| err)
+            .expect("Can't use CUDA device memory on CPU!");
+        let probe_pay_chunks: Vec<_> = probe_rel_pay.chunks(probe_chunk_size).collect();
+
         let result_count_chunks: Vec<_> = result_counts.chunks_mut(threads).collect();
 
         let hj_builder = hash_join::CpuHashJoinBuilder::default()

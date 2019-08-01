@@ -17,7 +17,7 @@ use std::convert::{TryFrom, TryInto};
 use std::ops::Deref;
 use std::ops::DerefMut;
 
-use super::numa::NumaMemory;
+use super::numa::{DistributedNumaMemory, NumaMemory};
 use crate::error::{Error, ErrorKind, Result};
 
 /// A trait for memory that can be page-locked by CUDA.
@@ -33,13 +33,23 @@ pub trait PageLock {
     fn page_unlock(&mut self) -> Result<()>;
 }
 
+/// A heterogeneous memory type
+///
+/// Some memory types cannot be directly accessed on the host, e.g., CudaDevMem.
 pub use self::Mem::*;
 #[derive(Debug)]
 pub enum Mem<T: DeviceCopy> {
+    /// System memory allocated with Rust's global allocator
     SysMem(Vec<T>),
+    /// NUMA memory allocated on the specified NUMA node
     NumaMem(NumaMemory<T>),
+    /// NUMA memory distributed over multiple NUMA nodes
+    DistributedNumaMem(DistributedNumaMemory<T>),
+    /// CUDA pinned memory (using cudaHostAlloc())
     CudaPinnedMem(LockedBuffer<T>),
+    /// CUDA unified memory
     CudaDevMem(DeviceBuffer<T>),
+    /// CUDA device memory
     CudaUniMem(UnifiedBuffer<T>),
 }
 
@@ -48,6 +58,7 @@ impl<T: DeviceCopy> Mem<T> {
         match self {
             SysMem(ref m) => m.len(),
             NumaMem(ref m) => m.len(),
+            DistributedNumaMem(ref m) => m.len(),
             CudaPinnedMem(ref m) => m.len(),
             CudaDevMem(ref m) => m.len(),
             CudaUniMem(ref m) => m.len(),
@@ -58,6 +69,7 @@ impl<T: DeviceCopy> Mem<T> {
         match self {
             SysMem(m) => m.as_ptr(),
             NumaMem(m) => m.as_ptr(),
+            DistributedNumaMem(m) => m.as_ptr(),
             CudaPinnedMem(m) => m.as_ptr(),
             CudaDevMem(m) => m.as_ptr(),
             CudaUniMem(m) => m.as_ptr(),
@@ -68,6 +80,7 @@ impl<T: DeviceCopy> Mem<T> {
         match self {
             SysMem(m) => m.as_mut_ptr(),
             NumaMem(m) => m.as_mut_ptr(),
+            DistributedNumaMem(m) => m.as_mut_ptr(),
             CudaPinnedMem(m) => m.as_mut_ptr(),
             CudaDevMem(m) => m.as_mut_ptr(),
             CudaUniMem(m) => m.as_mut_ptr(),
@@ -94,6 +107,7 @@ impl<T: DeviceCopy> Mem<T> {
         match self {
             SysMem(m) => LaunchableMutPtr(m.as_mut_ptr()),
             NumaMem(m) => LaunchableMutPtr(m.as_mut_ptr()),
+            DistributedNumaMem(m) => LaunchableMutPtr(m.as_mut_ptr()),
             CudaPinnedMem(m) => LaunchableMutPtr(m.as_mut_ptr()),
             CudaDevMem(m) => m.as_device_ptr().into(),
             CudaUniMem(m) => m.as_unified_ptr().into(),
@@ -108,6 +122,7 @@ impl<'t, T: DeviceCopy> TryInto<&'t [T]> for &'t Mem<T> {
         match self {
             Mem::SysMem(m) => Ok(m.as_slice()),
             Mem::NumaMem(m) => Ok(m.as_slice()),
+            Mem::DistributedNumaMem(m) => Ok(m.as_slice()),
             Mem::CudaPinnedMem(m) => Ok(m.as_slice()),
             Mem::CudaUniMem(m) => Ok(m.as_slice()),
             Mem::CudaDevMem(m) => Err((
@@ -125,6 +140,7 @@ impl<'t, T: DeviceCopy> TryInto<&'t mut [T]> for &'t mut Mem<T> {
         match self {
             Mem::SysMem(m) => Ok(m.as_mut_slice()),
             Mem::NumaMem(m) => Ok(m.as_mut_slice()),
+            Mem::DistributedNumaMem(m) => Ok(m.as_mut_slice()),
             Mem::CudaPinnedMem(m) => Ok(m.as_mut_slice()),
             Mem::CudaUniMem(m) => Ok(m.as_mut_slice()),
             Mem::CudaDevMem(m) => Err((
@@ -141,17 +157,27 @@ impl<T: DeviceCopy> From<DerefMem<T>> for Mem<T> {
         match demem {
             DerefMem::SysMem(m) => Mem::SysMem(m),
             DerefMem::NumaMem(m) => Mem::NumaMem(m),
+            DerefMem::DistributedNumaMem(m) => Mem::DistributedNumaMem(m),
             DerefMem::CudaPinnedMem(m) => Mem::CudaPinnedMem(m),
             DerefMem::CudaUniMem(m) => Mem::CudaUniMem(m),
         }
     }
 }
 
+/// A CPU-dereferencable memory type
+///
+/// These memory types can be directly accessed on the host.
 #[derive(Debug)]
 pub enum DerefMem<T: DeviceCopy> {
+    /// System memory allocated with Rust's global allocator
     SysMem(Vec<T>),
+    /// NUMA memory allocated on the specified NUMA node
     NumaMem(NumaMemory<T>),
+    /// NUMA memory distributed over multiple NUMA nodes
+    DistributedNumaMem(DistributedNumaMemory<T>),
+    /// CUDA pinned memory (using cudaHostAlloc())
     CudaPinnedMem(LockedBuffer<T>),
+    /// CUDA unified memory
     CudaUniMem(UnifiedBuffer<T>),
 }
 
@@ -160,6 +186,7 @@ impl<T: DeviceCopy> DerefMem<T> {
         match self {
             DerefMem::SysMem(m) => m.as_slice(),
             DerefMem::NumaMem(m) => m.as_slice(),
+            DerefMem::DistributedNumaMem(m) => m.as_slice(),
             DerefMem::CudaPinnedMem(m) => m.as_slice(),
             DerefMem::CudaUniMem(m) => m.as_slice(),
         }
@@ -169,6 +196,7 @@ impl<T: DeviceCopy> DerefMem<T> {
         match self {
             DerefMem::SysMem(m) => m.as_mut_slice(),
             DerefMem::NumaMem(m) => m.as_mut_slice(),
+            DerefMem::DistributedNumaMem(m) => m.as_mut_slice(),
             DerefMem::CudaPinnedMem(m) => m.as_mut_slice(),
             DerefMem::CudaUniMem(m) => m.as_mut_slice(),
         }
@@ -182,6 +210,7 @@ impl<T: DeviceCopy> Deref for DerefMem<T> {
         match self {
             DerefMem::SysMem(m) => m.as_slice(),
             DerefMem::NumaMem(m) => m.as_slice(),
+            DerefMem::DistributedNumaMem(m) => m.as_slice(),
             DerefMem::CudaPinnedMem(m) => m.as_slice(),
             DerefMem::CudaUniMem(m) => m.as_slice(),
         }
@@ -193,6 +222,7 @@ impl<T: DeviceCopy> DerefMut for DerefMem<T> {
         match self {
             DerefMem::SysMem(m) => m.as_mut_slice(),
             DerefMem::NumaMem(m) => m.as_mut_slice(),
+            DerefMem::DistributedNumaMem(m) => m.as_mut_slice(),
             DerefMem::CudaPinnedMem(m) => m.as_mut_slice(),
             DerefMem::CudaUniMem(m) => m.as_mut_slice(),
         }
@@ -206,6 +236,7 @@ impl<T: DeviceCopy> TryFrom<Mem<T>> for DerefMem<T> {
         match mem {
             Mem::SysMem(m) => Ok(DerefMem::SysMem(m)),
             Mem::NumaMem(m) => Ok(DerefMem::NumaMem(m)),
+            Mem::DistributedNumaMem(m) => Ok(DerefMem::DistributedNumaMem(m)),
             Mem::CudaPinnedMem(m) => Ok(DerefMem::CudaPinnedMem(m)),
             Mem::CudaUniMem(m) => Ok(DerefMem::CudaUniMem(m)),
             Mem::CudaDevMem(_) => Err((

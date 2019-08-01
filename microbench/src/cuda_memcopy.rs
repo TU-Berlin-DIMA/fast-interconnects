@@ -179,7 +179,7 @@ impl<'h, 'c> Measurement<'h, 'c> {
         let (mut hmem, malloc_ns, dynamic_pin_ns) = match alloc_type {
             MemoryAllocationType::Pageable => {
                 let timer = Instant::now();
-                let m = HostMem::NumaMem(NumaMemory::alloc_on_node(buf_len, self.memory_node));
+                let m = HostMem::NumaMem(NumaMemory::new(buf_len, self.memory_node));
                 let duration = timer.elapsed();
                 let ns: u64 = duration.as_secs() * 10_u64.pow(9) + duration.subsec_nanos() as u64;
 
@@ -198,7 +198,7 @@ impl<'h, 'c> Measurement<'h, 'c> {
             },
             MemoryAllocationType::DynamicallyPinned => {
                 let alloc_timer = Instant::now();
-                let mut m = NumaMemory::alloc_on_node(buf_len, self.memory_node);
+                let mut m = NumaMemory::new(buf_len, self.memory_node);
                 let alloc_duration = alloc_timer.elapsed();
                 let alloc_ns: u64 =
                     alloc_duration.as_secs() * 10_u64.pow(9) + alloc_duration.subsec_nanos() as u64;

@@ -40,8 +40,8 @@ impl NumaMemcopy {
         numa::set_strict(true);
 
         // Allocate NUMA memory
-        let mut src = NumaMemory::alloc_on_node(size, src_node);
-        let mut dst = NumaMemory::alloc_on_node(size, dst_node);
+        let mut src = NumaMemory::new(size, src_node);
+        let mut dst = NumaMemory::new(size, dst_node);
 
         // Ensure that arrays are physically backed by memory
         for (i, x) in src.as_mut_slice().iter_mut().by_ref().enumerate() {
