@@ -12,7 +12,7 @@ use crate::numa_memcopy::NumaMemcopy;
 use crate::sync_latency::uvm_sync_latency;
 use crate::types::*;
 
-use clap::{_clap_count_exprs, arg_enum};
+use clap::arg_enum;
 use numa_gpu::runtime::allocator;
 use rustacuda::prelude::*;
 use structopt::StructOpt;

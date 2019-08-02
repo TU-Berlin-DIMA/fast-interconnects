@@ -11,12 +11,14 @@
 use crate::operators::hash_join;
 use crate::types::*;
 use crate::DataGenFn;
+use num_rational::Ratio;
 use numa_gpu::error::{ErrorKind, Result};
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::cuda::{
     CudaTransferStrategy, IntoCudaIterator, IntoCudaIteratorWithStrategy,
 };
 use numa_gpu::runtime::memory::*;
+use numa_gpu::runtime::numa::NodeRatio;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 use rustacuda::event::{Event, EventFlags};
 use rustacuda::function::{BlockSize, GridSize};
@@ -41,8 +43,8 @@ pub struct HashJoinBenchBuilder {
     hash_table_elems_per_entry: usize,
     inner_len: usize,
     outer_len: usize,
-    inner_location: u16,
-    outer_location: u16,
+    inner_location: Box<[NodeRatio]>,
+    outer_location: Box<[NodeRatio]>,
     inner_mem_type: ArgMemType,
     outer_mem_type: ArgMemType,
     hashing_scheme: hash_join::HashingScheme,
@@ -70,8 +72,14 @@ impl Default for HashJoinBenchBuilder {
             hash_table_elems_per_entry: 2, // FIXME: replace constant with an HtEntry type
             inner_len: 1,
             outer_len: 1,
-            inner_location: 0,
-            outer_location: 0,
+            inner_location: Box::new([NodeRatio {
+                node: 0,
+                ratio: Ratio::from_integer(1),
+            }]),
+            outer_location: Box::new([NodeRatio {
+                node: 0,
+                ratio: Ratio::from_integer(1),
+            }]),
             inner_mem_type: ArgMemType::System,
             outer_mem_type: ArgMemType::System,
             hashing_scheme: hash_join::HashingScheme::LinearProbing,
@@ -95,12 +103,12 @@ impl HashJoinBenchBuilder {
         self
     }
 
-    pub fn inner_location(&mut self, inner_location: u16) -> &mut Self {
+    pub fn inner_location(&mut self, inner_location: Box<[NodeRatio]>) -> &mut Self {
         self.inner_location = inner_location;
         self
     }
 
-    pub fn outer_location(&mut self, outer_location: u16) -> &mut Self {
+    pub fn outer_location(&mut self, outer_location: Box<[NodeRatio]>) -> &mut Self {
         self.outer_location = outer_location;
         self
     }
@@ -130,15 +138,19 @@ impl HashJoinBenchBuilder {
         // Allocate memory for data sets
         let malloc_timer = Instant::now();
         let mut memory: VecDeque<_> = [
-            (self.inner_len, self.inner_mem_type, self.inner_location),
-            (self.inner_len, self.inner_mem_type, self.inner_location),
-            (self.outer_len, self.outer_mem_type, self.outer_location),
-            (self.outer_len, self.outer_mem_type, self.outer_location),
+            (self.inner_len, self.inner_mem_type, &self.inner_location),
+            (self.inner_len, self.inner_mem_type, &self.inner_location),
+            (self.outer_len, self.outer_mem_type, &self.outer_location),
+            (self.outer_len, self.outer_mem_type, &self.outer_location),
         ]
         .iter()
-        .map(|&(len, mem_type, location)| {
+        .map(|&(len, mem_type, node_ratios)| {
             let mut mem = allocator::Allocator::alloc_deref_mem(
-                ArgMemTypeHelper { mem_type, location }.into(),
+                ArgMemTypeHelper {
+                    mem_type,
+                    node_ratios: node_ratios.clone(),
+                }
+                .into(),
                 len,
             );
 

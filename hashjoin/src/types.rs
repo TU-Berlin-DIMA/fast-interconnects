@@ -9,9 +9,10 @@
  */
 
 use crate::operators::hash_join;
-use clap::{_clap_count_exprs, arg_enum};
+use clap::arg_enum;
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::cuda::CudaTransferStrategy;
+use numa_gpu::runtime::numa::NodeRatio;
 use serde_derive::Serialize;
 use serde_repr::Serialize_repr;
 
@@ -33,6 +34,7 @@ arg_enum! {
         System,
         Numa,
         NumaLazyPinned,
+        DistributedNuma,
         Pinned,
         Unified,
         Device,
@@ -80,15 +82,21 @@ arg_enum! {
 #[derive(Debug)]
 pub struct ArgMemTypeHelper {
     pub mem_type: ArgMemType,
-    pub location: u16,
+    pub node_ratios: Box<[NodeRatio]>,
 }
 
 impl From<ArgMemTypeHelper> for allocator::MemType {
-    fn from(ArgMemTypeHelper { mem_type, location }: ArgMemTypeHelper) -> Self {
+    fn from(
+        ArgMemTypeHelper {
+            mem_type,
+            node_ratios,
+        }: ArgMemTypeHelper,
+    ) -> Self {
         match mem_type {
             ArgMemType::System => allocator::MemType::SysMem,
-            ArgMemType::Numa => allocator::MemType::NumaMem(location),
-            ArgMemType::NumaLazyPinned => allocator::MemType::NumaMem(location),
+            ArgMemType::Numa => allocator::MemType::NumaMem(node_ratios[0].node),
+            ArgMemType::NumaLazyPinned => allocator::MemType::NumaMem(node_ratios[0].node),
+            ArgMemType::DistributedNuma => allocator::MemType::DistributedNumaMem(node_ratios),
             ArgMemType::Pinned => allocator::MemType::CudaPinnedMem,
             ArgMemType::Unified => allocator::MemType::CudaUniMem,
             ArgMemType::Device => allocator::MemType::CudaDevMem,
@@ -97,11 +105,17 @@ impl From<ArgMemTypeHelper> for allocator::MemType {
 }
 
 impl From<ArgMemTypeHelper> for allocator::DerefMemType {
-    fn from(ArgMemTypeHelper { mem_type, location }: ArgMemTypeHelper) -> Self {
+    fn from(
+        ArgMemTypeHelper {
+            mem_type,
+            node_ratios,
+        }: ArgMemTypeHelper,
+    ) -> Self {
         match mem_type {
             ArgMemType::System => allocator::DerefMemType::SysMem,
-            ArgMemType::Numa => allocator::DerefMemType::NumaMem(location),
-            ArgMemType::NumaLazyPinned => allocator::DerefMemType::NumaMem(location),
+            ArgMemType::Numa => allocator::DerefMemType::NumaMem(node_ratios[0].node),
+            ArgMemType::NumaLazyPinned => allocator::DerefMemType::NumaMem(node_ratios[0].node),
+            ArgMemType::DistributedNuma => allocator::DerefMemType::DistributedNumaMem(node_ratios),
             ArgMemType::Pinned => allocator::DerefMemType::CudaPinnedMem,
             ArgMemType::Unified => allocator::DerefMemType::CudaUniMem,
             ArgMemType::Device => panic!("Error: Device memory not supported in this context!"),

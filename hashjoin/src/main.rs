@@ -22,7 +22,10 @@ use crate::types::*;
 use numa_gpu::error::Result;
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::hw_info::CudaDeviceInfo;
+use numa_gpu::runtime::numa::NodeRatio;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
+
+use num_rational::Ratio;
 
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
@@ -102,9 +105,21 @@ struct CmdOpt {
     )]
     hash_table_mem_type: ArgMemType,
 
-    #[structopt(long = "hash-table-location", default_value = "0")]
-    /// Allocate memory for hash table on CPU or GPU (See numactl -H and CUDA device list)
-    hash_table_location: u16,
+    #[structopt(
+        long = "hash-table-location",
+        default_value = "0",
+        raw(require_delimiter = "true")
+    )]
+    /// Allocate memory for hash table on NUMA nodes (e.g.: 0,1,2) or GPU (See numactl -H and CUDA device list)
+    hash_table_location: Vec<u16>,
+
+    #[structopt(
+        long = "hash-table-proportions",
+        default_value = "1",
+        raw(require_delimiter = "true")
+    )]
+    /// Proportions with with the hash table is allocate on multiple nodes in percent (e.g.: 20,60,20)
+    hash_table_proportions: Vec<usize>,
 
     #[structopt(long = "inner-rel-location", default_value = "0")]
     /// Allocate memory for inner relation on CPU or GPU (See numactl -H and CUDA device list)
@@ -218,8 +233,14 @@ where
     hjb_builder
         .hashing_scheme(hashing_scheme)
         .hash_table_load_factor(hash_table_load_factor)
-        .inner_location(cmd.inner_rel_location)
-        .outer_location(cmd.outer_rel_location)
+        .inner_location(Box::new([NodeRatio {
+            node: cmd.inner_rel_location,
+            ratio: Ratio::from_integer(1),
+        }]))
+        .outer_location(Box::new([NodeRatio {
+            node: cmd.outer_rel_location,
+            ratio: Ratio::from_integer(1),
+        }]))
         .inner_mem_type(cmd.mem_type)
         .outer_mem_type(cmd.mem_type);
 
@@ -228,8 +249,17 @@ where
     let transfer_strategy = cmd.transfer_strategy.clone();
     let chunk_len = cmd.chunk_bytes / size_of::<T>();
     let mem_type = cmd.hash_table_mem_type;
-    let location = cmd.hash_table_location;
     let threads = cmd.threads.clone();
+
+    let node_ratios: Box<[NodeRatio]> = cmd
+        .hash_table_location
+        .iter()
+        .zip(cmd.hash_table_proportions.iter())
+        .map(|(node, pct)| NodeRatio {
+            node: *node,
+            ratio: Ratio::new(*pct, 100),
+        })
+        .collect();
 
     // Select data set
     let (inner_relation_len, outer_relation_len, data_gen) = data_gen_fn::<_>(cmd.data_set);
@@ -248,13 +278,21 @@ where
     let hjc: Box<FnMut() -> Result<HashJoinPoint>> = match exec_method {
         ArgExecutionMethod::Cpu => Box::new(move || {
             let ht_alloc = allocator::Allocator::deref_mem_alloc_fn::<T>(
-                ArgMemTypeHelper { mem_type, location }.into(),
+                ArgMemTypeHelper {
+                    mem_type,
+                    node_ratios: node_ratios.clone(),
+                }
+                .into(),
             );
             hjb.cpu_hash_join(threads, ht_alloc)
         }),
         ArgExecutionMethod::Gpu => Box::new(move || {
             let ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
-                ArgMemTypeHelper { mem_type, location }.into(),
+                ArgMemTypeHelper {
+                    mem_type,
+                    node_ratios: node_ratios.clone(),
+                }
+                .into(),
             );
             hjb.cuda_hash_join(
                 ht_alloc,
@@ -265,7 +303,11 @@ where
         ArgExecutionMethod::GpuStream if transfer_strategy == ArgTransferStrategy::Unified => {
             Box::new(move || {
                 let ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
-                    ArgMemTypeHelper { mem_type, location }.into(),
+                    ArgMemTypeHelper {
+                        mem_type,
+                        node_ratios: node_ratios.clone(),
+                    }
+                    .into(),
                 );
                 hjb.cuda_streaming_unified_hash_join(
                     ht_alloc,
@@ -277,7 +319,11 @@ where
         }
         ArgExecutionMethod::GpuStream => Box::new(move || {
             let ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
-                ArgMemTypeHelper { mem_type, location }.into(),
+                ArgMemTypeHelper {
+                    mem_type,
+                    node_ratios: node_ratios.clone(),
+                }
+                .into(),
             );
             hjb.cuda_streaming_hash_join(
                 ht_alloc,
