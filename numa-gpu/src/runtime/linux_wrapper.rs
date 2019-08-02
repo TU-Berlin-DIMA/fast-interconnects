@@ -14,7 +14,6 @@ use std::io;
 use std::io::Error as IoError;
 use std::mem::size_of;
 use std::os::raw::{c_int, c_long, c_uint, c_ulong, c_void};
-use std::slice;
 
 mod bindings {
     use super::*;
@@ -108,51 +107,80 @@ pub struct MemPolicyModes: c_int {
 /// must be smaller or equal to 63.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub struct CpuSet {
-    mask: u64,
+    mask: [u64; 4],
 }
 
 impl CpuSet {
+    const MAX_LEN: u16 = 256;
+    const ENTRY_LEN: u16 = 64;
+
     /// Create an empty CPU set.
     pub fn new() -> Self {
-        Self { mask: 0 }
+        Self { mask: [0; 4] }
     }
 
     /// Add an ID to the set.
     pub fn add(&mut self, id: u16) {
-        assert!(id <= 63);
-        self.mask = self.mask | (1 << id);
+        assert!(id < Self::MAX_LEN);
+
+        let entry = &mut self.mask[(id / Self::ENTRY_LEN) as usize];
+        let pos = id % Self::ENTRY_LEN;
+        *entry = *entry | (1 << pos);
     }
 
     /// Remove an ID from the set.
     pub fn remove(&mut self, id: u16) {
-        assert!(id <= 63);
-        self.mask = self.mask & !(1 << id);
+        assert!(id < Self::MAX_LEN);
+
+        let entry = &mut self.mask[(id / Self::ENTRY_LEN) as usize];
+        let pos = id % Self::ENTRY_LEN;
+        *entry = *entry & !(1 << pos);
     }
 
     /// Query if an ID is included in the set.
     pub fn is_set(&self, id: u16) -> bool {
-        assert!(id <= 63);
-        (self.mask & (1 << id)) != 0
+        assert!(id < Self::MAX_LEN);
+
+        let entry = &self.mask[(id / Self::ENTRY_LEN) as usize];
+        let pos = id % Self::ENTRY_LEN;
+        (*entry & (1 << pos)) != 0
     }
 
     /// Returns the number of IDs in the set
     pub fn count(&self) -> usize {
-        self.mask.count_ones() as usize
+        self.mask.iter().map(|e| e.count_ones() as usize).sum()
     }
 
     /// Reset the set to zero.
     pub fn zero(&mut self) {
-        self.mask = 0;
+        self.mask = [0; 4];
     }
 
-    /// Query the maximum amount of nodes currently in the set.
-    pub fn max_node(&self) -> u16 {
-        64 - self.mask.leading_zeros() as u16
+    /// Query the maximum possible number of IDs currently in the set.
+    pub fn max_id(&self) -> u16 {
+        let leading_zeros: u16 = self
+            .mask
+            .iter()
+            .rev()
+            .scan(true, |take_next, e| {
+                if *take_next {
+                    let lzs = e.leading_zeros() as u16;
+                    if lzs != Self::ENTRY_LEN {
+                        *take_next = false;
+                    }
+                    Some(lzs)
+                } else {
+                    None
+                }
+            })
+            .sum();
+
+        Self::MAX_LEN - leading_zeros
     }
 
     /// Get the set as a slice.
     pub fn as_slice(&self) -> &[u64] {
-        slice::from_ref(&self.mask)
+        &self.mask
     }
 }
 
@@ -160,9 +188,12 @@ impl std::ops::BitAnd for CpuSet {
     type Output = Self;
 
     fn bitand(self, rhs: Self) -> Self::Output {
-        Self {
-            mask: self.mask & rhs.mask,
-        }
+        let mut mask = self.mask.clone();
+        mask.iter_mut()
+            .zip(rhs.mask.iter())
+            .for_each(|(l, r)| *l = *l & *r);
+
+        Self { mask }
     }
 }
 
@@ -170,9 +201,12 @@ impl std::ops::BitOr for CpuSet {
     type Output = Self;
 
     fn bitor(self, rhs: Self) -> Self::Output {
-        Self {
-            mask: self.mask | rhs.mask,
-        }
+        let mut mask = self.mask.clone();
+        mask.iter_mut()
+            .zip(rhs.mask.iter())
+            .for_each(|(l, r)| *l = *l | *r);
+
+        Self { mask }
     }
 }
 
@@ -180,9 +214,12 @@ impl std::ops::BitXor for CpuSet {
     type Output = Self;
 
     fn bitxor(self, rhs: Self) -> Self::Output {
-        Self {
-            mask: self.mask ^ rhs.mask,
-        }
+        let mut mask = self.mask.clone();
+        mask.iter_mut()
+            .zip(rhs.mask.iter())
+            .for_each(|(l, r)| *l = *l ^ *r);
+
+        Self { mask }
     }
 }
 
@@ -197,8 +234,8 @@ pub fn mbind<T>(
             data.as_ptr() as *mut T as *mut c_void,
             (data.len() * size_of::<T>()) as u64,
             mode.bits(),
-            &nodes.mask,
-            64,
+            nodes.mask.as_ptr(),
+            nodes.max_id().into(),
             // nodes.max_node().into(),
             flags.bits(),
         ) == -1
@@ -214,7 +251,6 @@ pub fn mbind<T>(
 mod test {
     use super::*;
     use libc::{mmap, munmap};
-    use std::alloc::{alloc, dealloc, Layout};
     use std::mem::size_of;
     use std::ptr;
     use std::slice;
