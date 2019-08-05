@@ -129,7 +129,7 @@ struct CmdOpt {
     /// Allocate memory for outer relation on CPU or GPU (See numactl -H and CUDA device list)
     outer_rel_location: u16,
 
-    /// Use a pre-defined data set.
+    /// Use a pre-defined or custom data set.
     //   blanas: Blanas et al. "Main memory hash join algorithms for multi-core CPUs"
     //   blanas4mb: Blanas, but with a 4 MiB inner relation
     //   kim: Kim et al. "Sort vs. hash revisited"
@@ -142,6 +142,7 @@ struct CmdOpt {
     )]
     data_set: ArgDataSet,
 
+    /// Set the tuple size (bytes)
     #[structopt(
         long = "tuple-bytes",
         default_value = "Bytes8",
@@ -151,6 +152,22 @@ struct CmdOpt {
         )
     )]
     tuple_bytes: ArgTupleBytes,
+
+    /// Set the inner relation size (tuples); required for `-data-set Custom`
+    // FIXME: required_if clause doesn't work
+    #[structopt(
+        long = "inner-rel-tuples",
+        raw(required_if = r#""data-set", "Custom""#)
+    )]
+    inner_rel_tuples: Option<usize>,
+
+    /// Set the outer relation size (tuples); required for `--data-set Custom`
+    // FIXME: required_if clause doesn't work
+    #[structopt(
+        long = "outer-rel-tuples",
+        raw(required_if = r#""data-set", "Custom""#)
+    )]
+    outer_rel_tuples: Option<usize>,
 
     /// Execute on device(s) with in-place or streaming-transfer method.
     #[structopt(
@@ -201,6 +218,11 @@ where
         + EnsurePhysicallyBacked
         + num_traits::FromPrimitive,
 {
+    assert_eq!(
+        cmd.hash_table_location.len(),
+        cmd.hash_table_proportions.len()
+    );
+
     // Convert ArgHashingScheme to HashingScheme
     let hashing_scheme = match cmd.hashing_scheme {
         ArgHashingScheme::Perfect => hash_join::HashingScheme::Perfect,
@@ -262,7 +284,8 @@ where
         .collect();
 
     // Select data set
-    let (inner_relation_len, outer_relation_len, data_gen) = data_gen_fn::<_>(cmd.data_set);
+    let (inner_relation_len, outer_relation_len, data_gen) =
+        data_gen_fn::<_>(cmd.data_set, cmd.inner_rel_tuples, cmd.outer_rel_tuples);
     let (mut hjb, malloc_time, data_gen_time) = hjb_builder
         .inner_len(inner_relation_len)
         .outer_len(outer_relation_len)
@@ -341,7 +364,11 @@ where
 
 type DataGenFn<T> = Box<FnMut(&mut [T], &mut [T]) -> Result<()>>;
 
-fn data_gen_fn<T>(description: ArgDataSet) -> (usize, usize, DataGenFn<T>)
+fn data_gen_fn<T>(
+    description: ArgDataSet,
+    inner_rel_tuples: Option<usize>,
+    outer_rel_tuples: Option<usize>,
+) -> (usize, usize, DataGenFn<T>)
 where
     T: Copy + num_traits::FromPrimitive,
 {
@@ -405,6 +432,25 @@ where
             (
                 32 * 2_usize.pow(30) / (2 * size_of::<T>()),
                 32 * 2_usize.pow(30) / (2 * size_of::<T>()),
+                Box::new(gen),
+            )
+        }
+        ArgDataSet::Custom => {
+            let gen = |pk_rel: &mut [_], fk_rel: &mut [_]| {
+                datagen::relation::UniformRelation::gen_primary_key(pk_rel)?;
+                datagen::relation::UniformRelation::gen_foreign_key_from_primary_key(
+                    fk_rel, pk_rel,
+                );
+                Ok(())
+            };
+
+            (
+                inner_rel_tuples.expect(
+                    "Couldn't find inner relation size. Did you specify --inner-rel-tuples?",
+                ),
+                outer_rel_tuples.expect(
+                    "Couldn't find outer relation size. Did you specify --outer-rel-tuples?",
+                ),
                 Box::new(gen),
             )
         }

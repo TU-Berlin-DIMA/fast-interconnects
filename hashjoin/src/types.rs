@@ -25,6 +25,7 @@ arg_enum! {
         Test,
         Lutz2Gv32G,
         Lutz32Gv32G,
+        Custom,
     }
 }
 
