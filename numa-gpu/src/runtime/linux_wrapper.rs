@@ -175,7 +175,7 @@ impl CpuSet {
             })
             .sum();
 
-        Self::MAX_LEN - leading_zeros
+        Self::MAX_LEN - leading_zeros + 1
     }
 
     /// Get the set as a slice.

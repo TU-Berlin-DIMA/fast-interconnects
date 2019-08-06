@@ -570,6 +570,9 @@ impl<T: DeviceCopy + NullKey> HashTable<T> {
             Mem::CudaPinnedMem(ref mut mem) => {
                 mem.iter_mut().by_ref().for_each(|x| *x = T::null_key())
             }
+            Mem::DistributedNumaMem(ref mut mem) => {
+                mem.iter_mut().by_ref().for_each(|x| *x = T::null_key())
+            }
             _ => {
                 unsafe {
                     cuMemsetD32_v2(

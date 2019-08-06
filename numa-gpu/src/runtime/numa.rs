@@ -16,7 +16,7 @@ use super::linux_wrapper::{mbind, CpuSet, MemBindFlags, MemPolicyModes};
 use super::memory::PageLock;
 use crate::error::{ErrorKind, Result, ResultExt};
 
-use libc::{mmap, munmap};
+use libc::{mlock, mmap, munlock, munmap};
 
 use std::io::Error as IoError;
 use std::mem::size_of;
@@ -192,7 +192,7 @@ impl<T> DistributedNumaMemory<T> {
                 ptr::null_mut(),
                 size,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_LOCKED | libc::MAP_POPULATE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
                 0,
                 0,
             )
@@ -245,12 +245,7 @@ impl<T> DistributedNumaMemory<T> {
                         page_len as usize * page_size,
                     );
 
-                    mbind(
-                        slice,
-                        MemPolicyModes::PREFERRED,
-                        node_set,
-                        MemBindFlags::STRICT,
-                    )?;
+                    mbind(slice, MemPolicyModes::BIND, node_set, MemBindFlags::STRICT)?;
                 }
 
                 Ok(NodeRatio {
@@ -260,6 +255,15 @@ impl<T> DistributedNumaMemory<T> {
             })
             .collect::<Result<Box<[NodeRatio]>>>()
             .expect("Failed to mbind memory to the specified NUMA nodes");
+
+        // Lock pages into memory to prevent swapping to disk or moving to a
+        // different NUMA node
+        unsafe {
+            if mlock(ptr, size) == -1 {
+                std::result::Result::Err::<(), _>(IoError::last_os_error())
+                    .expect("Failed to mlock memory");
+            }
+        }
 
         // Return self
         Self {
@@ -297,6 +301,14 @@ impl<T> Drop for DistributedNumaMemory<T> {
         }
 
         let size = self.len * size_of::<T>();
+
+        unsafe {
+            if munlock(self.ptr as *mut libc::c_void, size) == -1 {
+                std::result::Result::Err::<(), _>(IoError::last_os_error())
+                    .expect("Failed to munlock memory");
+            }
+        }
+
         unsafe {
             if munmap(self.ptr as *mut libc::c_void, size) == -1 {
                 std::result::Result::Err::<(), _>(IoError::last_os_error())

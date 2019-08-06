@@ -15,8 +15,10 @@ use numa_gpu::error::Result;
 use numa_gpu::runtime::hw_info::cpu_codename;
 use rustacuda::device::Device;
 use rustacuda::memory::DeviceCopy;
+use serde::Serializer;
 use serde_derive::Serialize;
 use std::mem::size_of;
+use std::string::ToString;
 use std::time::Duration;
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -30,7 +32,9 @@ pub struct DataPoint {
     pub threads: Option<usize>,
     pub hashing_scheme: Option<ArgHashingScheme>,
     pub hash_table_memory_type: Option<ArgMemType>,
+    #[serde(serialize_with = "serialize_vec")]
     pub hash_table_memory_location: Option<Vec<u16>>,
+    #[serde(serialize_with = "serialize_vec")]
     pub hash_table_proportions: Option<Vec<usize>>,
     pub hash_table_bytes: Option<usize>,
     pub tuple_bytes: Option<ArgTupleBytes>,
@@ -70,6 +74,17 @@ impl DataPoint {
     }
 
     pub fn fill_from_cmd_options(&self, cmd: &CmdOpt) -> Result<DataPoint> {
+        let mut sorted_ht_location = cmd.hash_table_location.clone();
+        sorted_ht_location.sort();
+
+        let mut ht_prop_loc: Vec<_> = cmd
+            .hash_table_proportions
+            .iter()
+            .zip(cmd.hash_table_location.iter())
+            .collect();
+        ht_prop_loc.sort_by_key(|(_, &key)| key);
+        let sorted_ht_proportions: Vec<_> = ht_prop_loc.iter().map(|(&val, _)| val).collect();
+
         // Get device information
         let dev_codename_str = match cmd.execution_method {
             ArgExecutionMethod::Cpu => cpu_codename(),
@@ -101,8 +116,8 @@ impl DataPoint {
             },
             hashing_scheme: Some(cmd.hashing_scheme),
             hash_table_memory_type: Some(cmd.hash_table_mem_type),
-            hash_table_memory_location: Some(cmd.hash_table_location.clone()),
-            hash_table_proportions: Some(cmd.hash_table_proportions.clone()),
+            hash_table_memory_location: Some(sorted_ht_location),
+            hash_table_proportions: Some(sorted_ht_proportions),
             tuple_bytes: Some(cmd.tuple_bytes),
             relation_memory_type: Some(cmd.mem_type),
             inner_relation_memory_location: Some(cmd.inner_rel_location),
@@ -134,5 +149,32 @@ impl DataPoint {
             relation_gen_ns: Some(data_gen.as_nanos() as f64),
             ..self.clone()
         }
+    }
+}
+
+/// Serialize `Option<Vec<T>>` by converting it into a `String`.
+///
+/// This is necessary because the `csv` crate does not support nesting `Vec`
+/// instead of flattening it.
+fn serialize_vec<S, T>(option: &Option<Vec<T>>, ser: S) -> std::result::Result<S::Ok, S::Error>
+where
+    S: Serializer,
+    T: ToString,
+{
+    if let Some(vec) = option {
+        let record = vec
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                if i == 0 {
+                    e.to_string()
+                } else {
+                    ",".to_owned() + &e.to_string()
+                }
+            })
+            .collect::<String>();
+        ser.serialize_str(&record)
+    } else {
+        ser.serialize_none()
     }
 }
