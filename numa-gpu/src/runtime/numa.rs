@@ -16,7 +16,7 @@ use super::linux_wrapper::{mbind, CpuSet, MemBindFlags, MemPolicyModes};
 use super::memory::PageLock;
 use crate::error::{ErrorKind, Result, ResultExt};
 
-use libc::{mlock, mmap, munlock, munmap};
+use libc::{mmap, munmap};
 
 use std::io::Error as IoError;
 use std::mem::size_of;
@@ -256,15 +256,6 @@ impl<T> DistributedNumaMemory<T> {
             .collect::<Result<Box<[NodeRatio]>>>()
             .expect("Failed to mbind memory to the specified NUMA nodes");
 
-        // Lock pages into memory to prevent swapping to disk or moving to a
-        // different NUMA node
-        unsafe {
-            if mlock(ptr, size) == -1 {
-                std::result::Result::Err::<(), _>(IoError::last_os_error())
-                    .expect("Failed to mlock memory");
-            }
-        }
-
         // Return self
         Self {
             ptr: ptr as *mut T,
@@ -301,14 +292,6 @@ impl<T> Drop for DistributedNumaMemory<T> {
         }
 
         let size = self.len * size_of::<T>();
-
-        unsafe {
-            if munlock(self.ptr as *mut libc::c_void, size) == -1 {
-                std::result::Result::Err::<(), _>(IoError::last_os_error())
-                    .expect("Failed to munlock memory");
-            }
-        }
-
         unsafe {
             if munmap(self.ptr as *mut libc::c_void, size) == -1 {
                 std::result::Result::Err::<(), _>(IoError::last_os_error())
