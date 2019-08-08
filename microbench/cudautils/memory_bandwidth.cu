@@ -1,6 +1,7 @@
 #include <helper.h>
 
 #include <cstdint>
+#include <cuda.h>
 
 // X mod Y, assuming that Y is a power of 2
 #define FAST_MODULO(X, Y) (X & (Y - 1))
@@ -124,18 +125,19 @@ extern "C" void gpu_bandwidth_seq(
         uint32_t size,
         uint64_t *cycles,
         uint32_t grid,
-        uint32_t block
+        uint32_t block,
+        CUstream stream
         )
 {
     switch (op) {
         case Read:
-            gpu_read_bandwidth_seq_kernel<<<grid, block>>>(data, size, cycles);
+            gpu_read_bandwidth_seq_kernel<<<grid, block, 0, stream>>>(data, size, cycles);
             break;
         case Write:
-            gpu_write_bandwidth_seq_kernel<<<grid, block>>>(data, size, cycles);
+            gpu_write_bandwidth_seq_kernel<<<grid, block, 0, stream>>>(data, size, cycles);
             break;
         case CompareAndSwap:
-            gpu_cas_bandwidth_seq_kernel<<<grid, block>>>(data, size, cycles);
+            gpu_cas_bandwidth_seq_kernel<<<grid, block, 0, stream>>>(data, size, cycles);
             break;
         default:
             throw "Unimplemented operation!";
@@ -307,18 +309,19 @@ extern "C" void gpu_bandwidth_lcg(
         uint32_t size,
         uint64_t *cycles,
         uint32_t grid,
-        uint32_t block
+        uint32_t block,
+        CUstream stream
         )
 {
     switch (op) {
         case Read:
-            gpu_read_bandwidth_lcg_kernel<<<grid, block>>>(data, size, cycles);
+            gpu_read_bandwidth_lcg_kernel<<<grid, block, 0, stream>>>(data, size, cycles);
             break;
         case Write:
-            gpu_write_bandwidth_lcg_kernel<<<grid, block>>>(data, size, cycles);
+            gpu_write_bandwidth_lcg_kernel<<<grid, block, 0, stream>>>(data, size, cycles);
             break;
         case CompareAndSwap:
-            gpu_cas_bandwidth_lcg_kernel<<<grid, block>>>(data, size, cycles);
+            gpu_cas_bandwidth_lcg_kernel<<<grid, block, 0, stream>>>(data, size, cycles);
             break;
         default:
             throw "Unimplemented operation!";

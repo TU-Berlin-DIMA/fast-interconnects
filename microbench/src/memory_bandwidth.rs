@@ -1,3 +1,5 @@
+use cuda_sys::cuda::CUstream;
+
 use numa_gpu::runtime::allocator::{Allocator, MemType};
 use numa_gpu::runtime::hw_info;
 use numa_gpu::runtime::memory::{DerefMem, Mem};
@@ -9,6 +11,7 @@ use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
 
 use rustacuda::context::CurrentContext;
 use rustacuda::device::DeviceAttribute;
+use rustacuda::event::{Event, EventFlags};
 use rustacuda::memory::DeviceBox;
 use rustacuda::prelude::*;
 
@@ -16,7 +19,7 @@ use serde_derive::Serialize;
 
 use std::convert::{TryFrom, TryInto};
 use std::iter;
-use std::mem::size_of;
+use std::mem::{size_of, transmute_copy};
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 use std::time::Instant;
@@ -38,6 +41,7 @@ extern "C" {
         cycles: *mut u64,
         grid: u32,
         block: u32,
+        stream: CUstream,
     );
     fn cpu_bandwidth_lcg(
         op: MemoryOperation,
@@ -53,6 +57,7 @@ extern "C" {
         cycles: *mut u64,
         grid: u32,
         block: u32,
+        stream: CUstream,
     );
 }
 
@@ -63,6 +68,7 @@ type GpuBandwidthFn = unsafe extern "C" fn(
     cycles: *mut u64,
     grid: u32,
     block: u32,
+    stream: CUstream,
 );
 type CpuBandwidthFn = unsafe extern "C" fn(
     op: MemoryOperation,
@@ -111,6 +117,7 @@ struct DataPoint<'h, 'd, 'c, 'n> {
     pub grid_size: Option<Grid>,
     pub block_size: Option<Block>,
     pub ilp: Option<Ilp>,
+    pub clock_rate_mhz: Option<u32>,
     pub cycles: u64,
     pub ns: u64,
 }
@@ -146,6 +153,7 @@ struct CpuMemoryBandwidth {
 #[derive(Debug)]
 struct GpuMemoryBandwidth {
     device_id: u32,
+    stream: Stream,
 
     #[cfg(feature = "nvml")]
     nvml: nvml_wrapper::NVML,
@@ -210,7 +218,7 @@ impl MemoryBandwidth {
             Err((_, mem)) => mem,
         };
 
-        let latencies = match device_id {
+        let bandwidths = match device_id {
             DeviceId::Cpu(cpu_node) => {
                 let mnt = CpuMeasurement::new(threads, template);
                 let demem: DerefMem<_> = mem.try_into().expect("Cannot run benchmark on CPU with the given type of memory. Did you specify GPU device memory?");
@@ -282,7 +290,7 @@ impl MemoryBandwidth {
 
         if let Some(w) = writer {
             let mut csv = csv::Writer::from_writer(w);
-            latencies
+            bandwidths
                 .iter()
                 .try_for_each(|row| csv.serialize(row))
                 .expect("Couldn't write serialized measurements")
@@ -325,7 +333,7 @@ impl<'h, 'd, 'c, 'n> GpuMeasurement<'h, 'd, 'c, 'n> {
             &mut S,
             &Mem<u32>,
             &GpuMeasurementParameters,
-        ) -> (u64, u64),
+        ) -> (u32, u64, u64),
     {
         // Convert newtypes to basic types while std::ops::Step is unstable
         // Step trait is required for std::ops::RangeInclusive Iterator trait
@@ -371,7 +379,7 @@ impl<'h, 'd, 'c, 'n> GpuMeasurement<'h, 'd, 'c, 'n> {
                     };
                     let GpuNamedBandwidthFn { f: fut, name } = named_fut;
 
-                    let (cycles, ns) = run(*fut, *op, &mut state, mem, &mp);
+                    let (clock_rate_mhz, cycles, ns) = run(*fut, *op, &mut state, mem, &mp);
 
                     DataPoint {
                         function_name: name,
@@ -380,6 +388,7 @@ impl<'h, 'd, 'c, 'n> GpuMeasurement<'h, 'd, 'c, 'n> {
                         grid_size: Some(grid_size),
                         block_size: Some(block_size),
                         ilp: None,
+                        clock_rate_mhz: Some(clock_rate_mhz),
                         cycles,
                         ns,
                         ..self.template.clone()
@@ -412,7 +421,7 @@ impl<'h, 'd, 'c, 'n> CpuMeasurement<'h, 'd, 'c, 'n> {
             &mut S,
             &DerefMem<u32>,
             Rc<rayon::ThreadPool>,
-        ) -> (u64, u64),
+        ) -> (u32, u64, u64),
     {
         let (ThreadCount(threads_l), ThreadCount(threads_u)) = self.threads.clone().into_inner();
         let cpu_node = 0;
@@ -442,13 +451,14 @@ impl<'h, 'd, 'c, 'n> CpuMeasurement<'h, 'd, 'c, 'n> {
             .map(|(named_fut, (op, ((thread_pool, warm_up), _run_number)))| {
                 let threads = ThreadCount(thread_pool.current_num_threads());
                 let CpuNamedBandwidthFn { f: fut, name } = named_fut;
-                let (cycles, ns) = run(*fut, *op, &mut state, mem, thread_pool);
+                let (clock_rate_mhz, cycles, ns) = run(*fut, *op, &mut state, mem, thread_pool);
 
                 DataPoint {
                     function_name: name,
                     memory_operation: Some(*op),
                     warm_up,
                     threads: Some(threads),
+                    clock_rate_mhz: Some(clock_rate_mhz),
                     cycles,
                     ns,
                     ..self.template.clone()
@@ -462,14 +472,22 @@ impl<'h, 'd, 'c, 'n> CpuMeasurement<'h, 'd, 'c, 'n> {
 impl GpuMemoryBandwidth {
     #[cfg(feature = "nvml")]
     fn new(device_id: u32) -> Self {
+        let stream =
+            Stream::new(StreamFlags::NON_BLOCKING, None).expect("Couldn't create CUDA stream");
         let nvml = NVML::init().expect("Couldn't initialize NVML");
 
-        Self { device_id, nvml }
+        Self {
+            device_id,
+            stream,
+            nvml,
+        }
     }
 
     #[cfg(not(feature = "nvml"))]
     fn new(device_id: u32) -> Self {
-        Self { device_id }
+        let stream = Stream::new(StreamFlags::NON_BLOCKING).expect("Couldn't create CUDA stream");
+
+        Self { device_id, stream }
     }
 
     fn run(
@@ -478,25 +496,11 @@ impl GpuMemoryBandwidth {
         state: &mut Self,
         mem: &Mem<u32>,
         mp: &GpuMeasurementParameters,
-    ) -> (u64, u64) {
+    ) -> (u32, u64, u64) {
         assert!(
             mem.len().is_power_of_two(),
             "Data size must be a power of two!"
         );
-
-        let mut device_cycles = DeviceBox::new(&0_u64).expect("Couldn't allocate device memory");
-        unsafe {
-            f(
-                op,
-                mem.as_ptr() as *mut u32,
-                mem.len() as u32,
-                device_cycles.as_device_ptr().as_raw_mut(),
-                mp.grid_size.0,
-                mp.block_size.0,
-            )
-        };
-
-        CurrentContext::synchronize().unwrap();
 
         // Get GPU clock rate that applications run at
         #[cfg(feature = "nvml")]
@@ -513,13 +517,44 @@ impl GpuMemoryBandwidth {
             .clock_rate()
             .expect("Couldn't get clock rate");
 
+        let mut device_cycles = DeviceBox::new(&0_u64).expect("Couldn't allocate device memory");
+
+        let timer_begin = Event::new(EventFlags::DEFAULT).expect("Couldn't create CUDA event");
+        let timer_end = Event::new(EventFlags::DEFAULT).expect("Couldn't create CUDA event");
+        timer_begin
+            .record(&state.stream)
+            .expect("Couldn't record CUDA event");
+
+        unsafe {
+            // FIXME: Find a safer solution to replace transmute_copy!!!
+            let cu_stream = transmute_copy::<Stream, CUstream>(&state.stream);
+            f(
+                op,
+                mem.as_ptr() as *mut u32,
+                mem.len() as u32,
+                device_cycles.as_device_ptr().as_raw_mut(),
+                mp.grid_size.0,
+                mp.block_size.0,
+                cu_stream,
+            )
+        };
+
+        timer_end
+            .record(&state.stream)
+            .expect("Couldn't record CUDA event");
+
+        CurrentContext::synchronize().expect("Couldn't synchronize CUDA context");
+        let ms = timer_end
+            .elapsed_time_f32(&timer_begin)
+            .expect("Couldn't get elapsed time");
+        let ns = ms as f64 * 10.0_f64.powf(6.0);
+
         let mut cycles = 0;
         device_cycles
             .copy_to(&mut cycles)
             .expect("Couldn't transfer result from device");
-        let ns: u64 = cycles * 1000 / (clock_rate_mhz as u64);
 
-        (cycles, ns)
+        (clock_rate_mhz, cycles, ns as u64)
     }
 }
 
@@ -534,7 +569,7 @@ impl CpuMemoryBandwidth {
         _state: &mut Self,
         mem: &DerefMem<u32>,
         thread_pool: Rc<rayon::ThreadPool>,
-    ) -> (u64, u64) {
+    ) -> (u32, u64, u64) {
         let threads = thread_pool.current_num_threads();
         let len = mem.len();
 
@@ -555,6 +590,6 @@ impl CpuMemoryBandwidth {
         let duration = timer.elapsed();
         let ns: u64 = duration.as_secs() * 10_u64.pow(9) + duration.subsec_nanos() as u64;
         let cycles = 0;
-        (cycles, ns)
+        (0, cycles, ns)
     }
 }
