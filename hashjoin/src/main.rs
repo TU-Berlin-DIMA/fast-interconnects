@@ -115,7 +115,7 @@ struct CmdOpt {
 
     #[structopt(
         long = "hash-table-proportions",
-        default_value = "1",
+        default_value = "100",
         raw(require_delimiter = "true")
     )]
     /// Proportions with with the hash table is allocate on multiple nodes in percent (e.g.: 20,60,20)
