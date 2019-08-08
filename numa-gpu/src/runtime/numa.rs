@@ -70,6 +70,21 @@ impl<T> NumaMemory<T> {
             panic!("Couldn't allocate memory on NUMA node {}", node);
         }
 
+        // Lock pages into memory to prevent swapping to disk or moving to a
+        // different NUMA node
+        unsafe {
+            if mlock(pointer as *mut libc::c_void, size) == -1 {
+                let err = IoError::last_os_error();
+                if let Some(code) = err.raw_os_error() {
+                    if code == libc::ENOMEM {
+                        eprintln!("mlock() failed with ENOMEM; try setting 'memlock' to 'unlimited' in /etc/security/limits.conf");
+                    }
+                }
+
+                std::result::Result::Err::<(), _>(err).expect("Failed to mlock memory");
+            }
+        }
+
         Self {
             pointer,
             len,
@@ -141,6 +156,14 @@ impl<T> Drop for NumaMemory<T> {
         }
 
         let size = self.len * size_of::<T>();
+
+        unsafe {
+            if munlock(self.pointer as *mut libc::c_void, size) == -1 {
+                std::result::Result::Err::<(), _>(IoError::last_os_error())
+                    .expect("Failed to munlock memory");
+            }
+        }
+
         unsafe { bindings::numa_free(self.pointer as *mut c_void, size) };
     }
 }
