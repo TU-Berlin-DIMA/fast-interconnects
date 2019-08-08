@@ -11,6 +11,7 @@
 use crate::operators::hash_join;
 use crate::types::*;
 use crate::DataGenFn;
+use csv::{ByteRecord, ReaderBuilder};
 use num_rational::Ratio;
 use numa_gpu::error::{ErrorKind, Result};
 use numa_gpu::runtime::allocator;
@@ -24,6 +25,7 @@ use rustacuda::event::{Event, EventFlags};
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
 use rustacuda::stream::{Stream, StreamFlags};
+use serde::de::DeserializeOwned;
 use std::collections::vec_deque::VecDeque;
 use std::convert::TryInto;
 use std::sync::Arc;
@@ -128,12 +130,11 @@ impl HashJoinBenchBuilder {
         self
     }
 
-    pub fn build_with_data_gen<T>(
-        &mut self,
-        mut data_gen_fn: DataGenFn<T>,
-    ) -> Result<(HashJoinBench<T>, Duration, Duration)>
+    fn allocate_relations<T>(
+        &self,
+    ) -> Result<(DerefMem<T>, DerefMem<T>, DerefMem<T>, DerefMem<T>, Duration)>
     where
-        T: Copy + Default + DeviceCopy + EnsurePhysicallyBacked,
+        T: Clone + Default + DeviceCopy + EnsurePhysicallyBacked,
     {
         // Allocate memory for data sets
         let malloc_timer = Instant::now();
@@ -193,7 +194,7 @@ impl HashJoinBenchBuilder {
         .collect::<Result<_>>()?;
         let malloc_time = malloc_timer.elapsed();
 
-        let mut inner_key = memory.pop_front().ok_or_else(|| {
+        let inner_key = memory.pop_front().ok_or_else(|| {
             ErrorKind::LogicError(
                 "Failed to get primary key relation. Is it allocated?".to_string(),
             )
@@ -203,7 +204,7 @@ impl HashJoinBenchBuilder {
                 "Failed to get primary key relation. Is it allocated?".to_string(),
             )
         })?;
-        let mut outer_key = memory.pop_front().ok_or_else(|| {
+        let outer_key = memory.pop_front().ok_or_else(|| {
             ErrorKind::LogicError(
                 "Failed to get foreign key relation. Is it allocated?".to_string(),
             )
@@ -214,12 +215,16 @@ impl HashJoinBenchBuilder {
             )
         })?;
 
-        // Generate dataset
-        let gen_timer = Instant::now();
-        data_gen_fn(inner_key.as_mut_slice(), outer_key.as_mut_slice())?;
-        let gen_time = gen_timer.elapsed();
+        Ok((
+            inner_key,
+            inner_payload,
+            outer_key,
+            outer_payload,
+            malloc_time,
+        ))
+    }
 
-        // Calculate hash table length
+    fn get_hash_table_len(&self) -> Result<usize> {
         let hash_table_len = self
             .inner_len
             .checked_next_power_of_two()
@@ -230,10 +235,28 @@ impl HashJoinBenchBuilder {
                 ErrorKind::IntegerOverflow("Failed to compute hash table length".to_string())
             })?;
 
+        Ok(hash_table_len)
+    }
+
+    pub fn build_with_data_gen<T>(
+        &mut self,
+        mut data_gen_fn: DataGenFn<T>,
+    ) -> Result<(HashJoinBench<T>, Duration, Duration)>
+    where
+        T: Copy + Default + DeviceCopy + EnsurePhysicallyBacked,
+    {
+        let (mut inner_key, inner_payload, mut outer_key, outer_payload, malloc_time) =
+            self.allocate_relations()?;
+
+        // Generate dataset
+        let gen_timer = Instant::now();
+        data_gen_fn(inner_key.as_mut_slice(), outer_key.as_mut_slice())?;
+        let gen_time = gen_timer.elapsed();
+
         Ok((
             HashJoinBench {
                 hashing_scheme: self.hashing_scheme,
-                hash_table_len: hash_table_len,
+                hash_table_len: self.get_hash_table_len()?,
                 build_relation_key: inner_key.into(),
                 build_relation_payload: inner_payload.into(),
                 probe_relation_key: outer_key.into(),
@@ -241,6 +264,90 @@ impl HashJoinBenchBuilder {
             },
             malloc_time,
             gen_time,
+        ))
+    }
+
+    pub fn build_with_files<T: DeserializeOwned>(
+        &mut self,
+        inner_relation_path: &str,
+        outer_relation_path: &str,
+    ) -> Result<(HashJoinBench<T>, Duration, Duration)>
+    where
+        T: Copy + Default + DeviceCopy + EnsurePhysicallyBacked,
+    {
+        let mut reader_spec = ReaderBuilder::new();
+        reader_spec
+            .delimiter(b' ')
+            .has_headers(true)
+            .quoting(false)
+            .double_quote(false);
+        let mut inner_reader = reader_spec.from_path(inner_relation_path)?;
+        let mut outer_reader = reader_spec.from_path(outer_relation_path)?;
+        let mut record = ByteRecord::new();
+
+        let io_timer = Instant::now();
+
+        // Count the number of tuples
+        let mut inner_len = 0;
+        while inner_reader.read_byte_record(&mut record)? {
+            inner_len += 1;
+        }
+        self.inner_len = inner_len;
+
+        let mut outer_len = 0;
+        while outer_reader.read_byte_record(&mut record)? {
+            outer_len += 1;
+        }
+        self.outer_len = outer_len;
+
+        let io_count_time = io_timer.elapsed();
+
+        let (mut inner_key, mut inner_payload, mut outer_key, mut outer_payload, malloc_time) =
+            self.allocate_relations()?;
+
+        let io_timer = Instant::now();
+
+        // Read in the tuples
+        let mut inner_reader = reader_spec.from_path(inner_relation_path)?;
+        let mut outer_reader = reader_spec.from_path(outer_relation_path)?;
+
+        let mut inner_key_iter = inner_key.iter_mut();
+        let mut inner_payload_iter = inner_payload.iter_mut();
+        while inner_reader.read_byte_record(&mut record)? {
+            let (key, value): (T, T) = record.deserialize(None)?;
+            *inner_key_iter
+                .next()
+                .expect("Allocated length is too short") = key;
+            *inner_payload_iter
+                .next()
+                .expect("Allocated length is too short") = value;
+        }
+
+        let mut outer_key_iter = outer_key.iter_mut();
+        let mut outer_payload_iter = outer_payload.iter_mut();
+        while outer_reader.read_byte_record(&mut record)? {
+            let (key, value): (T, T) = record.deserialize(None)?;
+            *outer_key_iter
+                .next()
+                .expect("Allocated length is too short") = key;
+            *outer_payload_iter
+                .next()
+                .expect("Allocated length is too short") = value;
+        }
+
+        let io_read_time = io_timer.elapsed();
+
+        Ok((
+            HashJoinBench {
+                hashing_scheme: self.hashing_scheme,
+                hash_table_len: self.get_hash_table_len()?,
+                build_relation_key: inner_key.into(),
+                build_relation_payload: inner_payload.into(),
+                probe_relation_key: outer_key.into(),
+                probe_relation_payload: outer_payload.into(),
+            },
+            malloc_time,
+            io_count_time + io_read_time,
         ))
     }
 }

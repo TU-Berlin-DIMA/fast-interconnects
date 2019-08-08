@@ -32,6 +32,8 @@ use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
 use rustacuda::prelude::*;
 
+use serde::de::DeserializeOwned;
+
 use std::mem::size_of;
 use std::path::PathBuf;
 
@@ -142,6 +144,24 @@ struct CmdOpt {
     )]
     data_set: ArgDataSet,
 
+    /// Load data set from a TSV file with "key value" pairs
+    #[structopt(
+        long = "inner-rel-file",
+        parse(from_os_str),
+        conflicts_with = "data_set",
+        requires = "outer_rel_file"
+    )]
+    inner_rel_file: Option<PathBuf>,
+
+    /// Load data set from a CSV file
+    #[structopt(
+        long = "outer-rel-file",
+        parse(from_os_str),
+        conflicts_with = "data_set",
+        requires = "inner_rel_file"
+    )]
+    outer_rel_file: Option<PathBuf>,
+
     /// Set the tuple size (bytes)
     #[structopt(
         long = "tuple-bytes",
@@ -154,18 +174,16 @@ struct CmdOpt {
     tuple_bytes: ArgTupleBytes,
 
     /// Set the inner relation size (tuples); required for `-data-set Custom`
-    // FIXME: required_if clause doesn't work
     #[structopt(
         long = "inner-rel-tuples",
-        raw(required_if = r#""data-set", "Custom""#)
+        raw(required_if = r#""data_set", "Custom""#)
     )]
     inner_rel_tuples: Option<usize>,
 
     /// Set the outer relation size (tuples); required for `--data-set Custom`
-    // FIXME: required_if clause doesn't work
     #[structopt(
         long = "outer-rel-tuples",
-        raw(required_if = r#""data-set", "Custom""#)
+        raw(required_if = r#""data_set", "Custom""#)
     )]
     outer_rel_tuples: Option<usize>,
 
@@ -216,13 +234,9 @@ where
         + hash_join::CudaHashJoinable
         + hash_join::CpuHashJoinable
         + EnsurePhysicallyBacked
-        + num_traits::FromPrimitive,
+        + num_traits::FromPrimitive
+        + DeserializeOwned,
 {
-    assert_eq!(
-        cmd.hash_table_location.len(),
-        cmd.hash_table_proportions.len()
-    );
-
     // Convert ArgHashingScheme to HashingScheme
     let hashing_scheme = match cmd.hashing_scheme {
         ArgHashingScheme::Perfect => hash_join::HashingScheme::Perfect,
@@ -238,6 +252,12 @@ where
 
     let block_size = BlockSize::x(warp_size * warp_overcommit_factor);
     let grid_size = GridSize::x(cuda_cores * grid_overcommit_factor);
+
+    assert_eq!(
+        cmd.hash_table_location.len(),
+        cmd.hash_table_proportions.len(),
+        "Invalid arguments: Each hash table location must have exactly one proportion."
+    );
 
     if cmd.execution_method == ArgExecutionMethod::GpuStream {
         assert!(
@@ -283,13 +303,21 @@ where
         })
         .collect();
 
-    // Select data set
-    let (inner_relation_len, outer_relation_len, data_gen) =
-        data_gen_fn::<_>(cmd.data_set, cmd.inner_rel_tuples, cmd.outer_rel_tuples);
-    let (mut hjb, malloc_time, data_gen_time) = hjb_builder
-        .inner_len(inner_relation_len)
-        .outer_len(outer_relation_len)
-        .build_with_data_gen(data_gen)?;
+    // Load file or generate data set
+    let (mut hjb, malloc_time, data_gen_time) =
+        if let (Some(inner_rel_path), Some(outer_rel_path)) = (
+            cmd.inner_rel_file.as_ref().and_then(|p| p.to_str()),
+            cmd.outer_rel_file.as_ref().and_then(|p| p.to_str()),
+        ) {
+            hjb_builder.build_with_files(inner_rel_path, outer_rel_path)?
+        } else {
+            let (inner_relation_len, outer_relation_len, data_gen) =
+                data_gen_fn::<_>(cmd.data_set, cmd.inner_rel_tuples, cmd.outer_rel_tuples);
+            hjb_builder
+                .inner_len(inner_relation_len)
+                .outer_len(outer_relation_len)
+                .build_with_data_gen(data_gen)?
+        };
 
     // Construct data point template for CSV
     let dp = DataPoint::new()?
