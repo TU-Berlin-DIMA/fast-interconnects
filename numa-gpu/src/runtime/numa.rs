@@ -260,8 +260,14 @@ impl<T> DistributedNumaMemory<T> {
         // different NUMA node
         unsafe {
             if mlock(ptr, size) == -1 {
-                std::result::Result::Err::<(), _>(IoError::last_os_error())
-                    .expect("Failed to mlock memory");
+                let err = IoError::last_os_error();
+                if let Some(code) = err.raw_os_error() {
+                    if code == libc::ENOMEM {
+                        eprintln!("mlock() failed with ENOMEM; try setting 'memlock' to 'unlimited' in /etc/security/limits.conf");
+                    }
+                }
+
+                std::result::Result::Err::<(), _>(err).expect("Failed to mlock memory");
             }
         }
 
