@@ -8,5 +8,6 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
+pub mod error;
 pub mod popular;
 pub mod relation;

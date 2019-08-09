@@ -10,9 +10,9 @@
 
 use super::data_point::DataPoint;
 use super::hash_join_bench::HashJoinPoint;
+use crate::error::Result;
 use average::{concatenate, impl_from_iterator, Estimate, Max, Min, Quantile, Variance};
 use error_chain::ensure;
-use numa_gpu::error::Result;
 use std::path::PathBuf;
 
 pub fn measure(

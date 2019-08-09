@@ -8,18 +8,18 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-pub mod datagen;
+mod error;
 mod measurement;
 pub mod operators;
 mod types;
 
+use crate::error::Result;
 use crate::measurement::data_point::DataPoint;
 use crate::measurement::harness;
 use crate::measurement::hash_join_bench::{HashJoinBenchBuilder, HashJoinPoint};
 use crate::operators::hash_join;
 use crate::types::*;
 
-use numa_gpu::error::Result;
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::hw_info::CudaDeviceInfo;
 use numa_gpu::runtime::numa::NodeRatio;
@@ -404,12 +404,16 @@ where
         ArgDataSet::Blanas => (
             datagen::popular::Blanas::primary_key_len(),
             datagen::popular::Blanas::foreign_key_len(),
-            Box::new(|pk_rel, fk_rel| datagen::popular::Blanas::gen(pk_rel, fk_rel)),
+            Box::new(|pk_rel, fk_rel| {
+                datagen::popular::Blanas::gen(pk_rel, fk_rel).map_err(|e| e.into())
+            }),
         ),
         ArgDataSet::Kim => (
             datagen::popular::Kim::primary_key_len(),
             datagen::popular::Kim::foreign_key_len(),
-            Box::new(|pk_rel, fk_rel| datagen::popular::Kim::gen(pk_rel, fk_rel)),
+            Box::new(|pk_rel, fk_rel| {
+                datagen::popular::Kim::gen(pk_rel, fk_rel).map_err(|e| e.into())
+            }),
         ),
         ArgDataSet::Blanas4MB => {
             let gen = |pk_rel: &mut [_], fk_rel: &mut [_]| {

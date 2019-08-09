@@ -8,12 +8,12 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
+use crate::error::{ErrorKind, Result};
 use crate::operators::hash_join;
 use crate::types::*;
 use crate::DataGenFn;
 use csv::{ByteRecord, ReaderBuilder};
 use num_rational::Ratio;
-use numa_gpu::error::{ErrorKind, Result};
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::cuda::{
     CudaTransferStrategy, IntoCudaIterator, IntoCudaIteratorWithStrategy,

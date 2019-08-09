@@ -14,7 +14,7 @@
 
 use num_traits::FromPrimitive;
 
-use numa_gpu::error::{ErrorKind, Result};
+use crate::error::{ErrorKind, Result};
 
 use rand::distributions::uniform::SampleUniform;
 use rand::distributions::{Distribution, Uniform};

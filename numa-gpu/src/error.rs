@@ -41,7 +41,6 @@ error_chain! {
     }
 
     foreign_links {
-        Csv(csv::Error);
         Cuda(CudaError);
         Io(::std::io::Error);
         RayonThreadPoolBuild(ThreadPoolBuildError);

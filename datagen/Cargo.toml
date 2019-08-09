@@ -1,0 +1,18 @@
+[package]
+name = "datagen"
+version = "0.1.0"
+authors = ["Clemens Lutz <lutzcle@cml.li>"]
+license = "MPL-2.0"
+repository = "https://github.com/TU-Berlin-DIMA/numa-gpu"
+description = "A data generator for SQL relations"
+readme = "../README.md"
+edition = "2018"
+
+[dependencies]
+csv = "~1.1.1"
+num-traits = "~0.2.0"
+rand = "~0.6.5"
+serde = "~1.0.76"
+serde_derive = "~1.0.76"
+structopt = "~0.2"
+zipf = "~5.0.1"
