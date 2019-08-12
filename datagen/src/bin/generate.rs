@@ -9,8 +9,10 @@
  */
 
 use datagen::popular;
+use datagen::relation::{UniformRelation, ZipfRelation};
 use serde::ser::Serialize;
 use serde_derive::Serialize;
+use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use structopt::clap::arg_enum;
@@ -22,49 +24,54 @@ fn main() -> Result<()> {
     // Parse commandline arguments
     let cmd = CmdOpt::from_args();
 
-    // Create file
-    // FIXME: abstract the serializer type
-    let (mut inner_writer, mut outer_writer): (Box<csv::Writer<_>>, Box<csv::Writer<_>>) =
-        match cmd.file_type {
-            ArgFileType::Csv => {
-                let mut spec = csv::WriterBuilder::new();
-                spec.has_headers(true).delimiter(b',');
-                (
-                    Box::new(spec.from_path(&cmd.inner_rel_path)?),
-                    Box::new(spec.from_path(&cmd.outer_rel_path)?),
-                )
-            }
-            ArgFileType::Tsv => {
-                let mut spec = csv::WriterBuilder::new();
-                spec.has_headers(true).delimiter(b' ');
-                (
-                    Box::new(spec.from_path(&cmd.inner_rel_path)?),
-                    Box::new(spec.from_path(&cmd.outer_rel_path)?),
-                )
-            }
-        };
+    match cmd.cmd {
+        Command::PkFkJoin(ref join_cmd) => {
+            // Convert cmdline args to DataDistribution type
+            let distribution = match join_cmd.distribution {
+                ArgDistribution::Uniform => DataDistribution::Uniform,
+                ArgDistribution::Zipf => DataDistribution::Zipf(
+                    join_cmd.zipf_exponent.expect("Zipf exponent not specified"),
+                ),
+            };
 
-    // Generate
-    if let (Some(inner), Some(outer)) = (cmd.inner_rel_tuples, cmd.outer_rel_tuples) {
-        match cmd.tuple_bytes {
-            ArgTupleBytes::Bytes8 => {
-                generate::<i32, _>(inner, outer, &mut inner_writer, &mut outer_writer)?;
-            }
-            ArgTupleBytes::Bytes16 => {
-                generate::<i64, _>(inner, outer, &mut inner_writer, &mut outer_writer)?;
+            // Create files for inner and outer relations
+            let inner_rel_file = File::create(&join_cmd.inner_rel_path)?;
+            let outer_rel_file = File::create(&join_cmd.outer_rel_path)?;
+
+            // Generate relations
+            match join_cmd.tuple_bytes {
+                ArgTupleBytes::Bytes8 => {
+                    let (inner_rel, outer_rel) = if let (Some(inner), Some(outer)) =
+                        (join_cmd.inner_rel_tuples, join_cmd.outer_rel_tuples)
+                    {
+                        generate::<i32>(inner, outer, distribution)?
+                    } else if let Some(data_set) = join_cmd.data_set {
+                        generate_popular::<i32>(data_set)?
+                    } else {
+                        unreachable!()
+                    };
+
+                    // Write the relations to file
+                    write_file(inner_rel.as_slice(), inner_rel_file, join_cmd.file_type)?;
+                    write_file(outer_rel.as_slice(), outer_rel_file, join_cmd.file_type)?;
+                }
+                ArgTupleBytes::Bytes16 => {
+                    let (inner_rel, outer_rel) = if let (Some(inner), Some(outer)) =
+                        (join_cmd.inner_rel_tuples, join_cmd.outer_rel_tuples)
+                    {
+                        generate::<i64>(inner, outer, distribution)?
+                    } else if let Some(data_set) = join_cmd.data_set {
+                        generate_popular::<i64>(data_set)?
+                    } else {
+                        unreachable!()
+                    };
+
+                    // Write the relations to file
+                    write_file(inner_rel.as_slice(), inner_rel_file, join_cmd.file_type)?;
+                    write_file(outer_rel.as_slice(), outer_rel_file, join_cmd.file_type)?;
+                }
             }
         }
-    } else if let Some(data_set) = cmd.data_set {
-        match cmd.tuple_bytes {
-            ArgTupleBytes::Bytes8 => {
-                generate_popular::<i32, _>(data_set, &mut inner_writer, &mut outer_writer)?;
-            }
-            ArgTupleBytes::Bytes16 => {
-                generate_popular::<i64, _>(data_set, &mut inner_writer, &mut outer_writer)?;
-            }
-        }
-    } else {
-        unreachable!();
     }
 
     Ok(())
@@ -72,7 +79,7 @@ fn main() -> Result<()> {
 
 arg_enum! {
     #[derive(Copy, Clone, Debug, PartialEq)]
-    pub enum ArgDataSet {
+    enum ArgDataSet {
         Blanas,
         Kim,
     }
@@ -80,8 +87,22 @@ arg_enum! {
 
 arg_enum! {
     #[derive(Copy, Clone, Debug, PartialEq)]
+    enum ArgDistribution {
+        Uniform,
+        Zipf,
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum DataDistribution {
+    Uniform,
+    Zipf(f64),
+}
+
+arg_enum! {
+    #[derive(Copy, Clone, Debug, PartialEq)]
     #[repr(usize)]
-    pub enum ArgTupleBytes {
+    enum ArgTupleBytes {
         Bytes8 = 8,
         Bytes16 = 16,
     }
@@ -90,7 +111,7 @@ arg_enum! {
 arg_enum! {
     #[derive(Copy, Clone, Debug, PartialEq)]
     #[repr(usize)]
-    pub enum ArgFileType {
+    enum ArgFileType {
         Csv,
         Tsv,
     }
@@ -98,6 +119,18 @@ arg_enum! {
 
 #[derive(StructOpt)]
 struct CmdOpt {
+    #[structopt(subcommand)]
+    cmd: Command,
+}
+
+#[derive(StructOpt)]
+enum Command {
+    #[structopt(name = "pk-fk-join")]
+    PkFkJoin(CmdPkFkJoin),
+}
+
+#[derive(StructOpt)]
+struct CmdPkFkJoin {
     /// Generate a popular data set
     //   blanas: Blanas et al. "Main memory hash join algorithms for multi-core CPUs"
     //   kim: Kim et al. "Sort vs. hash revisited"
@@ -117,6 +150,21 @@ struct CmdOpt {
         )
     )]
     tuple_bytes: ArgTupleBytes,
+
+    /// Outer relation's data distribution
+    #[structopt(
+        long = "distribution",
+        default_value = "Uniform",
+        raw(
+            possible_values = "&ArgDistribution::variants()",
+            case_insensitive = "true"
+        )
+    )]
+    distribution: ArgDistribution,
+
+    /// Zipf exponent for Zipf-sampled outer relations
+    #[structopt(long = "zipf-exponent", raw(required_if = r#""distribution", "Zipf""#))]
+    zipf_exponent: Option<f64>,
 
     /// Set the output file type
     #[structopt(
@@ -150,30 +198,35 @@ struct Record<K, V> {
     value: V,
 }
 
-fn generate<T, W>(
-    _inner_rel_tuples: usize,
-    _outer_rel_tuples: usize,
-    _inner_writer: &mut csv::Writer<W>,
-    _outer_writer: &mut csv::Writer<W>,
-) -> Result<()>
+fn generate<T>(
+    inner_len: usize,
+    outer_len: usize,
+    dist: DataDistribution,
+) -> Result<(Vec<T>, Vec<T>)>
 where
-    T: num_traits::FromPrimitive + Serialize,
-    W: Write,
+    T: Copy + Default + num_traits::FromPrimitive,
 {
-    unimplemented! {};
+    let mut inner_rel = vec![T::default(); inner_len];
+    let mut outer_rel = vec![T::default(); outer_len];
+
+    UniformRelation::gen_primary_key(&mut inner_rel)?;
+
+    match dist {
+        DataDistribution::Uniform => {
+            UniformRelation::gen_foreign_key_from_primary_key(&mut outer_rel, &inner_rel)
+        }
+        DataDistribution::Zipf(exp) => ZipfRelation::gen_attr(&mut outer_rel, inner_len, exp)?,
+    };
+
+    Ok((inner_rel, outer_rel))
 }
 
-type DataGenFn<T> = Box<FnMut(&mut [T], &mut [T]) -> datagen::error::Result<()>>;
-
-fn generate_popular<T, W>(
-    data_set: ArgDataSet,
-    inner_writer: &mut csv::Writer<W>,
-    outer_writer: &mut csv::Writer<W>,
-) -> Result<()>
+fn generate_popular<T>(data_set: ArgDataSet) -> Result<(Vec<T>, Vec<T>)>
 where
-    T: Copy + Default + num_traits::FromPrimitive + Serialize,
-    W: Write,
+    T: Copy + Default + num_traits::FromPrimitive,
 {
+    type DataGenFn<T> = Box<FnMut(&mut [T], &mut [T]) -> datagen::error::Result<()>>;
+
     let (inner_len, outer_len, mut gen_fn): (usize, usize, DataGenFn<T>) = match data_set {
         ArgDataSet::Blanas => (
             popular::Blanas::primary_key_len(),
@@ -191,28 +244,35 @@ where
     let mut outer_rel = vec![T::default(); outer_len];
     gen_fn(inner_rel.as_mut_slice(), outer_rel.as_mut_slice())?;
 
-    inner_rel
-        .iter()
-        .enumerate()
-        .map(|(value, key)| {
-            let record = Record {
-                key,
-                value: value + 1,
-            };
-            inner_writer.serialize(&record)?;
-            Ok(())
-        })
-        .collect::<Result<()>>()?;
+    Ok((inner_rel, outer_rel))
+}
 
-    outer_rel
-        .iter()
+fn write_file<T, W>(rel: &[T], writer: W, file_type: ArgFileType) -> Result<()>
+where
+    T: Serialize,
+    W: Write,
+{
+    let mut ser_writer: Box<csv::Writer<_>> = match file_type {
+        ArgFileType::Csv => {
+            let mut spec = csv::WriterBuilder::new();
+            spec.has_headers(true).delimiter(b',');
+            Box::new(spec.from_writer(writer))
+        }
+        ArgFileType::Tsv => {
+            let mut spec = csv::WriterBuilder::new();
+            spec.has_headers(true).delimiter(b' ');
+            Box::new(spec.from_writer(writer))
+        }
+    };
+
+    rel.iter()
         .enumerate()
         .map(|(value, key)| {
             let record = Record {
                 key,
                 value: value + 1,
             };
-            outer_writer.serialize(&record)?;
+            ser_writer.serialize(&record)?;
             Ok(())
         })
         .collect::<Result<()>>()?;
