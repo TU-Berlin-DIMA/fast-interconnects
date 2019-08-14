@@ -139,6 +139,7 @@ struct DataPoint<'h, 'd, 'c> {
     pub range_bytes: usize,
     pub stride_bytes: usize,
     pub iterations: u32,
+    pub clock_rate_mhz: Option<u32>,
     pub cycles: u64,
     pub ns: u64,
 }
@@ -193,7 +194,7 @@ impl<'h, 'd, 'c> Measurement<'h, 'd, 'c> {
     ) -> Vec<DataPoint>
     where
         P: Fn(&mut S, &mut Mem<u32>, &MeasurementParameters),
-        R: Fn(&mut S, &Mem<u32>, &MeasurementParameters) -> (u64, u64),
+        R: Fn(&mut S, &Mem<u32>, &MeasurementParameters) -> (u32, u64, u64),
     {
         let stride_iter = self.stride.clone();
         let range_iter = self.range.clone();
@@ -223,13 +224,14 @@ impl<'h, 'd, 'c> Measurement<'h, 'd, 'c> {
                 }
 
                 for _ in 0..repeat + 1 {
-                    let (cycles, ns) = run(&mut state, &mem, &mp);
+                    let (clock_rate_mhz, cycles, ns) = run(&mut state, &mem, &mp);
 
                     data_points.push(DataPoint {
                         warm_up,
                         range_bytes: range,
                         stride_bytes: stride,
                         iterations,
+                        clock_rate_mhz: Some(clock_rate_mhz),
                         cycles,
                         ns,
                         ..self.template
@@ -300,21 +302,8 @@ impl GpuMemoryLatency {
         }
     }
 
-    fn run(state: &mut Self, mem: &Mem<u32>, mp: &MeasurementParameters) -> (u64, u64) {
-        let mut dev_cycles = DeviceBox::new(&0_u64).expect("Couldn't allocate device memory");
-
-        // Launch GPU code
-        unsafe {
-            gpu_stride(
-                mem.as_ptr(),
-                mp.iterations,
-                dev_cycles.as_device_ptr().as_raw_mut(),
-            )
-        };
-
-        CurrentContext::synchronize().unwrap();
-
-        // Get GPU clock rate that applications run at
+    fn run(state: &mut Self, mem: &Mem<u32>, mp: &MeasurementParameters) -> (u32, u64, u64) {
+        // Get current GPU clock rate
         #[cfg(feature = "nvml")]
         let clock_rate_mhz = state
             .nvml
@@ -329,13 +318,24 @@ impl GpuMemoryLatency {
             .clock_rate()
             .expect("Couldn't get clock rate");
 
+        // Launch GPU code
+        let mut dev_cycles = DeviceBox::new(&0_u64).expect("Couldn't allocate device memory");
+        unsafe {
+            gpu_stride(
+                mem.as_ptr(),
+                mp.iterations,
+                dev_cycles.as_device_ptr().as_raw_mut(),
+            )
+        };
+        CurrentContext::synchronize().unwrap();
+
         let mut cycles = 0;
         dev_cycles
             .copy_to(&mut cycles)
             .expect("Couldn't copy result data from device");
         let ns: u64 = cycles * 1000 / (clock_rate_mhz as u64);
 
-        (cycles, ns)
+        (clock_rate_mhz, cycles, ns)
     }
 }
 
@@ -346,7 +346,7 @@ impl CpuMemoryLatency {
         Self { device_id }
     }
 
-    fn run(_state: &mut Self, mem: &Mem<u32>, mp: &MeasurementParameters) -> (u64, u64) {
+    fn run(_state: &mut Self, mem: &Mem<u32>, mp: &MeasurementParameters) -> (u32, u64, u64) {
         let ns = if let Mem::CudaDevMem(_) = mem {
             unreachable!();
         } else {
@@ -355,8 +355,9 @@ impl CpuMemoryLatency {
         };
 
         let cycles = 0;
+        let clock_rate_mhz = 0;
 
-        (cycles, ns)
+        (clock_rate_mhz, cycles, ns)
     }
 
     fn prepare(_state: &mut Self, mem: &mut Mem<u32>, mp: &MeasurementParameters) {
