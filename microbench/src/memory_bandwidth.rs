@@ -1,10 +1,10 @@
 use cuda_sys::cuda::CUstream;
 
 use numa_gpu::runtime::allocator::{Allocator, MemType};
-use numa_gpu::runtime::hw_info;
 use numa_gpu::runtime::memory::{DerefMem, Mem};
-use numa_gpu::runtime::numa;
+use numa_gpu::runtime::nvml::ThrottleReasons;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
+use numa_gpu::runtime::{hw_info, numa};
 
 #[cfg(feature = "nvml")]
 use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
@@ -117,6 +117,7 @@ struct DataPoint<'h, 'd, 'c, 'n> {
     pub grid_size: Option<Grid>,
     pub block_size: Option<Block>,
     pub ilp: Option<Ilp>,
+    pub throttle_reasons: Option<String>,
     pub clock_rate_mhz: Option<u32>,
     pub cycles: u64,
     pub ns: u64,
@@ -333,7 +334,7 @@ impl<'h, 'd, 'c, 'n> GpuMeasurement<'h, 'd, 'c, 'n> {
             &mut S,
             &Mem<u32>,
             &GpuMeasurementParameters,
-        ) -> (u32, u64, u64),
+        ) -> (u32, Option<ThrottleReasons>, u64, u64),
     {
         // Convert newtypes to basic types while std::ops::Step is unstable
         // Step trait is required for std::ops::RangeInclusive Iterator trait
@@ -379,7 +380,8 @@ impl<'h, 'd, 'c, 'n> GpuMeasurement<'h, 'd, 'c, 'n> {
                     };
                     let GpuNamedBandwidthFn { f: fut, name } = named_fut;
 
-                    let (clock_rate_mhz, cycles, ns) = run(*fut, *op, &mut state, mem, &mp);
+                    let (clock_rate_mhz, throttle_reasons, cycles, ns) =
+                        run(*fut, *op, &mut state, mem, &mp);
 
                     DataPoint {
                         function_name: name,
@@ -388,6 +390,7 @@ impl<'h, 'd, 'c, 'n> GpuMeasurement<'h, 'd, 'c, 'n> {
                         grid_size: Some(grid_size),
                         block_size: Some(block_size),
                         ilp: None,
+                        throttle_reasons: throttle_reasons.map(|r| r.to_string()),
                         clock_rate_mhz: Some(clock_rate_mhz),
                         cycles,
                         ns,
@@ -458,6 +461,7 @@ impl<'h, 'd, 'c, 'n> CpuMeasurement<'h, 'd, 'c, 'n> {
                     memory_operation: Some(*op),
                     warm_up,
                     threads: Some(threads),
+                    throttle_reasons: None,
                     clock_rate_mhz: Some(clock_rate_mhz),
                     cycles,
                     ns,
@@ -496,7 +500,7 @@ impl GpuMemoryBandwidth {
         state: &mut Self,
         mem: &Mem<u32>,
         mp: &GpuMeasurementParameters,
-    ) -> (u32, u64, u64) {
+    ) -> (u32, Option<ThrottleReasons>, u64, u64) {
         assert!(
             mem.len().is_power_of_two(),
             "Data size must be a power of two!"
@@ -544,6 +548,20 @@ impl GpuMemoryBandwidth {
             .expect("Couldn't record CUDA event");
 
         CurrentContext::synchronize().expect("Couldn't synchronize CUDA context");
+
+        // Check if GPU is running in a throttled state
+        #[cfg(feature = "nvml")]
+        let throttle_reasons: ThrottleReasons = state
+            .nvml
+            .device_by_index(state.device_id as u32)
+            .expect("Couldn't get NVML device")
+            .current_throttle_reasons()
+            .expect("Couldn't get current throttle reasons with NVML")
+            .into();
+
+        #[cfg(not(feature = "nvml"))]
+        let throttle_reasons = None;
+
         let ms = timer_end
             .elapsed_time_f32(&timer_begin)
             .expect("Couldn't get elapsed time");
@@ -554,7 +572,7 @@ impl GpuMemoryBandwidth {
             .copy_to(&mut cycles)
             .expect("Couldn't transfer result from device");
 
-        (clock_rate_mhz, cycles, ns as u64)
+        (clock_rate_mhz, Some(throttle_reasons), cycles, ns as u64)
     }
 }
 

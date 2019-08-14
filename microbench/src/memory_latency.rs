@@ -1,15 +1,13 @@
 use numa_gpu::runtime::allocator::{Allocator, MemType};
-use numa_gpu::runtime::hw_info;
 use numa_gpu::runtime::memory::{DerefMem, Mem};
+use numa_gpu::runtime::nvml::ThrottleReasons;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
+use numa_gpu::runtime::{cuda_wrapper, hw_info, numa};
 
 #[cfg(not(feature = "nvml"))]
 use numa_gpu::runtime::hw_info::CudaDeviceInfo;
 #[cfg(feature = "nvml")]
 use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
-
-use numa_gpu::runtime::nvml::ThrottleReasons;
-use numa_gpu::runtime::{cuda_wrapper, numa};
 
 use rustacuda::context::CurrentContext;
 use rustacuda::memory::DeviceBox;
