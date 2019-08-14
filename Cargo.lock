@@ -225,14 +225,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "error-chain"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-dependencies = [
- "backtrace 0.3.9 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "error-chain"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
@@ -336,7 +328,7 @@ dependencies = [
  "hostname 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "libc 0.2.43 (registry+https://github.com/rust-lang/crates.io-index)",
  "numa-gpu 0.1.0",
- "nvml-wrapper 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "nvml-wrapper 0.4.1 (git+https://github.com/Cldfire/nvml-wrapper?branch=devel)",
  "rayon 1.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "rustacuda 0.1.0 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)",
  "serde 1.0.98 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -405,6 +397,7 @@ dependencies = [
  "libc 0.2.43 (registry+https://github.com/rust-lang/crates.io-index)",
  "num-rational 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "num-traits 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)",
+ "nvml-wrapper 0.4.1 (git+https://github.com/Cldfire/nvml-wrapper?branch=devel)",
  "raw-cpuid 6.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "rayon 1.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "rustacuda 0.1.0 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)",
@@ -413,18 +406,19 @@ dependencies = [
 [[package]]
 name = "nvml-wrapper"
 version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
+source = "git+https://github.com/Cldfire/nvml-wrapper?branch=devel#142c2a56c46aa9fd6c2e8cbef923e729aa98d82f"
 dependencies = [
  "bitflags 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "error-chain 0.11.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "nvml-wrapper-sys 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "error-chain 0.12.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "nvml-wrapper-sys 0.3.1 (git+https://github.com/Cldfire/nvml-wrapper?branch=devel)",
+ "serde 1.0.98 (registry+https://github.com/rust-lang/crates.io-index)",
  "wrapcenum-derive 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
 name = "nvml-wrapper-sys"
 version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
+source = "git+https://github.com/Cldfire/nvml-wrapper?branch=devel#142c2a56c46aa9fd6c2e8cbef923e729aa98d82f"
 
 [[package]]
 name = "paste"
@@ -699,6 +693,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 name = "serde"
 version = "1.0.98"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "serde_derive 1.0.80 (registry+https://github.com/rust-lang/crates.io-index)",
+]
 
 [[package]]
 name = "serde_derive"
@@ -891,7 +888,6 @@ dependencies = [
 "checksum cuda-sys 0.2.1-alpha.0 (git+https://github.com/LutzCle/cuda-sys?branch=cuda-10.0)" = "<none>"
 "checksum custom_derive 0.1.7 (registry+https://github.com/rust-lang/crates.io-index)" = "ef8ae57c4978a2acd8b869ce6b9ca1dfe817bff704c220209fdef2c0b75a01b9"
 "checksum either 1.5.0 (registry+https://github.com/rust-lang/crates.io-index)" = "3be565ca5c557d7f59e7cfcf1844f9e3033650c929c6566f511e8005f205c1d0"
-"checksum error-chain 0.11.0 (registry+https://github.com/rust-lang/crates.io-index)" = "ff511d5dc435d703f4971bc399647c9bc38e20cb41452e3b9feb4765419ed3f3"
 "checksum error-chain 0.12.1 (registry+https://github.com/rust-lang/crates.io-index)" = "3ab49e9dcb602294bc42f9a7dfc9bc6e936fca4418ea300dbfb84fe16de0b7d9"
 "checksum float-ord 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)" = "7bad48618fdb549078c333a7a8528acb57af271d0433bdecd523eb620628364e"
 "checksum fuchsia-cprng 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)" = "a06f77d526c1a601b7c4cdd98f54b5eaabffc14d5f2f0296febdc7f357c6d3ba"
@@ -909,8 +905,8 @@ dependencies = [
 "checksum num-rational 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)" = "f2885278d5fe2adc2f75ced642d52d879bffaceb5a2e0b1d4309ffdfb239b454"
 "checksum num-traits 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)" = "6ba9a427cfca2be13aa6f6403b0b7e7368fe982bfa16fccc450ce74c46cd9b32"
 "checksum num_cpus 1.8.0 (registry+https://github.com/rust-lang/crates.io-index)" = "c51a3322e4bca9d212ad9a158a02abc6934d005490c054a2778df73a70aa0a30"
-"checksum nvml-wrapper 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)" = "e9c026db73f2dc7e13ee1098105133fec4b08b625250ee8b7a043363c7eb0418"
-"checksum nvml-wrapper-sys 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)" = "692bb2dba3a39d95a5ac63de72c7911c7ad2b68ae74403a7d0d72eb78c8d04fb"
+"checksum nvml-wrapper 0.4.1 (git+https://github.com/Cldfire/nvml-wrapper?branch=devel)" = "<none>"
+"checksum nvml-wrapper-sys 0.3.1 (git+https://github.com/Cldfire/nvml-wrapper?branch=devel)" = "<none>"
 "checksum paste 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)" = "1f4a4a1c555c6505821f9d58b8779d0f630a6b7e4e1be24ba718610acf01fa79"
 "checksum paste-impl 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)" = "26e796e623b8b257215f27e6c80a5478856cae305f5b59810ff9acdaa34570e6"
 "checksum proc-macro-hack 0.5.4 (registry+https://github.com/rust-lang/crates.io-index)" = "3e90aa19cd73dedc2d0e1e8407473f073d735fef0ab521438de6da8ee449ab66"

@@ -8,6 +8,7 @@ use numa_gpu::runtime::hw_info::CudaDeviceInfo;
 #[cfg(feature = "nvml")]
 use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
 
+use numa_gpu::runtime::nvml::ThrottleReasons;
 use numa_gpu::runtime::{cuda_wrapper, numa};
 
 use rustacuda::context::CurrentContext;
@@ -139,6 +140,7 @@ struct DataPoint<'h, 'd, 'c> {
     pub range_bytes: usize,
     pub stride_bytes: usize,
     pub iterations: u32,
+    pub throttle_reasons: Option<String>,
     pub clock_rate_mhz: Option<u32>,
     pub cycles: u64,
     pub ns: u64,
@@ -194,7 +196,11 @@ impl<'h, 'd, 'c> Measurement<'h, 'd, 'c> {
     ) -> Vec<DataPoint>
     where
         P: Fn(&mut S, &mut Mem<u32>, &MeasurementParameters),
-        R: Fn(&mut S, &Mem<u32>, &MeasurementParameters) -> (u32, u64, u64),
+        R: Fn(
+            &mut S,
+            &Mem<u32>,
+            &MeasurementParameters,
+        ) -> (u32, Option<ThrottleReasons>, u64, u64),
     {
         let stride_iter = self.stride.clone();
         let range_iter = self.range.clone();
@@ -224,13 +230,14 @@ impl<'h, 'd, 'c> Measurement<'h, 'd, 'c> {
                 }
 
                 for _ in 0..repeat + 1 {
-                    let (clock_rate_mhz, cycles, ns) = run(&mut state, &mem, &mp);
+                    let (clock_rate_mhz, throttle_reasons, cycles, ns) = run(&mut state, &mem, &mp);
 
                     data_points.push(DataPoint {
                         warm_up,
                         range_bytes: range,
                         stride_bytes: stride,
                         iterations,
+                        throttle_reasons: throttle_reasons.map(|r| r.to_string()),
                         clock_rate_mhz: Some(clock_rate_mhz),
                         cycles,
                         ns,
@@ -302,7 +309,11 @@ impl GpuMemoryLatency {
         }
     }
 
-    fn run(state: &mut Self, mem: &Mem<u32>, mp: &MeasurementParameters) -> (u32, u64, u64) {
+    fn run(
+        state: &mut Self,
+        mem: &Mem<u32>,
+        mp: &MeasurementParameters,
+    ) -> (u32, Option<ThrottleReasons>, u64, u64) {
         // Get current GPU clock rate
         #[cfg(feature = "nvml")]
         let clock_rate_mhz = state
@@ -329,13 +340,26 @@ impl GpuMemoryLatency {
         };
         CurrentContext::synchronize().unwrap();
 
+        // Check if GPU is running in a throttled state
+        #[cfg(feature = "nvml")]
+        let throttle_reasons: ThrottleReasons = state
+            .nvml
+            .device_by_index(state.device_id as u32)
+            .expect("Couldn't get NVML device")
+            .current_throttle_reasons()
+            .expect("Couldn't get current throttle reasons with NVML")
+            .into();
+
+        #[cfg(not(feature = "nvml"))]
+        let throttle_reasons = None;
+
         let mut cycles = 0;
         dev_cycles
             .copy_to(&mut cycles)
             .expect("Couldn't copy result data from device");
         let ns: u64 = cycles * 1000 / (clock_rate_mhz as u64);
 
-        (clock_rate_mhz, cycles, ns)
+        (clock_rate_mhz, Some(throttle_reasons), cycles, ns)
     }
 }
 
@@ -346,7 +370,11 @@ impl CpuMemoryLatency {
         Self { device_id }
     }
 
-    fn run(_state: &mut Self, mem: &Mem<u32>, mp: &MeasurementParameters) -> (u32, u64, u64) {
+    fn run(
+        _state: &mut Self,
+        mem: &Mem<u32>,
+        mp: &MeasurementParameters,
+    ) -> (u32, Option<ThrottleReasons>, u64, u64) {
         let ns = if let Mem::CudaDevMem(_) = mem {
             unreachable!();
         } else {
@@ -357,7 +385,7 @@ impl CpuMemoryLatency {
         let cycles = 0;
         let clock_rate_mhz = 0;
 
-        (clock_rate_mhz, cycles, ns)
+        (clock_rate_mhz, None, cycles, ns)
     }
 
     fn prepare(_state: &mut Self, mem: &mut Mem<u32>, mp: &MeasurementParameters) {
