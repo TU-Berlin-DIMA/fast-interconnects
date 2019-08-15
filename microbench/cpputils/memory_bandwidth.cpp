@@ -125,23 +125,21 @@ extern "C" void cpu_read_bandwidth_lcg(uint32_t *data, std::size_t size,
                                        std::size_t tid,
                                        std::size_t num_threads) {
   // Linear congruent generator
-  // Parameters according to Glibc
-  // See:
-  // https://sourceware.org/git/?p=glibc.git;a=blob;f=stdlib/random_r.c;hb=glibc-2.28#l364
+  // See: Knuth "The Art of Computer Programming - Volume 2"
   // and: https://en.wikipedia.org/wiki/Linear_congruential_generator
-  uint32_t a = 1103515245U;
-  uint32_t c = 12345U;
-  uint32_t m = 0x7fffffffU;
-  uint32_t x = 67890U + tid;
+  uint64_t a = 6364136223846793005ULL;
+  uint64_t c = 1442695040888963407ULL;
+  uint64_t x = 67890ULL + tid;
 
   // Do measurement
   uint32_t dummy = 0;
-  for (uint32_t i = 0; i < size / num_threads; ++i) {
+  for (std::size_t i = 0; i < size / num_threads; ++i) {
     // Generate next random number with LCG
-    x = ((a * x + c) & m);
+    // Note: wrap modulo 2^64 is defined by C/C++ standard
+    x = a * x + c;
 
     // Read from a random location within data range
-    uint32_t index = FAST_MODULO(x, size);
+    uint64_t index = FAST_MODULO(x, size);
     dummy += data[index];
   }
 
@@ -167,22 +165,20 @@ extern "C" void cpu_write_bandwidth_lcg(uint32_t *data, std::size_t size,
                                         std::size_t tid,
                                         std::size_t num_threads) {
   // Linear congruent generator
-  // Parameters according to Glibc
-  // See:
-  // https://sourceware.org/git/?p=glibc.git;a=blob;f=stdlib/random_r.c;hb=glibc-2.28#l364
+  // See: Knuth "The Art of Computer Programming - Volume 2"
   // and: https://en.wikipedia.org/wiki/Linear_congruential_generator
-  uint32_t a = 1103515245U;
-  uint32_t c = 12345U;
-  uint32_t m = 0x7fffffffU;
-  uint32_t x = 67890U + tid;
+  uint64_t a = 6364136223846793005ULL;
+  uint64_t c = 1442695040888963407ULL;
+  uint64_t x = 67890ULL + tid;
 
   // Do measurement
-  for (uint32_t i = 0; i < size / num_threads; ++i) {
+  for (std::size_t i = 0; i < size / num_threads; ++i) {
     // Generate next random number with LCG
-    x = ((a * x + c) & m);
+    // Note: wrap modulo 2^64 is defined by C/C++ standard
+    x = a * x + c;
 
     // Write to a random location within data range
-    uint32_t index = FAST_MODULO(x, size);
+    uint64_t index = FAST_MODULO(x, size);
     data[index] = x;
   }
 }
@@ -203,25 +199,24 @@ extern "C" void cpu_cas_bandwidth_lcg(uint32_t *data, std::size_t size,
                                       std::size_t tid,
                                       std::size_t num_threads) {
   // Linear congruent generator
-  // Parameters according to Glibc
-  // See:
-  // https://sourceware.org/git/?p=glibc.git;a=blob;f=stdlib/random_r.c;hb=glibc-2.28#l364
+  // See: Knuth "The Art of Computer Programming - Volume 2"
   // and: https://en.wikipedia.org/wiki/Linear_congruential_generator
-  uint32_t a = 1103515245U;
-  uint32_t c = 12345U;
-  uint32_t m = 0x7fffffffU;
-  uint32_t x = 67890U + tid;
+  uint64_t a = 6364136223846793005ULL;
+  uint64_t c = 1442695040888963407ULL;
+  uint64_t x = 67890ULL + tid;
 
   // Do measurement
-  for (uint32_t i = 0; i < size / num_threads; ++i) {
+  for (std::size_t i = 0; i < size / num_threads; ++i) {
     // Generate next random number with LCG
-    x = ((a * x + c) & m);
+    // Note: wrap modulo 2^64 is defined by C/C++ standard
+    x = a * x + c;
 
     // Write to a random location within data range
-    uint32_t index = FAST_MODULO(x, size);
+    uint64_t index = FAST_MODULO(x, size);
     auto *item = reinterpret_cast<std::atomic<uint32_t> *>(&data[index]);
     uint32_t expected = (uint32_t)index;
-    std::atomic_compare_exchange_strong(item, &expected, x);
+    uint32_t new_val = (uint32_t)x;
+    std::atomic_compare_exchange_strong(item, &expected, new_val);
   }
 }
 

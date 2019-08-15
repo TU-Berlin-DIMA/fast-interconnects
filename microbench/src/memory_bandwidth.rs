@@ -37,7 +37,7 @@ extern "C" {
     fn gpu_bandwidth_seq(
         op: MemoryOperation,
         data: *mut u32,
-        size: u32,
+        size: usize,
         cycles: *mut u64,
         grid: u32,
         block: u32,
@@ -53,7 +53,7 @@ extern "C" {
     fn gpu_bandwidth_lcg(
         op: MemoryOperation,
         data: *mut u32,
-        size: u32,
+        size: usize,
         cycles: *mut u64,
         grid: u32,
         block: u32,
@@ -64,7 +64,7 @@ extern "C" {
 type GpuBandwidthFn = unsafe extern "C" fn(
     op: MemoryOperation,
     data: *mut u32,
-    size: u32,
+    size: usize,
     cycles: *mut u64,
     grid: u32,
     block: u32,
@@ -535,7 +535,7 @@ impl GpuMemoryBandwidth {
             f(
                 op,
                 mem.as_ptr() as *mut u32,
-                mem.len() as u32,
+                mem.len(),
                 device_cycles.as_device_ptr().as_raw_mut(),
                 mp.grid_size.0,
                 mp.block_size.0,

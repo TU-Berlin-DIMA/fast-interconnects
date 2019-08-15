@@ -19,7 +19,7 @@ enum MemoryOperation { Read, Write, CompareAndSwap };
  * Postconditions:
  *  - Clock cycles are written to cycles
  */
-__global__ void gpu_read_bandwidth_seq_kernel(uint32_t *data, uint32_t size, uint64_t *cycles) {
+__global__ void gpu_read_bandwidth_seq_kernel(uint32_t *data, std::size_t size, uint64_t *cycles) {
     uint32_t const global_size = gridDim.x * blockDim.x;
     uint32_t const gid = threadIdx.x + blockIdx.x * blockDim.x;
     uint64_t sum = 0;
@@ -29,7 +29,7 @@ __global__ void gpu_read_bandwidth_seq_kernel(uint32_t *data, uint32_t size, uin
     start = clock64();
 
     uint32_t dummy = 0;
-    for (uint32_t i = gid; i < size; i += global_size) {
+    for (std::size_t i = gid; i < size; i += global_size) {
         dummy += data[i];
     }
 
@@ -57,7 +57,7 @@ __global__ void gpu_read_bandwidth_seq_kernel(uint32_t *data, uint32_t size, uin
  *  - Clock cycles are written to cycles
  *  - All array elements are filled with unspecified data
  */
-__global__ void gpu_write_bandwidth_seq_kernel(uint32_t *data, uint32_t size, uint64_t *cycles) {
+__global__ void gpu_write_bandwidth_seq_kernel(uint32_t *data, std::size_t size, uint64_t *cycles) {
     uint32_t const global_size = gridDim.x * blockDim.x;
     uint32_t const gid = threadIdx.x + blockIdx.x * blockDim.x;
     uint64_t sum = 0;
@@ -66,7 +66,7 @@ __global__ void gpu_write_bandwidth_seq_kernel(uint32_t *data, uint32_t size, ui
 
     start = clock64();
 
-    for (uint32_t i = gid; i < size; i += global_size) {
+    for (std::size_t i = gid; i < size; i += global_size) {
         data[i] = i;
     }
 
@@ -94,7 +94,7 @@ __global__ void gpu_write_bandwidth_seq_kernel(uint32_t *data, uint32_t size, ui
  *  - Clock cycles are written to cycles
  *  - All array elements are filled with unspecified data
  */
-__global__ void gpu_cas_bandwidth_seq_kernel(uint32_t *data, uint32_t size, uint64_t *cycles) {
+__global__ void gpu_cas_bandwidth_seq_kernel(uint32_t *data, std::size_t size, uint64_t *cycles) {
     uint32_t const global_size = gridDim.x * blockDim.x;
     uint32_t const gid = threadIdx.x + blockIdx.x * blockDim.x;
     uint64_t sum = 0;
@@ -103,7 +103,7 @@ __global__ void gpu_cas_bandwidth_seq_kernel(uint32_t *data, uint32_t size, uint
 
     start = clock64();
 
-    for (uint32_t i = gid; i < size; i += global_size) {
+    for (std::size_t i = gid; i < size; i += global_size) {
         atomicCAS(&data[i], i, i + 1);
     }
 
@@ -122,7 +122,7 @@ __global__ void gpu_cas_bandwidth_seq_kernel(uint32_t *data, uint32_t size, uint
 extern "C" void gpu_bandwidth_seq(
         MemoryOperation op,
         uint32_t *data,
-        uint32_t size,
+        std::size_t size,
         uint64_t *cycles,
         uint32_t grid,
         uint32_t block,
@@ -156,7 +156,7 @@ extern "C" void gpu_bandwidth_seq(
  * Postconditions:
  *  - Clock cycles are written to cycles
  */
-__global__ void gpu_read_bandwidth_lcg_kernel(uint32_t *data, uint32_t size, uint64_t *cycles) {
+__global__ void gpu_read_bandwidth_lcg_kernel(uint32_t *data, std::size_t size, uint64_t *cycles) {
     uint32_t global_size = gridDim.x * blockDim.x;
     uint32_t gid = threadIdx.x + blockIdx.x * blockDim.x;
     uint64_t sum = 0;
@@ -164,24 +164,23 @@ __global__ void gpu_read_bandwidth_lcg_kernel(uint32_t *data, uint32_t size, uin
     uint64_t stop = 0;
 
     // Linear congruent generator
-    // Parameters according to Glibc
-    // See: https://sourceware.org/git/?p=glibc.git;a=blob;f=stdlib/random_r.c;hb=glibc-2.28#l364
+    // See: Knuth "The Art of Computer Programming - Volume 2"
     // and: https://en.wikipedia.org/wiki/Linear_congruential_generator
-    uint32_t a = 1103515245U;
-    uint32_t c = 12345U;
-    uint32_t m = 0x7fffffffU;
-    uint32_t x = 67890U + gid;
+    uint64_t a = 6364136223846793005ULL;
+    uint64_t c = 1442695040888963407ULL;
+    uint64_t x = 67890ULL + gid;
 
     start = clock64();
 
     // Do measurement
     uint32_t dummy = 0;
-    for (uint32_t i = gid; i < size; i += global_size) {
+    for (uint64_t i = gid; i < size; i += global_size) {
         // Generate next random number with LCG
-        x = ((a * x + c) & m);
+        // Note: wrap modulo 2^64 is defined by C/C++ standard
+        x = a * x + c;
 
         // Read from a random location within data range
-        uint32_t location = FAST_MODULO(x, size);
+        uint64_t location = FAST_MODULO(x, size);
         dummy += data[location];
     }
 
@@ -210,7 +209,7 @@ __global__ void gpu_read_bandwidth_lcg_kernel(uint32_t *data, uint32_t size, uin
  *  - Clock cycles are written to data[0]
  *  - All other array elements are (probably) filled with random numbers
  */
-__global__ void gpu_write_bandwidth_lcg_kernel(uint32_t *data, uint32_t size, uint64_t *cycles) {
+__global__ void gpu_write_bandwidth_lcg_kernel(uint32_t *data, std::size_t size, uint64_t *cycles) {
     uint32_t global_size = gridDim.x * blockDim.x;
     uint32_t gid = threadIdx.x + blockIdx.x * blockDim.x;
     uint64_t sum = 0;
@@ -218,23 +217,22 @@ __global__ void gpu_write_bandwidth_lcg_kernel(uint32_t *data, uint32_t size, ui
     uint64_t stop = 0;
 
     // Linear congruent generator
-    // Parameters according to Glibc
-    // See: https://sourceware.org/git/?p=glibc.git;a=blob;f=stdlib/random_r.c;hb=glibc-2.28#l364
+    // See: Knuth "The Art of Computer Programming - Volume 2"
     // and: https://en.wikipedia.org/wiki/Linear_congruential_generator
-    uint32_t a = 1103515245U;
-    uint32_t c = 12345U;
-    uint32_t m = 0x7fffffffU;
-    uint32_t x = 67890U + gid;
+    uint64_t a = 6364136223846793005ULL;
+    uint64_t c = 1442695040888963407ULL;
+    uint64_t x = 67890ULL + gid;
 
     start = clock64();
 
     // Do measurement
-    for (uint32_t i = gid; i < size; i += global_size) {
+    for (uint64_t i = gid; i < size; i += global_size) {
         // Generate next random number with LCG
-        x = ((a * x + c) & m);
+        // Note: wrap modulo 2^64 is defined by C/C++ standard
+        x = a * x + c;
 
         // Write to a random location within data range
-        uint32_t location = FAST_MODULO(x, size);
+        uint64_t location = FAST_MODULO(x, size);
         data[location] = x;
     }
 
@@ -263,7 +261,7 @@ __global__ void gpu_write_bandwidth_lcg_kernel(uint32_t *data, uint32_t size, ui
  *  - Clock cycles are written to data[0]
  *  - All array elements are filled with unspecified data
  */
-__global__ void gpu_cas_bandwidth_lcg_kernel(uint32_t *data, uint32_t size, uint64_t *cycles) {
+__global__ void gpu_cas_bandwidth_lcg_kernel(uint32_t *data, std::size_t size, uint64_t *cycles) {
     uint32_t global_size = gridDim.x * blockDim.x;
     uint32_t gid = threadIdx.x + blockIdx.x * blockDim.x;
     uint64_t sum = 0;
@@ -271,23 +269,22 @@ __global__ void gpu_cas_bandwidth_lcg_kernel(uint32_t *data, uint32_t size, uint
     uint64_t stop = 0;
 
     // Linear congruent generator
-    // Parameters according to Glibc
-    // See: https://sourceware.org/git/?p=glibc.git;a=blob;f=stdlib/random_r.c;hb=glibc-2.28#l364
+    // See: Knuth "The Art of Computer Programming - Volume 2"
     // and: https://en.wikipedia.org/wiki/Linear_congruential_generator
-    uint32_t a = 1103515245U;
-    uint32_t c = 12345U;
-    uint32_t m = 0x7fffffffU;
-    uint32_t x = 67890U + gid;
+    uint64_t a = 6364136223846793005ULL;
+    uint64_t c = 1442695040888963407ULL;
+    uint64_t x = 67890ULL + gid;
 
     start = clock64();
 
     // Do measurement
-    for (uint32_t i = gid; i < size; i += global_size) {
+    for (uint64_t i = gid; i < size; i += global_size) {
         // Generate next random number with LCG
-        x = ((a * x + c) & m);
+        // Note: wrap modulo 2^64 is defined by C/C++ standard
+        x = a * x + c;
 
         // Write to a random location within data range
-        uint32_t location = FAST_MODULO(x, size);
+        uint64_t location = FAST_MODULO(x, size);
         atomicCAS(&data[location], location, x);
     }
 
@@ -306,7 +303,7 @@ __global__ void gpu_cas_bandwidth_lcg_kernel(uint32_t *data, uint32_t size, uint
 extern "C" void gpu_bandwidth_lcg(
         MemoryOperation op,
         uint32_t *data,
-        uint32_t size,
+        std::size_t size,
         uint64_t *cycles,
         uint32_t grid,
         uint32_t block,
