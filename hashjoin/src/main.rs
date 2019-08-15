@@ -144,7 +144,7 @@ struct CmdOpt {
     )]
     data_set: ArgDataSet,
 
-    /// Load data set from a TSV file with "key value" pairs
+    /// Load data set from a TSV file with "key value" pairs and automatic gzip decompression
     #[structopt(
         long = "inner-rel-file",
         parse(from_os_str),
@@ -153,7 +153,7 @@ struct CmdOpt {
     )]
     inner_rel_file: Option<PathBuf>,
 
-    /// Load data set from a CSV file
+    /// Load data set from a TSV file with "key value" pairs and automatic gzip decompression
     #[structopt(
         long = "outer-rel-file",
         parse(from_os_str),

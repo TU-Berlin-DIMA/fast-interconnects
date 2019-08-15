@@ -13,6 +13,7 @@ use crate::operators::hash_join;
 use crate::types::*;
 use crate::DataGenFn;
 use csv::{ByteRecord, ReaderBuilder};
+use flate2::read::GzDecoder;
 use num_rational::Ratio;
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::cuda::{
@@ -28,6 +29,8 @@ use rustacuda::stream::{Stream, StreamFlags};
 use serde::de::DeserializeOwned;
 use std::collections::vec_deque::VecDeque;
 use std::convert::TryInto;
+use std::fs::File;
+use std::io::Read;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -281,8 +284,22 @@ impl HashJoinBenchBuilder {
             .has_headers(true)
             .quoting(false)
             .double_quote(false);
-        let mut inner_reader = reader_spec.from_path(inner_relation_path)?;
-        let mut outer_reader = reader_spec.from_path(outer_relation_path)?;
+
+        let mut readers = [&inner_relation_path, &outer_relation_path]
+            .iter()
+            .map(|path| {
+                let file = File::open(path)?;
+                let reader: Box<Read> = if path.ends_with("gz") {
+                    Box::new(GzDecoder::new(file))
+                } else {
+                    Box::new(file)
+                };
+                Ok(reader_spec.from_reader(reader))
+            })
+            .collect::<Result<VecDeque<_>>>()?;
+
+        let mut inner_reader = readers.pop_front().unwrap();
+        let mut outer_reader = readers.pop_front().unwrap();
         let mut record = ByteRecord::new();
 
         let io_timer = Instant::now();
@@ -308,8 +325,21 @@ impl HashJoinBenchBuilder {
         let io_timer = Instant::now();
 
         // Read in the tuples
-        let mut inner_reader = reader_spec.from_path(inner_relation_path)?;
-        let mut outer_reader = reader_spec.from_path(outer_relation_path)?;
+        let mut readers = [&inner_relation_path, &outer_relation_path]
+            .iter()
+            .map(|path| {
+                let file = File::open(path)?;
+                let reader: Box<Read> = if path.ends_with("gz") {
+                    Box::new(GzDecoder::new(file))
+                } else {
+                    Box::new(file)
+                };
+                Ok(reader_spec.from_reader(reader))
+            })
+            .collect::<Result<VecDeque<_>>>()?;
+
+        let mut inner_reader = readers.pop_front().unwrap();
+        let mut outer_reader = readers.pop_front().unwrap();
 
         let mut inner_key_iter = inner_key.iter_mut();
         let mut inner_payload_iter = inner_payload.iter_mut();

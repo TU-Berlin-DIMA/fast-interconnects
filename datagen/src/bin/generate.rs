@@ -10,6 +10,8 @@
 
 use datagen::popular;
 use datagen::relation::{UniformRelation, ZipfRelation};
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use serde::ser::Serialize;
 use serde_derive::Serialize;
 use std::fs::File;
@@ -38,6 +40,16 @@ fn main() -> Result<()> {
             let inner_rel_file = File::create(&join_cmd.inner_rel_path)?;
             let outer_rel_file = File::create(&join_cmd.outer_rel_path)?;
 
+            let (inner_rel_writer, outer_rel_writer): (Box<Write>, Box<Write>) =
+                if join_cmd.no_compress {
+                    (Box::new(inner_rel_file), Box::new(outer_rel_file))
+                } else {
+                    (
+                        Box::new(GzEncoder::new(inner_rel_file, Compression::default())),
+                        Box::new(GzEncoder::new(outer_rel_file, Compression::default())),
+                    )
+                };
+
             // Generate relations
             match join_cmd.tuple_bytes {
                 ArgTupleBytes::Bytes8 => {
@@ -52,8 +64,8 @@ fn main() -> Result<()> {
                     };
 
                     // Write the relations to file
-                    write_file(inner_rel.as_slice(), inner_rel_file, join_cmd.file_type)?;
-                    write_file(outer_rel.as_slice(), outer_rel_file, join_cmd.file_type)?;
+                    write_file(inner_rel.as_slice(), inner_rel_writer, join_cmd.file_type)?;
+                    write_file(outer_rel.as_slice(), outer_rel_writer, join_cmd.file_type)?;
                 }
                 ArgTupleBytes::Bytes16 => {
                     let (inner_rel, outer_rel) = if let (Some(inner), Some(outer)) =
@@ -67,8 +79,8 @@ fn main() -> Result<()> {
                     };
 
                     // Write the relations to file
-                    write_file(inner_rel.as_slice(), inner_rel_file, join_cmd.file_type)?;
-                    write_file(outer_rel.as_slice(), outer_rel_file, join_cmd.file_type)?;
+                    write_file(inner_rel.as_slice(), inner_rel_writer, join_cmd.file_type)?;
+                    write_file(outer_rel.as_slice(), outer_rel_writer, join_cmd.file_type)?;
                 }
             }
         }
@@ -139,6 +151,10 @@ struct CmdPkFkJoin {
         raw(possible_values = "&ArgDataSet::variants()", case_insensitive = "true")
     )]
     data_set: Option<ArgDataSet>,
+
+    /// Enable gzip compression
+    #[structopt(long = "no-compress")]
+    no_compress: bool,
 
     /// Set the tuple size (bytes)
     #[structopt(
@@ -247,11 +263,7 @@ where
     Ok((inner_rel, outer_rel))
 }
 
-fn write_file<T, W>(rel: &[T], writer: W, file_type: ArgFileType) -> Result<()>
-where
-    T: Serialize,
-    W: Write,
-{
+fn write_file(rel: &[impl Serialize], writer: impl Write, file_type: ArgFileType) -> Result<()> {
     let mut ser_writer: Box<csv::Writer<_>> = match file_type {
         ArgFileType::Csv => {
             let mut spec = csv::WriterBuilder::new();
