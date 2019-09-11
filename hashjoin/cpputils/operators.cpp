@@ -154,7 +154,7 @@ void cpu_ht_probe_aggregate_linearprobing(
         T const *const __restrict__ hash_table,
         uint64_t const hash_table_entries,
         const T *const __restrict__ join_attr_data,
-        const T *const __restrict__ /* payload_attr_data */,
+        const T *const __restrict__ payload_attr_data,
         uint64_t const data_length,
         uint64_t *const __restrict__ aggregation_result
         )
@@ -175,7 +175,7 @@ void cpu_ht_probe_aggregate_linearprobing(
                     hash_table_use_last_index)) {
 
             hash_table_use_last_index = true;
-            *aggregation_result += 1;
+            *aggregation_result += payload_attr_data[tuple_id];
         }
     }
 }
@@ -278,7 +278,7 @@ void cpu_ht_probe_aggregate_perfect(
         const T *const __restrict__ hash_table,
         uint64_t const /* hash_table_entries */,
         const T *const __restrict__ join_attribute_data,
-        const T *const __restrict__ /* payload_attribute_data */,
+        const T *const __restrict__ payload_attribute_data,
         uint64_t const data_length,
         uint64_t * __restrict__ aggregation_result
         )
@@ -286,7 +286,7 @@ void cpu_ht_probe_aggregate_perfect(
     for (uint64_t tuple_id = 0; tuple_id < data_length; ++tuple_id) {
         T key = join_attribute_data[tuple_id];
         if (hash_table[key] != NULL_KEY) {
-            *aggregation_result += 1;
+            *aggregation_result += payload_attribute_data[tuple_id];
         }
     }
 }
