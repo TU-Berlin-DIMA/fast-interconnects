@@ -65,11 +65,12 @@ void gpu_ht_insert_linearprobing_int32(
 #ifdef OPTIMIZE_INT32
         uint64_t null_key_64 = NULL_KEY_64;
         int32_t old_key = hash_table[index];
-        uint64_t entry = (((uint64_t)key) << 32) | ((uint64_t)payload);
+        // Negative int32_t is promoted when cast to uint64_t,
+        // need to drop the sign flags added by the cast
+        uint64_t entry = (((uint64_t)key) & 0x00000000FFFFFFFF) | (((uint64_t)payload) << 32);
         if (old_key == NULL_KEY_32) {
             uint64_t old_entry = atomicCAS((uint64_t*)&hash_table[index], null_key_64, entry);
-            old_key = old_entry >> 32;
-            if (old_key == NULL_KEY_32) {
+            if (old_entry == NULL_KEY_64) {
                 return;
             }
         }
