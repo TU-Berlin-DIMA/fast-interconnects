@@ -416,14 +416,14 @@ where
         let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
-        let mut result_counts = allocator::Allocator::alloc_mem(
+        let mut result_sums = allocator::Allocator::alloc_mem(
             allocator::MemType::CudaUniMem,
             (probe_dim.0.x * probe_dim.1.x) as usize,
         );
 
-        // Initialize counts
-        if let CudaUniMem(ref mut c) = result_counts {
-            c.iter_mut().map(|count| *count = 0).for_each(drop);
+        // Initialize result
+        if let CudaUniMem(ref mut c) = result_sums {
+            c.iter_mut().map(|sum| *sum = 0).for_each(drop);
         }
 
         stream.synchronize()?;
@@ -450,10 +450,10 @@ where
         let build_millis = stop_event.elapsed_time_f32(&start_event)?;
 
         start_event.record(&stream)?;
-        hj_op.probe_count(
+        hj_op.probe_sum(
             self.probe_relation_key.as_launchable_slice(),
             self.probe_relation_payload.as_launchable_slice(),
-            &mut result_counts,
+            &mut result_sums,
             &stream,
         )?;
 
@@ -495,14 +495,14 @@ where
         let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
-        let mut result_counts = allocator::Allocator::alloc_mem(
+        let mut result_sums = allocator::Allocator::alloc_mem(
             allocator::MemType::CudaUniMem,
             (probe_dim.0.x * probe_dim.1.x) as usize,
         );
 
-        // Initialize counts
-        if let CudaUniMem(ref mut c) = result_counts {
-            c.iter_mut().map(|count| *count = 0).for_each(drop);
+        // Initialize sums
+        if let CudaUniMem(ref mut c) = result_sums {
+            c.iter_mut().map(|sum| *sum = 0).for_each(drop);
         }
 
         let build_rel_key: &mut [T] = (&mut self.build_relation_key)
@@ -542,7 +542,7 @@ where
 
         let probe_timer = Instant::now();
         let probe_mnts = probe_iter
-            .fold(|(key, val), stream| hj_op.probe_count(key, val, &result_counts, stream))?;
+            .fold(|(key, val), stream| hj_op.probe_sum(key, val, &result_sums, stream))?;
         let probe_time = probe_timer.elapsed();
 
         Ok(HashJoinPoint {
@@ -572,14 +572,14 @@ where
         let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
-        let mut result_counts = allocator::Allocator::alloc_mem(
+        let mut result_sums = allocator::Allocator::alloc_mem(
             allocator::MemType::CudaUniMem,
             (probe_dim.0.x * probe_dim.1.x) as usize,
         );
 
-        // Initialize counts
-        if let CudaUniMem(ref mut c) = result_counts {
-            c.iter_mut().map(|count| *count = 0).for_each(drop);
+        // Initialize sums
+        if let CudaUniMem(ref mut c) = result_sums {
+            c.iter_mut().map(|sum| *sum = 0).for_each(drop);
         }
 
         let build_rel_key = match self.build_relation_key {
@@ -618,7 +618,7 @@ where
         let probe_timer = Instant::now();
         let probe_mnts = probe_relation
             .into_cuda_iter(chunk_len)?
-            .fold(|(key, val), stream| hj_op.probe_count(key, val, &result_counts, stream))?;
+            .fold(|(key, val), stream| hj_op.probe_sum(key, val, &result_sums, stream))?;
         let probe_time = probe_timer.elapsed();
 
         Ok(HashJoinPoint {
@@ -647,7 +647,7 @@ where
         let hash_table = hash_join::HashTable::new_on_cpu(hash_table_mem, self.hash_table_len)?;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
-        let mut result_counts = vec![0; threads];
+        let mut result_sums = vec![0; threads];
 
         let thread_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
@@ -680,7 +680,7 @@ where
             .expect("Can't use CUDA device memory on CPU!");
         let probe_pay_chunks: Vec<_> = probe_rel_pay.chunks(probe_chunk_size).collect();
 
-        let result_count_chunks: Vec<_> = result_counts.chunks_mut(threads).collect();
+        let result_sum_chunks: Vec<_> = result_sums.chunks_mut(threads).collect();
 
         let hj_builder = hash_join::CpuHashJoinBuilder::default()
             .hashing_scheme(self.hashing_scheme)
@@ -702,12 +702,12 @@ where
             for (((_tid, rel), pay), res) in (0..threads)
                 .zip(probe_rel_chunks)
                 .zip(probe_pay_chunks)
-                .zip(result_count_chunks)
+                .zip(result_sum_chunks)
             {
                 let mut hj_op = hj_builder.build();
                 s.spawn(move |_| {
                     hj_op
-                        .probe_count(rel, pay, &mut res[0])
+                        .probe_sum(rel, pay, &mut res[0])
                         .expect("Couldn't execute hash table probe");
                 });
             }

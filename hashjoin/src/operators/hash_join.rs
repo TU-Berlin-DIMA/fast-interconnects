@@ -15,13 +15,13 @@
 //! on CPUs and GPUs is also supported. This is possible because the
 //! processor-specific operators use the same underlying hash table.
 //!
-//! To execute in parallel on a CPU, the `build` and `probe_count` methods of
+//! To execute in parallel on a CPU, the `build` and `probe_sum` methods of
 //! `CpuHashJoin` must be called from multiple threads on non-overlapping data.
-//! `build` must be completed on all threads before calling `probe_count`.
+//! `build` must be completed on all threads before calling `probe_sum`.
 //! This design was chosen to maximize flexibility on which cores to execute on.
 //!
 //! To execute in parallel on a GPU, it is sufficient to call `build` and
-//! `probe_count` once. Both methods require grid and block sizes as input,
+//! `probe_sum` once. Both methods require grid and block sizes as input,
 //! that specify the parallelism with which to execute on the GPU. The join
 //! can also be parallelized over multiple GPUs by calling the methods multiple
 //! times using different CUDA devices.
@@ -180,8 +180,8 @@ pub trait CudaHashJoinable: DeviceCopy + NullKey {
         stream: &Stream,
     ) -> Result<()>;
 
-    /// Implements `CudaHashJoin::probe_count` for the implementing type.
-    fn probe_count_impl(
+    /// Implements `CudaHashJoin::probe_sum` for the implementing type.
+    fn probe_sum_impl(
         hj: &CudaHashJoin<Self>,
         join_attr: LaunchableSlice<Self>,
         payload_attr: LaunchableSlice<Self>,
@@ -202,12 +202,12 @@ pub trait CpuHashJoinable: DeviceCopy + NullKey {
         payload_attr: &[Self],
     ) -> Result<()>;
 
-    /// Implements `CpuHashJoin::probe_count` for the implementing type.
-    fn probe_count_impl(
+    /// Implements `CpuHashJoin::probe_sum` for the implementing type.
+    fn probe_sum_impl(
         hj: &mut CpuHashJoin<Self>,
         join_attr: &[Self],
         payload_attr: &[Self],
-        join_count: &mut u64,
+        join_result: &mut u64,
     ) -> Result<()>;
 }
 
@@ -215,7 +215,7 @@ pub trait CpuHashJoinable: DeviceCopy + NullKey {
 ///
 /// See the module documentation above for usage details.
 ///
-/// The `build` and `probe_count` methods are simply wrappers for the
+/// The `build` and `probe_sum` methods are simply wrappers for the
 /// corresponding implementations in `CudaHashJoinable`. The wrapping is
 /// necessary due to the specialization for each type `T`. See the documentation
 /// of `CudaHashJoinable` for details.
@@ -232,7 +232,7 @@ pub struct CudaHashJoin<T: DeviceCopy + NullKey> {
 ///
 /// See the module documentation above for details.
 ///
-/// The `build` and `probe_count` methods are simply wrappers for the
+/// The `build` and `probe_sum` methods are simply wrappers for the
 /// corresponding implementations in `CpuHashJoinable`. The wrapping is
 /// necessary due to the specialization for each type `T`. See the documentation
 /// of `CpuHashJoinable` for details.
@@ -279,20 +279,20 @@ where
         T::build_impl(self, join_attr, payload_attr, stream)
     }
 
-    /// Probe the hash table on the GPU and count the number of result tuples.
+    /// Probe the hash table on the GPU and sum the payload attribute rows.
     ///
     /// This effectively implements the SQL code:
     /// ```SQL
-    /// SELECT COUNT(*) FROM r JOIN s ON r.join_attr = s.join_attr
+    /// SELECT SUM(s.payload_attr) FROM r JOIN s ON r.join_attr = s.join_attr
     /// ```
-    pub fn probe_count(
+    pub fn probe_sum(
         &self,
         join_attr: LaunchableSlice<T>,
         payload_attr: LaunchableSlice<T>,
         result_set: &Mem<u64>,
         stream: &Stream,
     ) -> Result<()> {
-        T::probe_count_impl(self, join_attr, payload_attr, result_set, stream)
+        T::probe_sum_impl(self, join_attr, payload_attr, result_set, stream)
     }
 }
 
@@ -305,19 +305,19 @@ where
         T::build_impl(self, join_attr, payload_attr)
     }
 
-    /// Probe the hash table on the CPU and count the number of result tuples.
+    /// Probe the hash table on the CPU and sum the payload attribute rows.
     ///
     /// This effectively implements the SQL code:
     /// ```SQL
-    /// SELECT COUNT(*) FROM r JOIN s ON r.join_attr = s.join_attr
+    /// SELECT SUM(s.payload_attr) FROM r JOIN s ON r.join_attr = s.join_attr
     /// ```
-    pub fn probe_count(
+    pub fn probe_sum(
         &mut self,
         join_attr: &[T],
         payload_attr: &[T],
-        join_count: &mut u64,
+        join_result: &mut u64,
     ) -> Result<()> {
-        T::probe_count_impl(self, join_attr, payload_attr, join_count)
+        T::probe_sum_impl(self, join_attr, payload_attr, join_result)
     }
 }
 
@@ -375,7 +375,7 @@ macro_rules! impl_cuda_hash_join_for_type {
             }
 
             paste::item!{
-                fn probe_count_impl(
+                fn probe_sum_impl(
                     hj: &CudaHashJoin<$Type>,
                     join_attr: LaunchableSlice<$Type>,
                     payload_attr: LaunchableSlice<$Type>,
@@ -475,11 +475,11 @@ macro_rules! impl_cpu_hash_join_for_type {
             }
 
             paste::item!{
-                fn probe_count_impl(
+                fn probe_sum_impl(
                     hj: &mut CpuHashJoin<$Type>,
                     join_attr: &[$Type],
                     payload_attr: &[$Type],
-                    join_count: &mut u64,
+                    join_result: &mut u64,
                     ) -> Result<()> {
                     ensure!(
                         join_attr.len() == payload_attr.len(),
@@ -497,7 +497,7 @@ macro_rules! impl_cpu_hash_join_for_type {
                                 join_attr.as_ptr(),
                                 payload_attr.as_ptr(),
                                 join_attr_len,
-                                join_count,
+                                join_result,
                                 )
                         },
                         HashingScheme::LinearProbing => unsafe {
@@ -507,7 +507,7 @@ macro_rules! impl_cpu_hash_join_for_type {
                                 join_attr.as_ptr(),
                                 payload_attr.as_ptr(),
                                 join_attr_len,
-                                join_count,
+                                join_result,
                                 )
                         },
                     };
@@ -782,7 +782,7 @@ mod tests {
 
                 hj_op.build(&inner_rel_key, &inner_rel_pay)?;
                 let mut result_sum: u64 = 0;
-                hj_op.probe_count(&outer_rel_key, &outer_rel_pay, &mut result_sum)?;
+                hj_op.probe_sum(&outer_rel_key, &outer_rel_pay, &mut result_sum)?;
 
                 assert_eq!((ROWS as u64 * (ROWS as u64 + 1)) / 2, result_sum);
 
@@ -836,7 +836,7 @@ mod tests {
 
                 let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
                 hj_op.build(Mem::from(inner_rel_key).as_launchable_slice(), Mem::from(inner_rel_pay).as_launchable_slice(), &stream)?;
-                hj_op.probe_count(Mem::from(outer_rel_key).as_launchable_slice(), Mem::from(outer_rel_pay).as_launchable_slice(), &mut result_sum_per_thread, &stream)?;
+                hj_op.probe_sum(Mem::from(outer_rel_key).as_launchable_slice(), Mem::from(outer_rel_pay).as_launchable_slice(), &mut result_sum_per_thread, &stream)?;
                 stream.synchronize()?;
 
                 let result_sum_slice: &[u64] = (&result_sum_per_thread).try_into().map_err(|(err, _)| err)?;
