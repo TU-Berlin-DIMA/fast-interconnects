@@ -742,15 +742,15 @@ impl ::std::default::Default for HashingScheme {
 
 #[cfg(test)]
 mod tests {
-    use super::{CpuHashJoinBuilder, CudaHashJoinBuilder, HashingScheme, HashTable};
-    use numa_gpu::runtime::allocator::{DerefMemType, Allocator, MemType};
+    use super::{CpuHashJoinBuilder, CudaHashJoinBuilder, HashTable, HashingScheme};
     use datagen::relation::UniformRelation;
-    use std::sync::{Arc, Mutex};
+    use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
+    use numa_gpu::runtime::memory::Mem;
+    use rustacuda::stream::{Stream, StreamFlags};
+    use std::convert::TryInto;
     use std::error::Error;
     use std::result::Result;
-    use rustacuda::stream::{Stream, StreamFlags};
-    use numa_gpu::runtime::memory::Mem;
-    use std::convert::TryInto;
+    use std::sync::{Arc, Mutex};
 
     macro_rules! test_cpu_seq {
         ($name:ident, $mem_type:expr, $scheme:expr, $type:ty) => {
@@ -766,10 +766,19 @@ mod tests {
                 let mut outer_rel_pay = alloc_fn(ROWS);
 
                 UniformRelation::gen_primary_key(&mut inner_rel_key)?;
-                UniformRelation::gen_foreign_key_from_primary_key(&mut outer_rel_key, &inner_rel_key);
+                UniformRelation::gen_foreign_key_from_primary_key(
+                    &mut outer_rel_key,
+                    &inner_rel_key,
+                );
 
-                inner_rel_pay.iter_mut().enumerate().for_each(|(i, x)| *x = (i + 1) as $type);
-                outer_rel_pay.iter_mut().enumerate().for_each(|(i, x)| *x = (i + 1) as $type);
+                inner_rel_pay
+                    .iter_mut()
+                    .enumerate()
+                    .for_each(|(i, x)| *x = (i + 1) as $type);
+                outer_rel_pay
+                    .iter_mut()
+                    .enumerate()
+                    .for_each(|(i, x)| *x = (i + 1) as $type);
 
                 let ht_mem = alloc_fn(HT_LEN);
 
@@ -788,13 +797,33 @@ mod tests {
 
                 Ok(())
             }
-        }
+        };
     }
 
-    test_cpu_seq!(cpu_seq_sysmem_perfect_i32, DerefMemType::SysMem, HashingScheme::Perfect, i32);
-    test_cpu_seq!(cpu_seq_sysmem_perfect_i64, DerefMemType::SysMem, HashingScheme::Perfect, i64);
-    test_cpu_seq!(cpu_seq_sysmem_linearprobing_i32, DerefMemType::SysMem, HashingScheme::LinearProbing, i32);
-    test_cpu_seq!(cpu_seq_sysmem_linearprobing_i64, DerefMemType::SysMem, HashingScheme::LinearProbing, i64);
+    test_cpu_seq!(
+        cpu_seq_sysmem_perfect_i32,
+        DerefMemType::SysMem,
+        HashingScheme::Perfect,
+        i32
+    );
+    test_cpu_seq!(
+        cpu_seq_sysmem_perfect_i64,
+        DerefMemType::SysMem,
+        HashingScheme::Perfect,
+        i64
+    );
+    test_cpu_seq!(
+        cpu_seq_sysmem_linearprobing_i32,
+        DerefMemType::SysMem,
+        HashingScheme::LinearProbing,
+        i32
+    );
+    test_cpu_seq!(
+        cpu_seq_sysmem_linearprobing_i64,
+        DerefMemType::SysMem,
+        HashingScheme::LinearProbing,
+        i64
+    );
 
     macro_rules! test_cuda {
         ($name:ident, $mem_type:expr, $scheme:expr, $type:ty) => {
@@ -814,18 +843,25 @@ mod tests {
                 let mut outer_rel_pay = alloc_fn(ROWS);
 
                 UniformRelation::gen_primary_key(&mut inner_rel_key)?;
-                UniformRelation::gen_foreign_key_from_primary_key(&mut outer_rel_key, &inner_rel_key);
+                UniformRelation::gen_foreign_key_from_primary_key(
+                    &mut outer_rel_key,
+                    &inner_rel_key,
+                );
 
-                inner_rel_pay.iter_mut().enumerate().for_each(|(i, x)| *x = (i + 1) as $type);
-                outer_rel_pay.iter_mut().enumerate().for_each(|(i, x)| *x = (i + 1) as $type);
+                inner_rel_pay
+                    .iter_mut()
+                    .enumerate()
+                    .for_each(|(i, x)| *x = (i + 1) as $type);
+                outer_rel_pay
+                    .iter_mut()
+                    .enumerate()
+                    .for_each(|(i, x)| *x = (i + 1) as $type);
 
                 let ht_mem = Allocator::alloc_mem(MemType::CudaDevMem, HT_LEN);
                 let hash_table = HashTable::new_on_gpu(ht_mem, HT_LEN)?;
 
-                let mut result_sum_per_thread = Allocator::alloc_mem(
-                    MemType::CudaUniMem,
-                    (GRID_SIZE * BLOCK_SIZE) as usize,
-                    );
+                let mut result_sum_per_thread =
+                    Allocator::alloc_mem(MemType::CudaUniMem, (GRID_SIZE * BLOCK_SIZE) as usize);
 
                 let hj_op = CudaHashJoinBuilder::default()
                     .hashing_scheme($scheme)
@@ -835,23 +871,59 @@ mod tests {
                     .build()?;
 
                 let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
-                hj_op.build(Mem::from(inner_rel_key).as_launchable_slice(), Mem::from(inner_rel_pay).as_launchable_slice(), &stream)?;
-                hj_op.probe_sum(Mem::from(outer_rel_key).as_launchable_slice(), Mem::from(outer_rel_pay).as_launchable_slice(), &mut result_sum_per_thread, &stream)?;
+                hj_op.build(
+                    Mem::from(inner_rel_key).as_launchable_slice(),
+                    Mem::from(inner_rel_pay).as_launchable_slice(),
+                    &stream,
+                )?;
+                hj_op.probe_sum(
+                    Mem::from(outer_rel_key).as_launchable_slice(),
+                    Mem::from(outer_rel_pay).as_launchable_slice(),
+                    &mut result_sum_per_thread,
+                    &stream,
+                )?;
                 stream.synchronize()?;
 
-                let result_sum_slice: &[u64] = (&result_sum_per_thread).try_into().map_err(|(err, _)| err)?;
+                let result_sum_slice: &[u64] = (&result_sum_per_thread)
+                    .try_into()
+                    .map_err(|(err, _)| err)?;
                 let result_sum = result_sum_slice.iter().sum();
 
                 assert_eq!((ROWS as u64 * (ROWS as u64 + 1)) / 2, result_sum);
 
                 Ok(())
             }
-        }
+        };
     }
 
-    test_cuda!(cuda_pinnedmem_perfect_i32, DerefMemType::CudaPinnedMem, HashingScheme::Perfect, i32);
-    test_cuda!(cuda_pinnedmem_perfect_i64, DerefMemType::CudaPinnedMem, HashingScheme::Perfect, i64);
-    test_cuda!(cuda_pinnedmem_linearprobing_i32, DerefMemType::CudaPinnedMem, HashingScheme::LinearProbing, i32);
-    test_cuda!(cuda_pinnedmem_linearprobing_i64, DerefMemType::CudaPinnedMem, HashingScheme::LinearProbing, i64);
-    test_cuda!(cuda_unimem, DerefMemType::CudaUniMem, HashingScheme::Perfect, i32);
+    test_cuda!(
+        cuda_pinnedmem_perfect_i32,
+        DerefMemType::CudaPinnedMem,
+        HashingScheme::Perfect,
+        i32
+    );
+    test_cuda!(
+        cuda_pinnedmem_perfect_i64,
+        DerefMemType::CudaPinnedMem,
+        HashingScheme::Perfect,
+        i64
+    );
+    test_cuda!(
+        cuda_pinnedmem_linearprobing_i32,
+        DerefMemType::CudaPinnedMem,
+        HashingScheme::LinearProbing,
+        i32
+    );
+    test_cuda!(
+        cuda_pinnedmem_linearprobing_i64,
+        DerefMemType::CudaPinnedMem,
+        HashingScheme::LinearProbing,
+        i64
+    );
+    test_cuda!(
+        cuda_unimem,
+        DerefMemType::CudaUniMem,
+        HashingScheme::Perfect,
+        i32
+    );
 }
