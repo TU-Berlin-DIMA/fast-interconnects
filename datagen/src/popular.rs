@@ -39,12 +39,12 @@ impl Kim {
     /// Requires a slice for the primary key attribute, and a slice for the
     /// foreign key attribute. Both slices must have the lengths specified by
     /// the primary_key_len() and foreign_key_len() functions.
-    pub fn gen<T: Copy + FromPrimitive>(pk_attr: &mut [T], fk_attr: &mut [T]) -> Result<()> {
+    pub fn gen<T: Copy + Send + FromPrimitive>(pk_attr: &mut [T], fk_attr: &mut [T]) -> Result<()> {
         assert!(pk_attr.len() == Self::primary_key_len());
         assert!(fk_attr.len() == Self::foreign_key_len());
 
-        UniformRelation::gen_primary_key(pk_attr)?;
-        UniformRelation::gen_foreign_key_from_primary_key(fk_attr, pk_attr);
+        UniformRelation::gen_primary_key_par(pk_attr)?;
+        UniformRelation::gen_attr_par(fk_attr, 1..=pk_attr.len())?;
         Ok(())
     }
 }
@@ -74,12 +74,12 @@ impl Blanas {
     /// Requires a slice for the primary key attribute, and a slice for the
     /// foreign key attribute. Both slices must have the lengths specified by
     /// the primary_key_len() and foreign_key_len() functions.
-    pub fn gen<T: Copy + FromPrimitive>(pk_attr: &mut [T], fk_attr: &mut [T]) -> Result<()> {
+    pub fn gen<T: Copy + Send + FromPrimitive>(pk_attr: &mut [T], fk_attr: &mut [T]) -> Result<()> {
         assert!(pk_attr.len() == Self::primary_key_len());
         assert!(fk_attr.len() == Self::foreign_key_len());
 
-        UniformRelation::gen_primary_key(pk_attr)?;
-        UniformRelation::gen_foreign_key_from_primary_key(fk_attr, pk_attr);
+        UniformRelation::gen_primary_key_par(pk_attr)?;
+        UniformRelation::gen_attr_par(fk_attr, 1..=pk_attr.len())?;
         Ok(())
     }
 }

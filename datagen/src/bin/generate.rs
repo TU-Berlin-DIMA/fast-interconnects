@@ -8,19 +8,22 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
+use crossbeam_utils::thread;
 use datagen::popular;
 use datagen::relation::{UniformRelation, ZipfRelation};
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use rand::distributions::uniform::SampleUniform;
 use serde::ser::Serialize;
 use serde_derive::Serialize;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
+use std::time::Instant;
 use structopt::clap::arg_enum;
 use structopt::StructOpt;
 
-type Result<T> = std::result::Result<T, Box<std::error::Error>>;
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn main() -> Result<()> {
     // Parse commandline arguments
@@ -40,15 +43,17 @@ fn main() -> Result<()> {
             let inner_rel_file = File::create(&join_cmd.inner_rel_path)?;
             let outer_rel_file = File::create(&join_cmd.outer_rel_path)?;
 
-            let (inner_rel_writer, outer_rel_writer): (Box<Write>, Box<Write>) =
-                if join_cmd.no_compress {
-                    (Box::new(inner_rel_file), Box::new(outer_rel_file))
-                } else {
-                    (
-                        Box::new(GzEncoder::new(inner_rel_file, Compression::default())),
-                        Box::new(GzEncoder::new(outer_rel_file, Compression::default())),
-                    )
-                };
+            let (inner_rel_writer, outer_rel_writer): (
+                Box<dyn Write + Send>,
+                Box<dyn Write + Send>,
+            ) = if join_cmd.no_compress {
+                (Box::new(inner_rel_file), Box::new(outer_rel_file))
+            } else {
+                (
+                    Box::new(GzEncoder::new(inner_rel_file, Compression::default())),
+                    Box::new(GzEncoder::new(outer_rel_file, Compression::default())),
+                )
+            };
 
             // Generate relations
             match join_cmd.tuple_bytes {
@@ -64,8 +69,23 @@ fn main() -> Result<()> {
                     };
 
                     // Write the relations to file
-                    write_file(inner_rel.as_slice(), inner_rel_writer, join_cmd.file_type)?;
-                    write_file(outer_rel.as_slice(), outer_rel_writer, join_cmd.file_type)?;
+                    thread::scope(|s| {
+                        s.spawn(|_| {
+                            let pk_timer = Instant::now();
+                            write_file(inner_rel.as_slice(), inner_rel_writer, join_cmd.file_type)
+                                .expect("Failed to write PK file");
+                            let pk_time = Instant::now().duration_since(pk_timer).as_millis();
+                            println!("PK write time: {}", pk_time as f64 / 1000.0);
+                        });
+                        s.spawn(|_| {
+                            let fk_timer = Instant::now();
+                            write_file(outer_rel.as_slice(), outer_rel_writer, join_cmd.file_type)
+                                .expect("Failed to write FK file");
+                            let fk_time = Instant::now().duration_since(fk_timer).as_millis();
+                            println!("FK write time: {}", fk_time as f64 / 1000.0);
+                        });
+                    })
+                    .expect("Failure inside thread scope");
                 }
                 ArgTupleBytes::Bytes16 => {
                     let (inner_rel, outer_rel) = if let (Some(inner), Some(outer)) =
@@ -79,8 +99,23 @@ fn main() -> Result<()> {
                     };
 
                     // Write the relations to file
-                    write_file(inner_rel.as_slice(), inner_rel_writer, join_cmd.file_type)?;
-                    write_file(outer_rel.as_slice(), outer_rel_writer, join_cmd.file_type)?;
+                    thread::scope(|s| {
+                        s.spawn(|_| {
+                            let pk_timer = Instant::now();
+                            write_file(inner_rel.as_slice(), inner_rel_writer, join_cmd.file_type)
+                                .expect("Failed to write PK file");
+                            let pk_time = Instant::now().duration_since(pk_timer).as_millis();
+                            println!("PK write time: {}", pk_time as f64 / 1000.0);
+                        });
+                        s.spawn(|_| {
+                            let fk_timer = Instant::now();
+                            write_file(outer_rel.as_slice(), outer_rel_writer, join_cmd.file_type)
+                                .expect("Failed to write FK file");
+                            let fk_time = Instant::now().duration_since(fk_timer).as_millis();
+                            println!("FK write time: {}", fk_time as f64 / 1000.0);
+                        });
+                    })
+                    .expect("Failure inside thread scope");
                 }
             }
         }
@@ -220,28 +255,34 @@ fn generate<T>(
     dist: DataDistribution,
 ) -> Result<(Vec<T>, Vec<T>)>
 where
-    T: Copy + Default + num_traits::FromPrimitive,
+    T: Copy + Default + Send + num_traits::FromPrimitive + SampleUniform,
 {
     let mut inner_rel = vec![T::default(); inner_len];
     let mut outer_rel = vec![T::default(); outer_len];
 
-    UniformRelation::gen_primary_key(&mut inner_rel)?;
+    let pk_timer = Instant::now();
+    UniformRelation::gen_primary_key_par(&mut inner_rel)?;
+    let pk_time = Instant::now().duration_since(pk_timer).as_millis();
+    println!("PK gen time: {}", pk_time as f64 / 1000.0);
 
+    let fk_timer = Instant::now();
     match dist {
         DataDistribution::Uniform => {
-            UniformRelation::gen_foreign_key_from_primary_key(&mut outer_rel, &inner_rel)
+            UniformRelation::gen_attr_par(&mut outer_rel, 1..=inner_rel.len())?
         }
-        DataDistribution::Zipf(exp) => ZipfRelation::gen_attr(&mut outer_rel, inner_len, exp)?,
+        DataDistribution::Zipf(exp) => ZipfRelation::gen_attr_par(&mut outer_rel, inner_len, exp)?,
     };
+    let fk_time = Instant::now().duration_since(fk_timer).as_millis();
+    println!("FK gen time: {}", fk_time as f64 / 1000.0);
 
     Ok((inner_rel, outer_rel))
 }
 
-fn generate_popular<T>(data_set: ArgDataSet) -> Result<(Vec<T>, Vec<T>)>
+fn generate_popular<T: Send>(data_set: ArgDataSet) -> Result<(Vec<T>, Vec<T>)>
 where
     T: Copy + Default + num_traits::FromPrimitive,
 {
-    type DataGenFn<T> = Box<FnMut(&mut [T], &mut [T]) -> datagen::error::Result<()>>;
+    type DataGenFn<T> = Box<dyn FnMut(&mut [T], &mut [T]) -> datagen::error::Result<()>>;
 
     let (inner_len, outer_len, mut gen_fn): (usize, usize, DataGenFn<T>) = match data_set {
         ArgDataSet::Blanas => (

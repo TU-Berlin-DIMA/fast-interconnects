@@ -16,10 +16,13 @@ use num_traits::FromPrimitive;
 
 use crate::error::{ErrorKind, Result};
 
-use rand::distributions::uniform::SampleUniform;
+use std::ops::RangeInclusive;
+
 use rand::distributions::{Distribution, Uniform};
 use rand::seq::SliceRandom;
-use rand::thread_rng;
+use rand::{thread_rng, Rng};
+
+use rayon::prelude::*;
 
 use zipf::ZipfDistribution;
 
@@ -56,6 +59,36 @@ impl UniformRelation {
         Ok(())
     }
 
+    /// Generates a primary key attribute in parallel.
+    ///
+    /// The generated keys are unique and contiguous. The key range starts from
+    /// 1 and ends at, i.e. including, attr.len(). Keys are placed at random
+    /// locations within the slice.
+    pub fn gen_primary_key_par<T: Clone + Send + FromPrimitive>(attr: &mut [T]) -> Result<()> {
+        let mut shuffled: Vec<(usize, T)> = (1..(attr.len() + 1))
+            .into_par_iter()
+            .map_init(
+                || thread_rng(),
+                |rng, i| {
+                    FromPrimitive::from_usize(i)
+                        .ok_or_else(|| {
+                            ErrorKind::IntegerOverflow("Failed to convert from usize".to_string())
+                                .into()
+                        })
+                        .map(|i| (rng.gen(), i))
+                },
+            )
+            .collect::<Result<_>>()?;
+
+        shuffled.as_mut_slice().par_sort_unstable_by_key(|x| x.0);
+
+        attr.par_iter_mut()
+            .zip_eq(shuffled.into_par_iter())
+            .for_each(|(x, t)| *x = t.1.clone());
+
+        Ok(())
+    }
+
     /// Generates a foreign key attribute based on a primary key attribute.
     ///
     /// The generated keys are sampled from the primary key attribute, that is,
@@ -74,13 +107,10 @@ impl UniformRelation {
 
     /// Generates a uniformly distributed attribute.
     ///
-    /// The generated values are sampled from 1 to num_elements (inclusive).
-    pub fn gen_attr<T: FromPrimitive + SampleUniform>(
-        attr: &mut [T],
-        num_elements: usize,
-    ) -> Result<()> {
+    /// The generated values are sampled from `range`.
+    pub fn gen_attr<T: FromPrimitive>(attr: &mut [T], range: RangeInclusive<usize>) -> Result<()> {
         let mut rng = thread_rng();
-        let between = Uniform::from(1..=num_elements);
+        let between = Uniform::from(range);
 
         attr.iter_mut()
             .by_ref()
@@ -92,6 +122,32 @@ impl UniformRelation {
                     })
                     .map(|r| *x = r)
             })
+            .collect::<Result<()>>()?;
+
+        Ok(())
+    }
+
+    /// Generates a uniformly distributed attribute in parallel.
+    ///
+    /// The generated values are sampled from `range`.
+    pub fn gen_attr_par<T: FromPrimitive + Send>(
+        attr: &mut [T],
+        range: RangeInclusive<usize>,
+    ) -> Result<()> {
+        let between = Uniform::from(range);
+
+        attr.par_iter_mut()
+            .map_init(
+                || thread_rng(),
+                |mut rng, x| {
+                    FromPrimitive::from_usize(between.sample(&mut rng))
+                        .ok_or_else(|| {
+                            ErrorKind::IntegerOverflow("Failed to convert from usize".to_string())
+                                .into()
+                        })
+                        .map(|r| *x = r)
+                },
+            )
             .collect::<Result<()>>()?;
 
         Ok(())
@@ -130,6 +186,40 @@ impl ZipfRelation {
                     })
                     .map(|r| *x = r)
             })
+            .collect::<Result<()>>()?;
+
+        Ok(())
+    }
+
+    /// Generates an attribute following the Zipf distribution in parallel.
+    ///
+    /// The generated values are sampled from 1 to num_elements (inclusive).
+    /// Note that the exponent must be greather than 0.
+    ///
+    /// In the literature, num_elements is also called the alphabet size.
+    pub fn gen_attr_par<T: FromPrimitive + Send>(
+        attr: &mut [T],
+        num_elements: usize,
+        exponent: f64,
+    ) -> Result<()> {
+        let between = ZipfDistribution::new(num_elements, exponent).map_err(|_| {
+            ErrorKind::InvalidArgument(
+                "ZipfDistribution requires num_elements and exponent greater than 0".to_string(),
+            )
+        })?;
+
+        attr.par_iter_mut()
+            .map_init(
+                || thread_rng(),
+                |mut rng, x| {
+                    FromPrimitive::from_usize(between.sample(&mut rng))
+                        .ok_or_else(|| {
+                            ErrorKind::IntegerOverflow("Failed to convert from usize".to_string())
+                                .into()
+                        })
+                        .map(|r| *x = r)
+                },
+            )
             .collect::<Result<()>>()?;
 
         Ok(())
