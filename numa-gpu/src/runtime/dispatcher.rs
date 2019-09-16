@@ -4,17 +4,9 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018 German Research Center for Artificial Intelligence (DFKI)
+ * Copyright (c) 2019, Clemens Lutz <lutzcle@cml.li>
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-pub mod allocator;
-pub mod cuda;
-pub mod cuda_wrapper;
-pub mod dispatcher;
-pub mod hw_info;
-pub mod linux_wrapper;
-pub mod memory;
-pub mod numa;
-pub mod nvml;
-pub mod utils;
+pub mod het_morsel_iterator;
+pub mod morsel_dispatcher;
