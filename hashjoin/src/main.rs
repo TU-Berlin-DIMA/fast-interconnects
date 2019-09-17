@@ -398,7 +398,7 @@ fn data_gen_fn<T>(
     outer_rel_tuples: Option<usize>,
 ) -> (usize, usize, DataGenFn<T>)
 where
-    T: Copy + num_traits::FromPrimitive,
+    T: Copy + Send + num_traits::FromPrimitive,
 {
     match description {
         ArgDataSet::Blanas => (
@@ -417,10 +417,8 @@ where
         ),
         ArgDataSet::Blanas4MB => {
             let gen = |pk_rel: &mut [_], fk_rel: &mut [_]| {
-                datagen::relation::UniformRelation::gen_primary_key(pk_rel)?;
-                datagen::relation::UniformRelation::gen_foreign_key_from_primary_key(
-                    fk_rel, pk_rel,
-                );
+                datagen::relation::UniformRelation::gen_primary_key_par(pk_rel)?;
+                datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
                 Ok(())
             };
 
@@ -439,10 +437,8 @@ where
         }
         ArgDataSet::Lutz2Gv32G => {
             let gen = |pk_rel: &mut [_], fk_rel: &mut [_]| {
-                datagen::relation::UniformRelation::gen_primary_key(pk_rel)?;
-                datagen::relation::UniformRelation::gen_foreign_key_from_primary_key(
-                    fk_rel, pk_rel,
-                );
+                datagen::relation::UniformRelation::gen_primary_key_par(pk_rel)?;
+                datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
                 Ok(())
             };
 
@@ -454,10 +450,8 @@ where
         }
         ArgDataSet::Lutz32Gv32G => {
             let gen = |pk_rel: &mut [_], fk_rel: &mut [_]| {
-                datagen::relation::UniformRelation::gen_primary_key(pk_rel)?;
-                datagen::relation::UniformRelation::gen_foreign_key_from_primary_key(
-                    fk_rel, pk_rel,
-                );
+                datagen::relation::UniformRelation::gen_primary_key_par(pk_rel)?;
+                datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
                 Ok(())
             };
 
@@ -469,10 +463,8 @@ where
         }
         ArgDataSet::Custom => {
             let gen = |pk_rel: &mut [_], fk_rel: &mut [_]| {
-                datagen::relation::UniformRelation::gen_primary_key(pk_rel)?;
-                datagen::relation::UniformRelation::gen_foreign_key_from_primary_key(
-                    fk_rel, pk_rel,
-                );
+                datagen::relation::UniformRelation::gen_primary_key_par(pk_rel)?;
+                datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
                 Ok(())
             };
 
