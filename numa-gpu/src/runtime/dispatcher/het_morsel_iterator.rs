@@ -12,7 +12,7 @@ use super::morsel_dispatcher::MorselDispatcher;
 use crate::error::*;
 use crate::runtime::memory::LaunchableMem;
 use crate::runtime::memory::LaunchableSlice;
-use rayon::{ThreadPoolBuilder, ThreadPool};
+use rayon::{ThreadPool, ThreadPoolBuilder};
 use rustacuda::context::CurrentContext;
 use rustacuda::memory::DeviceCopy;
 use rustacuda::stream::{Stream, StreamFlags};
@@ -45,7 +45,7 @@ where
         let morsel_len = morsel_bytes / (size_of::<R>() + size_of::<S>());
 
         let cpu_workers = 2;
-        let gpu_workers = 0;
+        let gpu_workers = 1;
 
         let dispatcher = MorselDispatcher::new(self.0.len(), morsel_len);
         let thread_pool = ThreadPoolBuilder::new()
@@ -86,8 +86,9 @@ impl<'a, R, S> HetMorselIterator2<'a, R, S> {
         let gpu_workers = self.gpu_workers;
 
         let ro_data = (self.data.0.as_ref(), self.data.1.as_ref());
+        let unowned_context = CurrentContext::get_current()?;
 
-        self.thread_pool.scope(|scope| {
+        self.thread_pool.scope(move |scope| {
             let cpu_af = Arc::new(cpu_f);
             let gpu_af = Arc::new(gpu_f);
 
@@ -101,11 +102,10 @@ impl<'a, R, S> HetMorselIterator2<'a, R, S> {
 
             for _ in 0..gpu_workers {
                 let af = gpu_af.clone();
-                let unowned_context =
-                    CurrentContext::get_current().expect("Failed to get current CUDA context");
+                let thread_context = unowned_context.clone();
 
                 scope.spawn(move |_| {
-                    CurrentContext::set_current(&unowned_context)
+                    CurrentContext::set_current(&thread_context)
                         .expect("Failed to set CUDA context in GPU worker thread");
 
                     gpu_worker(dispatcher, ro_data, af).expect("Failed to run GPU worker");
@@ -123,7 +123,7 @@ where
     S: Copy,
     F: Fn((&[R], &[S])) -> Result<()>,
 {
-    for morsel in dispatcher.dispatch() {
+    for morsel in dispatcher.iter() {
         f((&data.0[morsel.clone()], &data.1[morsel.clone()]))?;
     }
 
@@ -138,7 +138,7 @@ where
 {
     let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
 
-    for morsel in dispatcher.dispatch() {
+    for morsel in dispatcher.iter() {
         f(
             (
                 data.0[morsel.clone()].as_launchable_slice(),
@@ -147,6 +147,8 @@ where
             &stream,
         )?
     }
+
+    stream.synchronize()?;
 
     Ok(())
 }

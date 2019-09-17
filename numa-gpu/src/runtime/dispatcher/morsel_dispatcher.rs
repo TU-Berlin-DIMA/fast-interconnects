@@ -9,6 +9,7 @@
  */
 
 use std::cmp;
+use std::iter::Iterator;
 use std::ops::Range;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -29,16 +30,45 @@ impl MorselDispatcher {
         }
     }
 
-    pub(super) fn dispatch(&self) -> Option<Range<usize>> {
-        let morsel = self.offset.fetch_add(self.morsel_len, Ordering::SeqCst);
-        if morsel >= self.data_len {
+    pub(super) fn iter(&self) -> MorselDispatcherIter<'_> {
+        MorselDispatcherIter { dispatcher: &self }
+    }
+}
+
+pub(super) struct MorselDispatcherIter<'a> {
+    dispatcher: &'a MorselDispatcher,
+}
+
+impl<'a> Iterator for MorselDispatcherIter<'a> {
+    type Item = Range<usize>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let morsel = self
+            .dispatcher
+            .offset
+            .fetch_add(self.dispatcher.morsel_len, Ordering::SeqCst);
+        if morsel >= self.dispatcher.data_len {
             return None;
         }
-        let morsel_len = cmp::min(self.data_len - morsel, self.morsel_len);
+        let morsel_len = cmp::min(
+            self.dispatcher.data_len - morsel,
+            self.dispatcher.morsel_len,
+        );
 
         Some(Range {
             start: morsel,
             end: morsel + morsel_len,
         })
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let offset = self.dispatcher.offset.load(Ordering::Relaxed);
+        let remaining_morsels = (self.dispatcher.data_len - offset) / self.dispatcher.morsel_len;
+
+        // Lower bound is zero, because we don't know how many morsels the
+        // calling worker will receive
+        (0, Some(remaining_morsels))
     }
 }
