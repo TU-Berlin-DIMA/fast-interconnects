@@ -8,7 +8,9 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
+mod het_morsel_executor;
 mod het_morsel_iterator;
 mod morsel_dispatcher;
 
+pub use het_morsel_executor::*;
 pub use het_morsel_iterator::*;
