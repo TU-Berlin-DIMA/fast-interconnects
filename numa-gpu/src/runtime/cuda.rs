@@ -297,8 +297,8 @@ where
 fn new_strategy_impl<'a, T: Copy + DeviceCopy + Send + Sync + 'a>(
     strategy: CudaTransferStrategy,
     chunk_len: usize,
-) -> Result<Box<CudaTransferStrategyImpl<Item = T> + 'a>> {
-    let wrapper: Box<CudaTransferStrategyImpl<Item = T>> = match strategy {
+) -> Result<Box<dyn CudaTransferStrategyImpl<Item = T> + 'a>> {
+    let wrapper: Box<dyn CudaTransferStrategyImpl<Item = T>> = match strategy {
         CudaTransferStrategy::PageableCopy => Box::new(CudaPageableCopyStrategy::new(chunk_len)?),
         CudaTransferStrategy::PinnedCopy => Box::new(CudaPinnedCopyStrategy::new(chunk_len)?),
         CudaTransferStrategy::LazyPinnedCopy => {
@@ -572,8 +572,8 @@ pub struct CudaIterator2<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> {
     // partitions: Vec<(&'a mut [R], &'a mut [S])>,
     strategy: CudaTransferStrategy,
     strategy_impls: Vec<(
-        Box<CudaTransferStrategyImpl<Item = R> + 'a>,
-        Box<CudaTransferStrategyImpl<Item = S> + 'a>,
+        Box<dyn CudaTransferStrategyImpl<Item = R> + 'a>,
+        Box<dyn CudaTransferStrategyImpl<Item = S> + 'a>,
     )>,
 }
 

@@ -74,7 +74,7 @@ impl DataPoint {
         Ok(dp)
     }
 
-    pub fn fill_from_cmd_options(&self, cmd: &CmdOpt) -> Result<DataPoint> {
+    pub(crate) fn fill_from_cmd_options(&self, cmd: &CmdOpt) -> Result<DataPoint> {
         let mut sorted_ht_location = cmd.hash_table_location.clone();
         sorted_ht_location.sort();
 

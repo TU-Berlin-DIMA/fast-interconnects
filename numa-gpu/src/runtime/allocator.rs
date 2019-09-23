@@ -81,14 +81,14 @@ impl From<DerefMemType> for MemType {
 /// The intended use-case is when a callee (such as a library) must allocate
 /// memory. In this case, the caller can pass in a generic memory allocator
 /// This allows the callee to generalize over all memory types.
-pub type MemAllocFn<T> = Box<Fn(usize) -> Mem<T>>;
+pub type MemAllocFn<T> = Box<dyn Fn(usize) -> Mem<T>>;
 
 /// Generic memory allocator for DerefMem that hides concrete memory type
 ///
 /// The intended use-case is when a callee (such as a library) must allocate
 /// memory. In this case, the caller can pass in a generic memory allocator
 /// This allows the callee to generalize over all memory types.
-pub type DerefMemAllocFn<T> = Box<Fn(usize) -> DerefMem<T>>;
+pub type DerefMemAllocFn<T> = Box<dyn Fn(usize) -> DerefMem<T>>;
 
 impl Allocator {
     /// Allocates memory of the specified type

@@ -20,7 +20,7 @@ pub fn measure(
     repeat: u32,
     out_file_name: Option<PathBuf>,
     template: DataPoint,
-    mut func: Box<FnMut() -> Result<HashJoinPoint>>,
+    mut func: Box<dyn FnMut() -> Result<HashJoinPoint>>,
 ) -> Result<()> {
     let measurements = (0..=repeat)
         .zip(std::iter::once(true).chain(std::iter::repeat(false)))

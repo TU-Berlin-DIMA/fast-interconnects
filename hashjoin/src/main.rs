@@ -224,7 +224,7 @@ struct CmdOpt {
 fn args_to_bench<T>(
     cmd: &CmdOpt,
     device: Device,
-) -> Result<(Box<FnMut() -> Result<HashJoinPoint>>, DataPoint)>
+) -> Result<(Box<dyn FnMut() -> Result<HashJoinPoint>>, DataPoint)>
 where
     T: Default
         + DeviceCopy
@@ -327,7 +327,7 @@ where
         .set_init_time(malloc_time, data_gen_time);
 
     // Create closure that wraps a hash join benchmark function
-    let hjc: Box<FnMut() -> Result<HashJoinPoint>> = match exec_method {
+    let hjc: Box<dyn FnMut() -> Result<HashJoinPoint>> = match exec_method {
         ArgExecutionMethod::Cpu => Box::new(move || {
             let ht_alloc = allocator::Allocator::deref_mem_alloc_fn::<T>(
                 ArgMemTypeHelper {
@@ -407,7 +407,7 @@ where
     Ok((hjc, dp))
 }
 
-type DataGenFn<T> = Box<FnMut(&mut [T], &mut [T]) -> Result<()>>;
+type DataGenFn<T> = Box<dyn FnMut(&mut [T], &mut [T]) -> Result<()>>;
 
 fn data_gen_fn<T>(
     description: ArgDataSet,

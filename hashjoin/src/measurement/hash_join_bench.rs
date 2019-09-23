@@ -290,7 +290,7 @@ impl HashJoinBenchBuilder {
             .iter()
             .map(|path| {
                 let file = File::open(path)?;
-                let reader: Box<Read> = if path.ends_with("gz") {
+                let reader: Box<dyn Read> = if path.ends_with("gz") {
                     Box::new(GzDecoder::new(file))
                 } else {
                     Box::new(file)
@@ -330,7 +330,7 @@ impl HashJoinBenchBuilder {
             .iter()
             .map(|path| {
                 let file = File::open(path)?;
-                let reader: Box<Read> = if path.ends_with("gz") {
+                let reader: Box<dyn Read> = if path.ends_with("gz") {
                     Box::new(GzDecoder::new(file))
                 } else {
                     Box::new(file)
