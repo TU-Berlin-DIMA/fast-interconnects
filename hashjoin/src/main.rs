@@ -238,9 +238,9 @@ where
         + DeserializeOwned,
 {
     // Convert ArgHashingScheme to HashingScheme
-    let hashing_scheme = match cmd.hashing_scheme {
-        ArgHashingScheme::Perfect => hash_join::HashingScheme::Perfect,
-        ArgHashingScheme::LinearProbing => hash_join::HashingScheme::LinearProbing,
+    let (hashing_scheme, hash_table_load_factor) = match cmd.hashing_scheme {
+        ArgHashingScheme::Perfect => (hash_join::HashingScheme::Perfect, 1),
+        ArgHashingScheme::LinearProbing => (hash_join::HashingScheme::LinearProbing, 2),
     };
 
     // Device tuning
@@ -248,7 +248,6 @@ where
     let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
     let warp_overcommit_factor = 2;
     let grid_overcommit_factor = 32;
-    let hash_table_load_factor = 2;
 
     let block_size = BlockSize::x(warp_size * warp_overcommit_factor);
     let grid_size = GridSize::x(cuda_cores * grid_overcommit_factor);
