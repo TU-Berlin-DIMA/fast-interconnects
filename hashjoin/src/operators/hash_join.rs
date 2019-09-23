@@ -223,7 +223,7 @@ pub trait CpuHashJoinable: DeviceCopy + NullKey {
 pub struct CudaHashJoin<T: DeviceCopy + NullKey> {
     ops: Module,
     hashing_scheme: HashingScheme,
-    hash_table: HashTable<T>,
+    hash_table: Arc<HashTable<T>>,
     build_dim: (GridSize, BlockSize),
     probe_dim: (GridSize, BlockSize),
 }
@@ -250,16 +250,16 @@ pub struct HashTable<T: DeviceCopy + NullKey> {
 }
 
 /// Build a `CudaHashJoin`.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct CudaHashJoinBuilder<T: DeviceCopy + NullKey> {
     hashing_scheme: HashingScheme,
-    hash_table_i: Option<HashTable<T>>,
+    hash_table_i: Option<Arc<HashTable<T>>>,
     build_dim_i: (GridSize, BlockSize),
     probe_dim_i: (GridSize, BlockSize),
 }
 
 /// Build a `CpuHashJoin`.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct CpuHashJoinBuilder<T: DeviceCopy + NullKey> {
     hashing_scheme: HashingScheme,
     hash_table_i: Option<Arc<HashTable<T>>>,
@@ -617,7 +617,7 @@ where
         self
     }
 
-    pub fn hash_table(mut self, ht: HashTable<T>) -> Self {
+    pub fn hash_table(mut self, ht: Arc<HashTable<T>>) -> Self {
         self.hash_table_i = Some(ht);
         self
     }
@@ -632,7 +632,7 @@ where
         self
     }
 
-    pub fn build(self) -> Result<CudaHashJoin<T>> {
+    pub fn build(&self) -> Result<CudaHashJoin<T>> {
         ensure!(self.hash_table_i.is_some(), "Hash table not set");
 
         let module_path = CString::new(env!("CUDAUTILS_PATH")).map_err(|e| {
@@ -646,24 +646,24 @@ where
 
         let ops = Module::load_from_file(&module_path)?;
 
-        let hash_table = if let Some(ht) = self.hash_table_i {
+        let hash_table = if let Some(ht) = self.hash_table_i.clone() {
             ht
         } else {
-            HashTable {
+            Arc::new(HashTable {
                 mem: allocator::Allocator::alloc_mem::<T>(
                     allocator::MemType::CudaUniMem,
                     Self::DEFAULT_HT_SIZE,
                 ),
                 size: Self::DEFAULT_HT_SIZE,
-            }
+            })
         };
 
         Ok(CudaHashJoin {
             ops,
             hashing_scheme: self.hashing_scheme,
             hash_table,
-            build_dim: self.build_dim_i,
-            probe_dim: self.probe_dim_i,
+            build_dim: self.build_dim_i.clone(),
+            probe_dim: self.probe_dim_i.clone(),
         })
     }
 }
@@ -865,7 +865,7 @@ mod tests {
 
                 let hj_op = CudaHashJoinBuilder::default()
                     .hashing_scheme($scheme)
-                    .hash_table(hash_table)
+                    .hash_table(Arc::new(hash_table))
                     .build_dim(GRID_SIZE.into(), BLOCK_SIZE.into())
                     .probe_dim(GRID_SIZE.into(), BLOCK_SIZE.into())
                     .build()?;

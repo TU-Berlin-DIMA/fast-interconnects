@@ -292,6 +292,7 @@ where
     let chunk_len = cmd.chunk_bytes / size_of::<T>();
     let mem_type = cmd.hash_table_mem_type;
     let threads = cmd.threads.clone();
+    let device_id = cmd.device_id;
 
     let node_ratios: Box<[NodeRatio]> = cmd
         .hash_table_location
@@ -384,7 +385,23 @@ where
                 chunk_len,
             )
         }),
-        ArgExecutionMethod::Het => unimplemented!(),
+        ArgExecutionMethod::Het => Box::new(move || {
+            let ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
+                ArgMemTypeHelper {
+                    mem_type,
+                    node_ratios: node_ratios.clone(),
+                }
+                .into(),
+            );
+            hjb.hetrogeneous_hash_join(
+                ht_alloc,
+                (0..threads as u16).into_iter().collect(),
+                vec![device_id],
+                (grid_size.clone(), block_size.clone()),
+                (grid_size.clone(), block_size.clone()),
+                chunk_len,
+            )
+        }),
     };
 
     Ok((hjc, dp))

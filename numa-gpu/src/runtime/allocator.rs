@@ -196,12 +196,11 @@ impl Allocator {
     /// Device memory cannot be dereferenced on the host. To access it, use
     /// cudaMemcpy() to copy it to the host.
     ///
-    /// Warning: Returns uninitialized memory. The reason is that CUDA allocates
-    /// the memory on the GPU that first touches the memory. This decision is
-    /// left to the user.
+    /// Warning: Returns zeroed memory. Zero may not be a valid bit-pattern for
+    /// type `T`.
     fn alloc_cuda_device<T: DeviceCopy>(len: usize) -> Mem<T> {
         unsafe {
-            Mem::CudaDevMem(DeviceBuffer::<T>::uninitialized(len).expect(&format!(
+            Mem::CudaDevMem(DeviceBuffer::<T>::zeroed(len).expect(&format!(
                 "Failed to allocate {} bytes of CUDA device memory",
                 len * size_of::<T>()
             )))

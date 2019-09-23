@@ -26,7 +26,8 @@ pub struct DataPoint {
     pub data_set: Option<String>,
     pub hostname: String,
     pub execution_method: Option<ArgExecutionMethod>,
-    pub device_codename: Option<String>,
+    #[serde(serialize_with = "serialize_vec")]
+    pub device_codename: Option<Vec<String>>,
     pub transfer_strategy: Option<ArgTransferStrategy>,
     pub chunk_bytes: Option<usize>,
     pub threads: Option<usize>,
@@ -87,12 +88,15 @@ impl DataPoint {
 
         // Get device information
         let dev_codename_str = match cmd.execution_method {
-            ArgExecutionMethod::Cpu => cpu_codename(),
+            ArgExecutionMethod::Cpu => vec![cpu_codename()],
             ArgExecutionMethod::Gpu | ArgExecutionMethod::GpuStream => {
                 let device = Device::get_device(cmd.device_id.into())?;
-                device.name()?
+                vec![device.name()?]
             }
-            ArgExecutionMethod::Het => unimplemented!(),
+            ArgExecutionMethod::Het => {
+                let device = Device::get_device(cmd.device_id.into())?;
+                vec![cpu_codename(), device.name()?]
+            }
         };
 
         let dp = DataPoint {

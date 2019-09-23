@@ -19,6 +19,7 @@ use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::cuda::{
     CudaTransferStrategy, IntoCudaIterator, IntoCudaIteratorWithStrategy,
 };
+use numa_gpu::runtime::dispatcher::{HetMorselExecutorBuilder, IntoHetMorselIterator};
 use numa_gpu::runtime::memory::*;
 use numa_gpu::runtime::numa::NodeRatio;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
@@ -432,7 +433,7 @@ where
             .hashing_scheme(self.hashing_scheme)
             .build_dim(build_dim.0.clone(), build_dim.1.clone())
             .probe_dim(probe_dim.0.clone(), probe_dim.1.clone())
-            .hash_table(hash_table)
+            .hash_table(Arc::new(hash_table))
             .build()?;
 
         let start_event = Event::new(EventFlags::DEFAULT)?;
@@ -526,7 +527,7 @@ where
             .hashing_scheme(self.hashing_scheme)
             .build_dim(build_dim.0.clone(), build_dim.1.clone())
             .probe_dim(probe_dim.0.clone(), probe_dim.1.clone())
-            .hash_table(hash_table)
+            .hash_table(Arc::new(hash_table))
             .build()?;
 
         let mut build_relation = (build_rel_key, build_rel_pay);
@@ -603,7 +604,7 @@ where
             .hashing_scheme(self.hashing_scheme)
             .build_dim(build_dim.0.clone(), build_dim.1.clone())
             .probe_dim(probe_dim.0.clone(), probe_dim.1.clone())
-            .hash_table(hash_table)
+            .hash_table(Arc::new(hash_table))
             .build()?;
 
         let mut build_relation = (build_rel_key, build_rel_pay);
@@ -712,6 +713,114 @@ where
                 });
             }
         });
+        let probe_time = probe_timer.elapsed();
+
+        Ok(HashJoinPoint {
+            build_ns: Some(build_time.as_nanos() as f64),
+            probe_ns: Some(probe_time.as_nanos() as f64),
+            hash_table_malloc_ns: Some(ht_malloc_time.as_nanos() as f64),
+            ..Default::default()
+        })
+    }
+
+    pub fn hetrogeneous_hash_join(
+        &mut self,
+        hash_table_alloc: allocator::MemAllocFn<T>,
+        cpu_ids: Vec<u16>,
+        gpu_ids: Vec<u16>,
+        build_dim: (GridSize, BlockSize),
+        probe_dim: (GridSize, BlockSize),
+        morsel_len: usize,
+    ) -> Result<HashJoinPoint> {
+        // FIXME: specify load factor as argument
+        let ht_malloc_timer = Instant::now();
+        let hash_table_mem = hash_table_alloc(self.hash_table_len);
+        let hash_table = Arc::new(hash_join::HashTable::new_on_gpu(
+            hash_table_mem,
+            self.hash_table_len,
+        )?);
+        let ht_malloc_time = ht_malloc_timer.elapsed();
+
+        // Note: CudaDevMem is initialized with zeroes by the allocator
+        let result_sums: Mem<u64> = allocator::Allocator::alloc_mem(
+            allocator::MemType::CudaDevMem,
+            (probe_dim.0.x * probe_dim.1.x) as usize,
+        );
+
+        // Convert Mem<T> into &mut [T]
+        let build_rel_key: &mut [T] = (&mut self.build_relation_key)
+            .try_into()
+            .map_err(|(err, _)| err)
+            .expect("Can't use CUDA device memory on CPU!");
+        let build_rel_pay: &mut [T] = (&mut self.build_relation_payload)
+            .try_into()
+            .map_err(|(err, _)| err)
+            .expect("Can't use CUDA device memory on CPU!");
+        let probe_rel_key: &mut [T] = (&mut self.probe_relation_key)
+            .try_into()
+            .map_err(|(err, _)| err)
+            .expect("Can't use CUDA device memory on CPU!");
+        let probe_rel_pay: &mut [T] = (&mut self.probe_relation_payload)
+            .try_into()
+            .map_err(|(err, _)| err)
+            .expect("Can't use CUDA device memory on CPU!");
+
+        let cpu_hj_builder = hash_join::CpuHashJoinBuilder::default()
+            .hashing_scheme(self.hashing_scheme)
+            .hash_table(hash_table.clone());
+
+        let gpu_hj_builder = hash_join::CudaHashJoinBuilder::<T>::default()
+            .hashing_scheme(self.hashing_scheme)
+            .build_dim(build_dim.0.clone(), build_dim.1.clone())
+            .probe_dim(probe_dim.0.clone(), probe_dim.1.clone())
+            .hash_table(hash_table.clone());
+
+        let executor = HetMorselExecutorBuilder::new()
+            .cpu_ids(cpu_ids)
+            .gpu_ids(gpu_ids)
+            .morsel_len(morsel_len)
+            .build()?;
+
+        let build_timer = Instant::now();
+        (build_rel_key, build_rel_pay)
+            .into_het_morsel_iter(&executor)
+            .fold(
+                |(rel, pay)| {
+                    let mut hj_op = cpu_hj_builder.build();
+                    hj_op.build(rel, pay).expect("Couldn't build hash table");
+                    Ok(())
+                },
+                |(rel, pay), stream| {
+                    let hj_op = gpu_hj_builder.build()?;
+                    hj_op.build(rel, pay, stream)?;
+                    Ok(())
+                },
+            )?;
+        let build_time = build_timer.elapsed();
+
+        let probe_timer = Instant::now();
+        (probe_rel_key, probe_rel_pay)
+            .into_het_morsel_iter(&executor)
+            .fold(
+                |(rel, pay)| {
+                    let mut hj_op = cpu_hj_builder.build();
+
+                    // FIXME: retrieve sums of all threads, e.g., by implementing fold instead of map
+                    let mut result_sum = 0;
+                    hj_op.probe_sum(rel, pay, &mut result_sum)?;
+
+                    Ok(())
+                },
+                |(rel, pay), stream| {
+                    let hj_op = gpu_hj_builder.build()?;
+
+                    // FIXME: retrieve sums of all threads, e.g., by implementing fold instead of map
+                    hj_op.probe_sum(rel, pay, &result_sums, stream)?;
+
+                    Ok(())
+                },
+            )?;
+
         let probe_time = probe_timer.elapsed();
 
         Ok(HashJoinPoint {
