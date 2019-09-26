@@ -21,7 +21,6 @@ use crate::operators::hash_join;
 use crate::types::*;
 
 use numa_gpu::runtime::allocator;
-use numa_gpu::runtime::hw_info::CudaDeviceInfo;
 use numa_gpu::runtime::numa::NodeRatio;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 
@@ -244,13 +243,13 @@ where
     };
 
     // Device tuning
-    let sm_cores = device.sm_cores()?;
+    let multiprocessors = device.get_attribute(DeviceAttribute::MultiprocessorCount)? as u32;
     let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
     let warp_overcommit_factor = 4;
     let grid_overcommit_factor = 2;
 
     let block_size = BlockSize::x(warp_size * warp_overcommit_factor);
-    let grid_size = GridSize::x(sm_cores * grid_overcommit_factor);
+    let grid_size = GridSize::x(multiprocessors * grid_overcommit_factor);
 
     assert_eq!(
         cmd.hash_table_location.len(),
