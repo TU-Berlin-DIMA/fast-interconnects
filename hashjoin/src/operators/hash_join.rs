@@ -750,7 +750,7 @@ mod tests {
     use std::convert::TryInto;
     use std::error::Error;
     use std::result::Result;
-    use std::sync::{Arc};
+    use std::sync::Arc;
 
     macro_rules! test_cpu_seq {
         ($name:ident, $mem_type:expr, $scheme:expr, $type:ty) => {

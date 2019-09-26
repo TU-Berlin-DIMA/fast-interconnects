@@ -229,15 +229,23 @@ impl HashJoinBenchBuilder {
     }
 
     fn get_hash_table_len(&self) -> Result<usize> {
-        let hash_table_len = self
-            .inner_len
-            .checked_next_power_of_two()
-            .and_then(|x| {
-                x.checked_mul(self.hash_table_load_factor * self.hash_table_elems_per_entry)
-            })
-            .ok_or_else(|| {
-                ErrorKind::IntegerOverflow("Failed to compute hash table length".to_string())
-            })?;
+        let hash_table_len = match self.hashing_scheme {
+            hash_join::HashingScheme::LinearProbing => self
+                .inner_len
+                .checked_next_power_of_two()
+                .and_then(|x| {
+                    x.checked_mul(self.hash_table_load_factor * self.hash_table_elems_per_entry)
+                })
+                .ok_or_else(|| {
+                    ErrorKind::IntegerOverflow("Failed to compute hash table length".to_string())
+                })?,
+            hash_join::HashingScheme::Perfect => self
+                .inner_len
+                .checked_mul(self.hash_table_elems_per_entry)
+                .ok_or_else(|| {
+                    ErrorKind::IntegerOverflow("Failed to compute hash table length".to_string())
+                })?,
+        };
 
         Ok(hash_table_len)
     }
