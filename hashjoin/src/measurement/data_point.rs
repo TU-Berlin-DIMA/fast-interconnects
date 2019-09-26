@@ -93,7 +93,7 @@ impl DataPoint {
                 let device = Device::get_device(cmd.device_id.into())?;
                 vec![device.name()?]
             }
-            ArgExecutionMethod::Het => {
+            ArgExecutionMethod::Het | ArgExecutionMethod::GpuBuildHetProbe => {
                 let device = Device::get_device(cmd.device_id.into())?;
                 vec![cpu_codename(), device.name()?]
             }

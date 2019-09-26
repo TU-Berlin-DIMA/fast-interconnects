@@ -400,6 +400,36 @@ where
                 chunk_len,
             )
         }),
+        ArgExecutionMethod::GpuBuildHetProbe => Box::new(move || {
+            // FIXME: either allocate memory on the correct numa nodes by default,
+            // or make all allocations configurable
+            let gpu_ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
+                ArgMemTypeHelper {
+                    mem_type: ArgMemType::Device,
+                    node_ratios: Box::new([NodeRatio {
+                        node: 0,
+                        ratio: Ratio::from_integer(0),
+                    }]),
+                }
+                .into(),
+            );
+            let cpu_ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
+                ArgMemTypeHelper {
+                    mem_type: ArgMemType::Numa,
+                    node_ratios: node_ratios.clone(),
+                }
+                .into(),
+            );
+            hjb.gpu_build_heterogeneous_probe(
+                cpu_ht_alloc,
+                gpu_ht_alloc,
+                (0..threads as u16).into_iter().collect(),
+                vec![device_id],
+                (grid_size.clone(), block_size.clone()),
+                (grid_size.clone(), block_size.clone()),
+                chunk_len,
+            )
+        }),
     };
 
     Ok((hjc, dp))

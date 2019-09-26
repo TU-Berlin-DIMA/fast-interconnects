@@ -9,8 +9,8 @@
  */
 
 use rustacuda::memory::{
-    DeviceBuffer, DeviceCopy, DevicePointer, DeviceSlice, LockedBuffer, UnifiedBuffer,
-    UnifiedPointer,
+    CopyDestination, DeviceBuffer, DeviceCopy, DevicePointer, DeviceSlice, LockedBuffer,
+    UnifiedBuffer, UnifiedPointer,
 };
 
 use std::convert::{TryFrom, TryInto};
@@ -112,6 +112,41 @@ impl<T: DeviceCopy> Mem<T> {
             CudaDevMem(m) => m.as_device_ptr().into(),
             CudaUniMem(m) => m.as_unified_ptr().into(),
         }
+    }
+}
+
+impl<T: Copy + DeviceCopy> Mem<T> {
+    pub fn copy_from_mem(&mut self, src: &Self) -> Result<()> {
+        assert!(
+            self.len() == src.len(),
+            "Copy destination length must be equal to source"
+        );
+
+        let mut convert_result: std::result::Result<&'_ mut [T], (Error, &'_ mut DeviceBuffer<T>)> =
+            self.try_into();
+
+        match convert_result {
+            Ok(ref mut demem) => {
+                match src.try_into() {
+                    Ok(src_slice) => demem[..].copy_from_slice(src_slice),
+                    Err((_, src_dev_mem)) => src_dev_mem.copy_to(demem)?,
+                };
+            }
+            Err((_, dst_dev_mem)) => {
+                match src.try_into() {
+                    Ok(src_slice) => {
+                        let _annotate_type: &[T] = src_slice;
+                        dst_dev_mem.copy_from(src_slice)?
+                    }
+                    Err((_, src_dev_mem)) => {
+                        let _annotate_type: &DeviceBuffer<T> = src_dev_mem;
+                        dst_dev_mem.copy_from(&src_dev_mem[..])?
+                    }
+                };
+            }
+        };
+
+        Ok(())
     }
 }
 

@@ -49,6 +49,7 @@ arg_enum! {
         Gpu,
         GpuStream,
         Het,
+        GpuBuildHetProbe,
     }
 }
 

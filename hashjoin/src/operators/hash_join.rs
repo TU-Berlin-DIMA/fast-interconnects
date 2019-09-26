@@ -529,10 +529,6 @@ impl<T: DeviceCopy + NullKey> HashTable<T> {
     /// it can also be used on GPUs.
     pub fn new_on_cpu(mut mem: DerefMem<T>, size: usize) -> Result<Self> {
         ensure!(
-            size.is_power_of_two(),
-            "Hash table size must be a power of two"
-        );
-        ensure!(
             mem.len() >= size,
             "Provided memory must be larger than hash table size"
         );
@@ -551,10 +547,6 @@ impl<T: DeviceCopy + NullKey> HashTable<T> {
     /// due to the possibility of using GPU device memory. This also holds true
     /// for NVLink 2.0 on POWER9.
     pub fn new_on_gpu(mut mem: Mem<T>, size: usize) -> Result<Self> {
-        ensure!(
-            size.is_power_of_two(),
-            "Hash table size must be a power of two"
-        );
         ensure!(
             mem.len() >= size,
             "Provided memory must be larger than hash table size"
@@ -592,6 +584,18 @@ impl<T: DeviceCopy + NullKey> HashTable<T> {
         }
 
         Ok(Self { mem, size })
+    }
+
+    /// Create a new hash table from another hash table.
+    ///
+    /// Copies the contents of the source hash table into the new hash table.
+    pub fn new_from_hash_table(mut mem: Mem<T>, src: &Self) -> Result<Self> {
+        mem.copy_from_mem(&src.mem)?;
+
+        Ok(Self {
+            mem,
+            size: src.size,
+        })
     }
 }
 
