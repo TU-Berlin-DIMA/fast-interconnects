@@ -108,12 +108,17 @@ impl DataPoint {
             } else {
                 None
             },
-            chunk_bytes: if cmd.execution_method == ArgExecutionMethod::GpuStream {
+            chunk_bytes: if cmd.execution_method == ArgExecutionMethod::GpuStream
+                || cmd.execution_method == ArgExecutionMethod::Het
+                || cmd.execution_method == ArgExecutionMethod::GpuBuildHetProbe
+            {
                 Some(cmd.chunk_bytes)
             } else {
                 None
             },
-            threads: if cmd.execution_method == ArgExecutionMethod::Cpu {
+            threads: if cmd.execution_method != ArgExecutionMethod::Cpu
+                && cmd.execution_method != ArgExecutionMethod::GpuStream
+            {
                 Some(cmd.threads)
             } else {
                 None
