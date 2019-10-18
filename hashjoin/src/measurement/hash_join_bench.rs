@@ -689,8 +689,6 @@ where
             .expect("Can't use CUDA device memory on CPU!");
         let probe_pay_chunks: Vec<_> = probe_rel_pay.chunks(probe_chunk_size).collect();
 
-        let result_sum_chunks: Vec<_> = result_sums.chunks_mut(threads).collect();
-
         let hj_builder = hash_join::CpuHashJoinBuilder::default()
             .hashing_scheme(self.hashing_scheme)
             .hash_table(Arc::new(hash_table));
@@ -708,15 +706,15 @@ where
 
         let probe_timer = Instant::now();
         thread_pool.scope(|s| {
-            for (((_tid, rel), pay), res) in (0..threads)
+            for (((_tid, rel), pay), mut res) in (0..threads)
                 .zip(probe_rel_chunks)
                 .zip(probe_pay_chunks)
-                .zip(result_sum_chunks)
+                .zip(result_sums.iter_mut())
             {
                 let mut hj_op = hj_builder.build();
                 s.spawn(move |_| {
                     hj_op
-                        .probe_sum(rel, pay, &mut res[0])
+                        .probe_sum(rel, pay, &mut res)
                         .expect("Couldn't execute hash table probe");
                 });
             }
