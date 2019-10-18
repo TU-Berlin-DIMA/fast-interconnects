@@ -116,7 +116,7 @@ impl DataPoint {
             } else {
                 None
             },
-            threads: if cmd.execution_method != ArgExecutionMethod::Cpu
+            threads: if cmd.execution_method != ArgExecutionMethod::Gpu
                 && cmd.execution_method != ArgExecutionMethod::GpuStream
             {
                 Some(cmd.threads)
