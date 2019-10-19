@@ -20,7 +20,7 @@ use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::cuda::{
     CudaTransferStrategy, IntoCudaIterator, IntoCudaIteratorWithStrategy,
 };
-use numa_gpu::runtime::dispatcher::{HetMorselExecutorBuilder, IntoHetMorselIterator};
+use numa_gpu::runtime::dispatcher::{HetMorselExecutorBuilder, IntoHetMorselIterator, MorselSpec};
 use numa_gpu::runtime::memory::*;
 use numa_gpu::runtime::numa::NodeRatio;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
@@ -486,7 +486,7 @@ where
         build_dim: (GridSize, BlockSize),
         probe_dim: (GridSize, BlockSize),
         transfer_strategy: CudaTransferStrategy,
-        chunk_len: usize,
+        gpu_morsel_bytes: usize,
     ) -> Result<HashJoinPoint> {
         let ht_malloc_timer = Instant::now();
         let mut hash_table_mem = hash_table_alloc(self.hash_table_len);
@@ -542,9 +542,9 @@ where
         let mut build_relation = (build_rel_key, build_rel_pay);
         let mut probe_relation = (probe_rel_key, probe_rel_pay);
         let mut build_iter =
-            build_relation.into_cuda_iter_with_strategy(transfer_strategy, chunk_len)?;
+            build_relation.into_cuda_iter_with_strategy(transfer_strategy, gpu_morsel_bytes)?;
         let mut probe_iter =
-            probe_relation.into_cuda_iter_with_strategy(transfer_strategy, chunk_len)?;
+            probe_relation.into_cuda_iter_with_strategy(transfer_strategy, gpu_morsel_bytes)?;
 
         let build_timer = Instant::now();
         let build_mnts = build_iter.fold(|(key, val), stream| hj_op.build(key, val, stream))?;
@@ -575,7 +575,7 @@ where
         hash_table_alloc: allocator::MemAllocFn<T>,
         build_dim: (GridSize, BlockSize),
         probe_dim: (GridSize, BlockSize),
-        chunk_len: usize,
+        gpu_morsel_bytes: usize,
     ) -> Result<HashJoinPoint> {
         let ht_malloc_timer = Instant::now();
         let hash_table_mem = hash_table_alloc(self.hash_table_len);
@@ -621,13 +621,13 @@ where
 
         let build_timer = Instant::now();
         let build_mnts = build_relation
-            .into_cuda_iter(chunk_len)?
+            .into_cuda_iter(gpu_morsel_bytes)?
             .fold(|(key, val), stream| hj_op.build(key, val, stream))?;
         let build_time = build_timer.elapsed();
 
         let probe_timer = Instant::now();
         let probe_mnts = probe_relation
-            .into_cuda_iter(chunk_len)?
+            .into_cuda_iter(gpu_morsel_bytes)?
             .fold(|(key, val), stream| hj_op.probe_sum(key, val, &result_sums, stream))?;
         let probe_time = probe_timer.elapsed();
 
@@ -746,7 +746,7 @@ where
         gpu_ids: Vec<u16>,
         build_dim: (GridSize, BlockSize),
         probe_dim: (GridSize, BlockSize),
-        morsel_len: usize,
+        morsel_spec: &MorselSpec,
     ) -> Result<HashJoinPoint> {
         // FIXME: specify load factor as argument
         let ht_malloc_timer = Instant::now();
@@ -795,7 +795,7 @@ where
             .cpu_threads(cpu_threads)
             .cpu_affinity(cpu_affinity.clone())
             .gpu_ids(gpu_ids)
-            .morsel_len(morsel_len)
+            .morsel_spec(morsel_spec.clone())
             .build()?;
 
         let build_timer = Instant::now();
@@ -858,7 +858,7 @@ where
         gpu_ids: Vec<u16>,
         build_dim: (GridSize, BlockSize),
         probe_dim: (GridSize, BlockSize),
-        morsel_len: usize,
+        morsel_spec: &MorselSpec,
     ) -> Result<HashJoinPoint> {
         let ht_malloc_timer = Instant::now();
 
@@ -898,7 +898,7 @@ where
             .cpu_threads(cpu_threads)
             .cpu_affinity(cpu_affinity.clone())
             .gpu_ids(gpu_ids)
-            .morsel_len(morsel_len)
+            .morsel_spec(morsel_spec.clone())
             .build()?;
 
         let build_timer = Instant::now();

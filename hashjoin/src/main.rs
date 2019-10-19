@@ -22,6 +22,7 @@ use crate::types::*;
 
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
+use numa_gpu::runtime::dispatcher::MorselSpec;
 use numa_gpu::runtime::numa::{self, NodeRatio};
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 
@@ -209,9 +210,11 @@ struct CmdOpt {
     )]
     transfer_strategy: ArgTransferStrategy,
 
-    /// Execute stream and transfer with chunk size (bytes)
-    #[structopt(long = "chunk-bytes", default_value = "1")]
-    chunk_bytes: usize,
+    #[structopt(long = "cpu-morsel-bytes", default_value = "16384")]
+    cpu_morsel_bytes: usize,
+
+    #[structopt(long = "gpu-morsel-bytes", default_value = "33554432")]
+    gpu_morsel_bytes: usize,
 
     #[structopt(short = "i", long = "device-id", default_value = "0")]
     /// Execute on GPU (See CUDA device list)
@@ -292,10 +295,14 @@ where
     // Select the operator to run, depending on the device type
     let exec_method = cmd.execution_method.clone();
     let transfer_strategy = cmd.transfer_strategy.clone();
-    let chunk_len = cmd.chunk_bytes / size_of::<T>();
     let mem_type = cmd.hash_table_mem_type;
     let threads = cmd.threads.clone();
     let device_id = cmd.device_id;
+
+    let morsel_spec = MorselSpec {
+        cpu_morsel_bytes: cmd.cpu_morsel_bytes,
+        gpu_morsel_bytes: cmd.gpu_morsel_bytes,
+    };
 
     let node_ratios: Box<[NodeRatio]> = cmd
         .hash_table_location
@@ -374,7 +381,7 @@ where
                     ht_alloc,
                     (grid_size.clone(), block_size.clone()),
                     (grid_size.clone(), block_size.clone()),
-                    chunk_len,
+                    morsel_spec.gpu_morsel_bytes,
                 )
             })
         }
@@ -391,7 +398,7 @@ where
                 (grid_size.clone(), block_size.clone()),
                 (grid_size.clone(), block_size.clone()),
                 transfer_strategy.into(),
-                chunk_len,
+                morsel_spec.gpu_morsel_bytes,
             )
         }),
         ArgExecutionMethod::Het => Box::new(move || {
@@ -409,7 +416,7 @@ where
                 vec![device_id],
                 (grid_size.clone(), block_size.clone()),
                 (grid_size.clone(), block_size.clone()),
-                chunk_len,
+                &morsel_spec,
             )
         }),
         ArgExecutionMethod::GpuBuildHetProbe => Box::new(move || {
@@ -447,7 +454,7 @@ where
                 vec![device_id],
                 (grid_size.clone(), block_size.clone()),
                 (grid_size.clone(), block_size.clone()),
-                chunk_len,
+                &morsel_spec,
             )
         }),
     };

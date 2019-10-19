@@ -29,7 +29,8 @@ pub struct DataPoint {
     #[serde(serialize_with = "serialize_vec")]
     pub device_codename: Option<Vec<String>>,
     pub transfer_strategy: Option<ArgTransferStrategy>,
-    pub chunk_bytes: Option<usize>,
+    pub cpu_morsel_bytes: Option<usize>,
+    pub gpu_morsel_bytes: Option<usize>,
     pub threads: Option<usize>,
     pub hashing_scheme: Option<ArgHashingScheme>,
     pub hash_table_memory_type: Option<ArgMemType>,
@@ -108,11 +109,18 @@ impl DataPoint {
             } else {
                 None
             },
-            chunk_bytes: if cmd.execution_method == ArgExecutionMethod::GpuStream
+            cpu_morsel_bytes: if cmd.execution_method == ArgExecutionMethod::Het
+                || cmd.execution_method == ArgExecutionMethod::GpuBuildHetProbe
+            {
+                Some(cmd.cpu_morsel_bytes)
+            } else {
+                None
+            },
+            gpu_morsel_bytes: if cmd.execution_method == ArgExecutionMethod::GpuStream
                 || cmd.execution_method == ArgExecutionMethod::Het
                 || cmd.execution_method == ArgExecutionMethod::GpuBuildHetProbe
             {
-                Some(cmd.chunk_bytes)
+                Some(cmd.gpu_morsel_bytes)
             } else {
                 None
             },

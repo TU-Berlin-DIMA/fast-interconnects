@@ -32,6 +32,7 @@ use rustacuda::stream::{Stream, StreamFlags};
 use std::cmp::min;
 use std::collections::LinkedList;
 use std::default::Default;
+use std::mem::size_of;
 use std::thread::Result as ThreadResult;
 use std::time::Instant;
 
@@ -227,7 +228,7 @@ where
     fn into_cuda_iter_with_strategy(
         &'i mut self,
         strategy: CudaTransferStrategy,
-        chunk_len: usize,
+        gpu_morsel_bytes: usize,
     ) -> Result<CudaIterator2<'i, R, S>> {
         assert_eq!(self.0.len(), self.1.len());
 
@@ -237,6 +238,8 @@ where
         let streams = std::iter::repeat_with(|| Stream::new(StreamFlags::NON_BLOCKING, None))
             .take(3)
             .collect::<CudaResult<Vec<Stream>>>()?;
+
+        let chunk_len = gpu_morsel_bytes / (size_of::<R>() + size_of::<S>());
 
         let strategy_impls = (0..num_partitions)
             .map(|_| {
@@ -277,8 +280,13 @@ where
 {
     type Iter = CudaUnifiedIterator2<'i, R, S>;
 
-    fn into_cuda_iter(&'i mut self, chunk_len: usize) -> Result<CudaUnifiedIterator2<'i, R, S>> {
+    fn into_cuda_iter(
+        &'i mut self,
+        gpu_morsel_bytes: usize,
+    ) -> Result<CudaUnifiedIterator2<'i, R, S>> {
         assert_eq!(self.0.len(), self.1.len());
+
+        let chunk_len = gpu_morsel_bytes / (size_of::<R>() + size_of::<S>());
 
         let streams = std::iter::repeat_with(|| Stream::new(StreamFlags::NON_BLOCKING, None))
             .take(2)

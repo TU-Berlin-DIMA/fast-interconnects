@@ -14,8 +14,14 @@ use rayon::{ThreadPool, ThreadPoolBuilder};
 use rustacuda::context::CurrentContext;
 use std::sync::Arc;
 
+#[derive(Clone)]
+pub struct MorselSpec {
+    pub cpu_morsel_bytes: usize,
+    pub gpu_morsel_bytes: usize,
+}
+
 pub struct HetMorselExecutor {
-    pub(super) morsel_len: usize,
+    pub(super) morsel_spec: MorselSpec,
     pub(super) cpu_workers: usize,
     pub(super) gpu_workers: usize,
     pub(super) cpu_thread_pool: ThreadPool,
@@ -23,7 +29,7 @@ pub struct HetMorselExecutor {
 }
 
 pub struct HetMorselExecutorBuilder {
-    morsel_len: usize,
+    morsel_spec: MorselSpec,
     cpu_threads: usize,
     cpu_affinity: Arc<CpuAffinity>,
     gpu_ids: Vec<u16>,
@@ -31,18 +37,22 @@ pub struct HetMorselExecutorBuilder {
 
 impl HetMorselExecutorBuilder {
     pub fn new() -> Self {
-        let morsel_len = 10_000;
+        let cpu_morsel_bytes = 16_384;
+        let gpu_morsel_bytes = 33_554_432;
 
         Self {
-            morsel_len,
+            morsel_spec: MorselSpec {
+                cpu_morsel_bytes,
+                gpu_morsel_bytes,
+            },
             cpu_threads: 1,
             cpu_affinity: Arc::new(CpuAffinity::default()),
             gpu_ids: Vec::new(),
         }
     }
 
-    pub fn morsel_len(mut self, morsel_len: usize) -> Self {
-        self.morsel_len = morsel_len;
+    pub fn morsel_spec(mut self, morsel_spec: MorselSpec) -> Self {
+        self.morsel_spec = morsel_spec;
         self
     }
 
@@ -89,7 +99,7 @@ impl HetMorselExecutorBuilder {
             .build()?;
 
         Ok(HetMorselExecutor {
-            morsel_len: self.morsel_len,
+            morsel_spec: self.morsel_spec,
             cpu_workers,
             gpu_workers,
             cpu_thread_pool,

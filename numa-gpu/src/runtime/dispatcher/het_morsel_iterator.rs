@@ -15,6 +15,7 @@ use crate::runtime::memory::LaunchableMem;
 use crate::runtime::memory::LaunchableSlice;
 use rustacuda::memory::DeviceCopy;
 use rustacuda::stream::{Stream, StreamFlags};
+use std::mem::size_of;
 use std::sync::Arc;
 
 pub trait IntoHetMorselIterator<'a> {
@@ -59,7 +60,11 @@ impl<'a, R, S> HetMorselIterator2<'a, R, S> {
         CpuF: Fn((&[R], &[S])) -> Result<()> + Send + Sync,
         GpuF: Fn((LaunchableSlice<R>, LaunchableSlice<S>), &Stream) -> Result<()> + Send + Sync,
     {
-        let dispatcher = MorselDispatcher::new(self.data.0.len(), self.executor.morsel_len);
+        let cpu_morsel_len =
+            self.executor.morsel_spec.cpu_morsel_bytes / (size_of::<R>() + size_of::<S>());
+        let gpu_morsel_len =
+            self.executor.morsel_spec.gpu_morsel_bytes / (size_of::<R>() + size_of::<S>());
+        let dispatcher = MorselDispatcher::new(self.data.0.len(), cpu_morsel_len, gpu_morsel_len);
         let dispatcher_ref = &dispatcher;
         let executor = &self.executor;
 
@@ -100,7 +105,7 @@ impl<'a, R, S> HetMorselIterator2<'a, R, S> {
     where
         F: Fn((&[R], &[S])) -> Result<()>,
     {
-        for morsel in dispatcher.iter() {
+        for morsel in dispatcher.cpu_iter() {
             f((&data.0[morsel.clone()], &data.1[morsel.clone()]))?;
         }
 
@@ -113,7 +118,7 @@ impl<'a, R, S> HetMorselIterator2<'a, R, S> {
     {
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
 
-        for morsel in dispatcher.iter() {
+        for morsel in dispatcher.gpu_iter() {
             f(
                 (
                     data.0[morsel.clone()].as_launchable_slice(),

@@ -16,27 +16,40 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub(super) struct MorselDispatcher {
     offset: AtomicUsize,
     data_len: usize,
-    morsel_len: usize,
+    cpu_morsel_len: usize,
+    gpu_morsel_len: usize,
 }
 
 impl MorselDispatcher {
-    pub(super) fn new(data_len: usize, morsel_len: usize) -> Self {
+    pub(super) fn new(data_len: usize, cpu_morsel_len: usize, gpu_morsel_len: usize) -> Self {
         let offset = AtomicUsize::new(0);
 
         Self {
             offset,
             data_len,
-            morsel_len,
+            cpu_morsel_len,
+            gpu_morsel_len,
         }
     }
 
-    pub(super) fn iter(&self) -> MorselDispatcherIter<'_> {
-        MorselDispatcherIter { dispatcher: &self }
+    pub(super) fn cpu_iter(&self) -> MorselDispatcherIter<'_> {
+        MorselDispatcherIter {
+            dispatcher: &self,
+            morsel_len: self.cpu_morsel_len,
+        }
+    }
+
+    pub(super) fn gpu_iter(&self) -> MorselDispatcherIter<'_> {
+        MorselDispatcherIter {
+            dispatcher: &self,
+            morsel_len: self.gpu_morsel_len,
+        }
     }
 }
 
 pub(super) struct MorselDispatcherIter<'a> {
     dispatcher: &'a MorselDispatcher,
+    morsel_len: usize,
 }
 
 impl<'a> Iterator for MorselDispatcherIter<'a> {
@@ -47,14 +60,11 @@ impl<'a> Iterator for MorselDispatcherIter<'a> {
         let morsel = self
             .dispatcher
             .offset
-            .fetch_add(self.dispatcher.morsel_len, Ordering::SeqCst);
+            .fetch_add(self.morsel_len, Ordering::SeqCst);
         if morsel >= self.dispatcher.data_len {
             return None;
         }
-        let morsel_len = cmp::min(
-            self.dispatcher.data_len - morsel,
-            self.dispatcher.morsel_len,
-        );
+        let morsel_len = cmp::min(self.dispatcher.data_len - morsel, self.morsel_len);
 
         Some(Range {
             start: morsel,
@@ -65,7 +75,7 @@ impl<'a> Iterator for MorselDispatcherIter<'a> {
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         let offset = self.dispatcher.offset.load(Ordering::Relaxed);
-        let remaining_morsels = (self.dispatcher.data_len - offset) / self.dispatcher.morsel_len;
+        let remaining_morsels = (self.dispatcher.data_len - offset) / self.morsel_len;
 
         // Lower bound is zero, because we don't know how many morsels the
         // calling worker will receive
