@@ -9,6 +9,7 @@
  */
 
 pub mod allocator;
+pub mod cpu_affinity;
 pub mod cuda;
 pub mod cuda_wrapper;
 pub mod dispatcher;

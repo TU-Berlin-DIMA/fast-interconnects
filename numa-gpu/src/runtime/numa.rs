@@ -39,8 +39,8 @@ mod bindings {
 
 /// Re-export Linux's NUMA bindings
 pub use super::linux_wrapper::{
-    numa_run_on_node as run_on_node, numa_set_strict as set_strict,
-    numa_tonode_memory as tonode_memory,
+    numa_node_of_cpu as node_of_cpu, numa_run_on_node as run_on_node,
+    numa_set_strict as set_strict, numa_tonode_memory as tonode_memory,
 };
 
 /// A contiguous memory region that is dynamically allocated on the specified

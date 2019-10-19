@@ -12,7 +12,7 @@ use crate::error::{Error, ErrorKind, Result};
 use bitflags::bitflags;
 use std::io;
 use std::io::Error as IoError;
-use std::mem::size_of;
+use std::mem::{size_of, size_of_val};
 use std::os::raw::{c_int, c_long, c_uint, c_ulong, c_void};
 
 mod bindings {
@@ -31,6 +31,7 @@ mod bindings {
         pub fn numa_run_on_node(node: c_int) -> c_int;
         pub fn numa_set_strict(strict: c_int);
         pub fn numa_tonode_memory(start: *mut c_void, size: usize, node: c_int);
+        pub fn numa_node_of_cpu(cpu: i32) -> i32;
     }
 }
 
@@ -146,9 +147,14 @@ impl CpuSet {
         (*entry & (1 << pos)) != 0
     }
 
-    /// Returns the number of IDs in the set
+    /// Returns the number of IDs in the set.
     pub fn count(&self) -> usize {
         self.mask.iter().map(|e| e.count_ones() as usize).sum()
+    }
+
+    /// Returns the size of the set in bytes.
+    pub fn bytes(&self) -> usize {
+        size_of_val(&self.mask)
     }
 
     /// Reset the set to zero.
@@ -181,6 +187,11 @@ impl CpuSet {
     /// Get the set as a slice.
     pub fn as_slice(&self) -> &[u64] {
         &self.mask
+    }
+
+    /// Get the set as a mutable slice.
+    pub fn as_mut_slice(&mut self) -> &mut [u64] {
+        &mut self.mask
     }
 }
 
@@ -333,4 +344,17 @@ pub fn numa_tonode_memory<T>(mem: &[T], node: u16) {
             node.into(),
         )
     };
+}
+
+/// Find the NUMA node that the CPU core belongs to.
+pub fn numa_node_of_cpu(cpu_id: u16) -> Result<u16> {
+    let ret = unsafe { bindings::numa_node_of_cpu(cpu_id as i32) };
+    if ret == -1 {
+        Err(Error::with_chain(
+            io::Error::last_os_error(),
+            "Couldn't find NUMA node of the given CPU ID",
+        ))
+    } else {
+        Ok(ret as u16)
+    }
 }

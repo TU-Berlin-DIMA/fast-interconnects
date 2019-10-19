@@ -21,7 +21,8 @@ use crate::operators::hash_join;
 use crate::types::*;
 
 use numa_gpu::runtime::allocator;
-use numa_gpu::runtime::numa::NodeRatio;
+use numa_gpu::runtime::cpu_affinity::CpuAffinity;
+use numa_gpu::runtime::numa::{self, NodeRatio};
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 
 use num_rational::Ratio;
@@ -218,6 +219,10 @@ struct CmdOpt {
 
     #[structopt(short = "t", long = "threads", default_value = "1")]
     threads: usize,
+
+    /// Path to CPU affinity map file
+    #[structopt(long = "cpu-affinity", parse(from_os_str))]
+    cpu_affinity: Option<PathBuf>,
 }
 
 fn args_to_bench<T>(
@@ -324,6 +329,12 @@ where
         .fill_from_hash_join_bench(&hjb)
         .set_init_time(malloc_time, data_gen_time);
 
+    let cpu_affinity = if let Some(ref cpu_affinity_file) = cmd.cpu_affinity {
+        CpuAffinity::from_file(cpu_affinity_file.as_path())?
+    } else {
+        CpuAffinity::default()
+    };
+
     // Create closure that wraps a hash join benchmark function
     let hjc: Box<dyn FnMut() -> Result<HashJoinPoint>> = match exec_method {
         ArgExecutionMethod::Cpu => Box::new(move || {
@@ -334,7 +345,7 @@ where
                 }
                 .into(),
             );
-            hjb.cpu_hash_join(threads, ht_alloc)
+            hjb.cpu_hash_join(threads, &cpu_affinity, ht_alloc)
         }),
         ArgExecutionMethod::Gpu => Box::new(move || {
             let ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
@@ -393,7 +404,8 @@ where
             );
             hjb.hetrogeneous_hash_join(
                 ht_alloc,
-                (0..threads as u16).into_iter().collect(),
+                threads,
+                &cpu_affinity,
                 vec![device_id],
                 (grid_size.clone(), block_size.clone()),
                 (grid_size.clone(), block_size.clone()),
@@ -401,29 +413,37 @@ where
             )
         }),
         ArgExecutionMethod::GpuBuildHetProbe => Box::new(move || {
-            // FIXME: either allocate memory on the correct numa nodes by default,
-            // or make all allocations configurable
-            let gpu_ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
+            // Allocate CPU memory on NUMA node of thread 0
+            let cpu_node = numa::node_of_cpu(
+                cpu_affinity
+                    .thread_to_cpu(0)
+                    .expect("Couldn't map thread to a core"),
+            )?;
+            let cpu_ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
                 ArgMemTypeHelper {
-                    mem_type: ArgMemType::Device,
+                    mem_type: ArgMemType::Numa,
                     node_ratios: Box::new([NodeRatio {
-                        node: 0,
+                        node: cpu_node,
                         ratio: Ratio::from_integer(0),
                     }]),
                 }
                 .into(),
             );
-            let cpu_ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
+
+            // Allocate GPU memory as specified on the commandline
+            let gpu_ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
                 ArgMemTypeHelper {
-                    mem_type: ArgMemType::Numa,
+                    mem_type,
                     node_ratios: node_ratios.clone(),
                 }
                 .into(),
             );
+
             hjb.gpu_build_heterogeneous_probe(
                 cpu_ht_alloc,
                 gpu_ht_alloc,
-                (0..threads as u16).into_iter().collect(),
+                threads,
+                &cpu_affinity,
                 vec![device_id],
                 (grid_size.clone(), block_size.clone()),
                 (grid_size.clone(), block_size.clone()),

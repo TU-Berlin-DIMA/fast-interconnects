@@ -16,6 +16,7 @@ use csv::{ByteRecord, ReaderBuilder};
 use flate2::read::GzDecoder;
 use num_rational::Ratio;
 use numa_gpu::runtime::allocator;
+use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::cuda::{
     CudaTransferStrategy, IntoCudaIterator, IntoCudaIteratorWithStrategy,
 };
@@ -648,6 +649,7 @@ where
     pub fn cpu_hash_join(
         &self,
         threads: usize,
+        cpu_affinity: &CpuAffinity,
         hash_table_alloc: allocator::DerefMemAllocFn<T>,
     ) -> Result<HashJoinPoint> {
         let ht_malloc_timer = Instant::now();
@@ -658,8 +660,15 @@ where
 
         let mut result_sums = vec![0; threads];
 
+        let boxed_cpu_affinity = Arc::new(cpu_affinity.clone());
         let thread_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
+            .start_handler(move |tid| {
+                boxed_cpu_affinity
+                    .clone()
+                    .set_affinity(tid as u16)
+                    .expect("Couldn't set CPU core affinity")
+            })
             .build()
             .map_err(|_| ErrorKind::RuntimeError("Failed to create thread pool".to_string()))?;
         let build_chunk_size = (self.build_relation_key.len() + threads - 1) / threads;
@@ -732,7 +741,8 @@ where
     pub fn hetrogeneous_hash_join(
         &mut self,
         hash_table_alloc: allocator::MemAllocFn<T>,
-        cpu_ids: Vec<u16>,
+        cpu_threads: usize,
+        cpu_affinity: &CpuAffinity,
         gpu_ids: Vec<u16>,
         build_dim: (GridSize, BlockSize),
         probe_dim: (GridSize, BlockSize),
@@ -782,7 +792,8 @@ where
             .hash_table(hash_table.clone());
 
         let executor = HetMorselExecutorBuilder::new()
-            .cpu_ids(cpu_ids)
+            .cpu_threads(cpu_threads)
+            .cpu_affinity(cpu_affinity.clone())
             .gpu_ids(gpu_ids)
             .morsel_len(morsel_len)
             .build()?;
@@ -842,7 +853,8 @@ where
         &mut self,
         cpu_hash_table_alloc: allocator::MemAllocFn<T>,
         gpu_hash_table_alloc: allocator::MemAllocFn<T>,
-        cpu_ids: Vec<u16>,
+        cpu_threads: usize,
+        cpu_affinity: &CpuAffinity,
         gpu_ids: Vec<u16>,
         build_dim: (GridSize, BlockSize),
         probe_dim: (GridSize, BlockSize),
@@ -883,7 +895,8 @@ where
             .hash_table(gpu_hash_table.clone());
 
         let executor = HetMorselExecutorBuilder::new()
-            .cpu_ids(cpu_ids)
+            .cpu_threads(cpu_threads)
+            .cpu_affinity(cpu_affinity.clone())
             .gpu_ids(gpu_ids)
             .morsel_len(morsel_len)
             .build()?;
