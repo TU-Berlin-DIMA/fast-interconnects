@@ -20,6 +20,12 @@ pub struct MorselSpec {
     pub gpu_morsel_bytes: usize,
 }
 
+#[derive(Clone)]
+pub struct WorkerCpuAffinity {
+    pub cpu_workers: CpuAffinity,
+    pub gpu_workers: CpuAffinity,
+}
+
 pub struct HetMorselExecutor {
     pub(super) morsel_spec: MorselSpec,
     pub(super) cpu_workers: usize,
@@ -31,7 +37,8 @@ pub struct HetMorselExecutor {
 pub struct HetMorselExecutorBuilder {
     morsel_spec: MorselSpec,
     cpu_threads: usize,
-    cpu_affinity: Arc<CpuAffinity>,
+    cpu_worker_affinity: Arc<CpuAffinity>,
+    gpu_worker_affinity: Arc<CpuAffinity>,
     gpu_ids: Vec<u16>,
 }
 
@@ -46,7 +53,8 @@ impl HetMorselExecutorBuilder {
                 gpu_morsel_bytes,
             },
             cpu_threads: 1,
-            cpu_affinity: Arc::new(CpuAffinity::default()),
+            cpu_worker_affinity: Arc::new(CpuAffinity::default()),
+            gpu_worker_affinity: Arc::new(CpuAffinity::default()),
             gpu_ids: Vec::new(),
         }
     }
@@ -61,8 +69,9 @@ impl HetMorselExecutorBuilder {
         self
     }
 
-    pub fn cpu_affinity(mut self, cpu_affinity: CpuAffinity) -> Self {
-        self.cpu_affinity = Arc::new(cpu_affinity);
+    pub fn worker_cpu_affinity(mut self, WorkerCpuAffinity{cpu_workers, gpu_workers}: WorkerCpuAffinity) -> Self {
+        self.cpu_worker_affinity = Arc::new(cpu_workers);
+        self.gpu_worker_affinity = Arc::new(gpu_workers);
         self
     }
 
@@ -74,7 +83,8 @@ impl HetMorselExecutorBuilder {
     pub fn build(self) -> Result<HetMorselExecutor> {
         let cpu_workers = self.cpu_threads;
         let gpu_workers = self.gpu_ids.len();
-        let cpu_affinity = self.cpu_affinity.clone();
+        let cpu_affinity = self.cpu_worker_affinity.clone();
+        let gpu_affinity = self.gpu_worker_affinity.clone();
 
         let unowned_context = CurrentContext::get_current()?;
 
@@ -90,11 +100,14 @@ impl HetMorselExecutorBuilder {
 
         let gpu_thread_pool = ThreadPoolBuilder::new()
             .num_threads(gpu_workers)
-            .start_handler(move |_thread_index| {
+            .start_handler(move |tid| {
                 CurrentContext::set_current(&unowned_context)
                     .expect("Failed to set CUDA context in GPU worker thread");
 
-                // FIXME: set CPU affinity using nvmlDeviceGetCpuAffinity
+                gpu_affinity
+                    .clone()
+                    .set_affinity(tid as u16)
+                    .expect("Couldn't set CPU core affinity");
             })
             .build()?;
 

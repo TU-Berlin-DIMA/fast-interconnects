@@ -22,7 +22,7 @@ use crate::types::*;
 
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
-use numa_gpu::runtime::dispatcher::MorselSpec;
+use numa_gpu::runtime::dispatcher::{MorselSpec, WorkerCpuAffinity};
 use numa_gpu::runtime::numa::{self, NodeRatio};
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 
@@ -223,9 +223,13 @@ struct CmdOpt {
     #[structopt(short = "t", long = "threads", default_value = "1")]
     threads: usize,
 
-    /// Path to CPU affinity map file
+    /// Path to CPU affinity map file for CPU workers
     #[structopt(long = "cpu-affinity", parse(from_os_str))]
     cpu_affinity: Option<PathBuf>,
+
+    /// Path to CPU affinity map file for GPU workers
+    #[structopt(long = "gpu-affinity", parse(from_os_str))]
+    gpu_affinity: Option<PathBuf>,
 }
 
 fn args_to_bench<T>(
@@ -336,10 +340,18 @@ where
         .fill_from_hash_join_bench(&hjb)
         .set_init_time(malloc_time, data_gen_time);
 
-    let cpu_affinity = if let Some(ref cpu_affinity_file) = cmd.cpu_affinity {
-        CpuAffinity::from_file(cpu_affinity_file.as_path())?
-    } else {
-        CpuAffinity::default()
+    let worker_cpu_affinity = {
+        let cpu_workers = if let Some(ref cpu_affinity_file) = cmd.cpu_affinity {
+            CpuAffinity::from_file(cpu_affinity_file.as_path())?
+        } else {
+            CpuAffinity::default()
+        };
+        let gpu_workers = if let Some(ref gpu_affinity_file) = cmd.gpu_affinity {
+            CpuAffinity::from_file(gpu_affinity_file.as_path())?
+        } else {
+            CpuAffinity::default()
+        };
+        WorkerCpuAffinity{cpu_workers, gpu_workers}
     };
 
     // Create closure that wraps a hash join benchmark function
@@ -352,7 +364,7 @@ where
                 }
                 .into(),
             );
-            hjb.cpu_hash_join(threads, &cpu_affinity, ht_alloc)
+            hjb.cpu_hash_join(threads, &worker_cpu_affinity.cpu_workers, ht_alloc)
         }),
         ArgExecutionMethod::Gpu => Box::new(move || {
             let ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
@@ -412,7 +424,7 @@ where
             hjb.hetrogeneous_hash_join(
                 ht_alloc,
                 threads,
-                &cpu_affinity,
+                &worker_cpu_affinity,
                 vec![device_id],
                 (grid_size.clone(), block_size.clone()),
                 (grid_size.clone(), block_size.clone()),
@@ -422,7 +434,7 @@ where
         ArgExecutionMethod::GpuBuildHetProbe => Box::new(move || {
             // Allocate CPU memory on NUMA node of thread 0
             let cpu_node = numa::node_of_cpu(
-                cpu_affinity
+                worker_cpu_affinity.cpu_workers
                     .thread_to_cpu(0)
                     .expect("Couldn't map thread to a core"),
             )?;
@@ -450,7 +462,7 @@ where
                 cpu_ht_alloc,
                 gpu_ht_alloc,
                 threads,
-                &cpu_affinity,
+                &worker_cpu_affinity,
                 vec![device_id],
                 (grid_size.clone(), block_size.clone()),
                 (grid_size.clone(), block_size.clone()),

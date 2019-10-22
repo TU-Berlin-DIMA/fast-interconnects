@@ -20,7 +20,7 @@ use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::cuda::{
     CudaTransferStrategy, IntoCudaIterator, IntoCudaIteratorWithStrategy,
 };
-use numa_gpu::runtime::dispatcher::{HetMorselExecutorBuilder, IntoHetMorselIterator, MorselSpec};
+use numa_gpu::runtime::dispatcher::{HetMorselExecutorBuilder, IntoHetMorselIterator, MorselSpec, WorkerCpuAffinity};
 use numa_gpu::runtime::memory::*;
 use numa_gpu::runtime::numa::NodeRatio;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
@@ -742,7 +742,7 @@ where
         &mut self,
         hash_table_alloc: allocator::MemAllocFn<T>,
         cpu_threads: usize,
-        cpu_affinity: &CpuAffinity,
+        worker_cpu_affinity: &WorkerCpuAffinity,
         gpu_ids: Vec<u16>,
         build_dim: (GridSize, BlockSize),
         probe_dim: (GridSize, BlockSize),
@@ -793,7 +793,7 @@ where
 
         let executor = HetMorselExecutorBuilder::new()
             .cpu_threads(cpu_threads)
-            .cpu_affinity(cpu_affinity.clone())
+            .worker_cpu_affinity(worker_cpu_affinity.clone())
             .gpu_ids(gpu_ids)
             .morsel_spec(morsel_spec.clone())
             .build()?;
@@ -854,7 +854,7 @@ where
         cpu_hash_table_alloc: allocator::MemAllocFn<T>,
         gpu_hash_table_alloc: allocator::MemAllocFn<T>,
         cpu_threads: usize,
-        cpu_affinity: &CpuAffinity,
+        worker_cpu_affinity: &WorkerCpuAffinity,
         gpu_ids: Vec<u16>,
         build_dim: (GridSize, BlockSize),
         probe_dim: (GridSize, BlockSize),
@@ -896,7 +896,7 @@ where
 
         let executor = HetMorselExecutorBuilder::new()
             .cpu_threads(cpu_threads)
-            .cpu_affinity(cpu_affinity.clone())
+            .worker_cpu_affinity(worker_cpu_affinity.clone())
             .gpu_ids(gpu_ids)
             .morsel_spec(morsel_spec.clone())
             .build()?;
