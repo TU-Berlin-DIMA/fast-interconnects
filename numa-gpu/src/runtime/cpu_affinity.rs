@@ -98,6 +98,16 @@ impl CpuAffinity {
     pub fn len(&self) -> usize {
         self.affinity_list.len()
     }
+
+    /// Returns the CPU core ID that the calling thread is currently running on.
+    pub fn get_cpu() -> Result<u16> {
+        unsafe {
+            match libc::sched_getcpu() {
+                -1 => Err(ErrorKind::Io(IoError::last_os_error()))?,
+                cpu_id => Ok(cpu_id as u16),
+            }
+        }
+    }
 }
 
 impl Default for CpuAffinity {
