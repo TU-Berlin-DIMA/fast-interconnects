@@ -8,4 +8,4 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-pub mod hash_join;
+pub mod no_partitioning_join;

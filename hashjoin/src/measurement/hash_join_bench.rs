@@ -9,7 +9,7 @@
  */
 
 use crate::error::{ErrorKind, Result};
-use crate::operators::hash_join;
+use crate::operators::no_partitioning_join;
 use crate::types::*;
 use crate::DataGenFn;
 use csv::{ByteRecord, ReaderBuilder};
@@ -37,7 +37,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub struct HashJoinBench<T: DeviceCopy> {
-    pub hashing_scheme: hash_join::HashingScheme,
+    pub hashing_scheme: no_partitioning_join::HashingScheme,
     pub hash_table_len: usize,
     pub build_relation_key: Mem<T>,
     pub build_relation_payload: Mem<T>,
@@ -54,7 +54,7 @@ pub struct HashJoinBenchBuilder {
     outer_location: Box<[NodeRatio]>,
     inner_mem_type: ArgMemType,
     outer_mem_type: ArgMemType,
-    hashing_scheme: hash_join::HashingScheme,
+    hashing_scheme: no_partitioning_join::HashingScheme,
 }
 
 #[derive(Debug, Default)]
@@ -89,7 +89,7 @@ impl Default for HashJoinBenchBuilder {
             }]),
             inner_mem_type: ArgMemType::System,
             outer_mem_type: ArgMemType::System,
-            hashing_scheme: hash_join::HashingScheme::LinearProbing,
+            hashing_scheme: no_partitioning_join::HashingScheme::LinearProbing,
         }
     }
 }
@@ -130,7 +130,7 @@ impl HashJoinBenchBuilder {
         self
     }
 
-    pub fn hashing_scheme(&mut self, hashing_scheme: hash_join::HashingScheme) -> &mut Self {
+    pub fn hashing_scheme(&mut self, hashing_scheme: no_partitioning_join::HashingScheme) -> &mut Self {
         self.hashing_scheme = hashing_scheme;
         self
     }
@@ -231,7 +231,7 @@ impl HashJoinBenchBuilder {
 
     fn get_hash_table_len(&self) -> Result<usize> {
         let hash_table_len = match self.hashing_scheme {
-            hash_join::HashingScheme::LinearProbing => self
+            no_partitioning_join::HashingScheme::LinearProbing => self
                 .inner_len
                 .checked_next_power_of_two()
                 .and_then(|x| {
@@ -240,7 +240,7 @@ impl HashJoinBenchBuilder {
                 .ok_or_else(|| {
                     ErrorKind::IntegerOverflow("Failed to compute hash table length".to_string())
                 })?,
-            hash_join::HashingScheme::Perfect => self
+            no_partitioning_join::HashingScheme::Perfect => self
                 .inner_len
                 .checked_mul(self.hash_table_elems_per_entry)
                 .ok_or_else(|| {
@@ -398,9 +398,9 @@ where
         + DeviceCopy
         + Sync
         + Send
-        + hash_join::NullKey
-        + hash_join::CudaHashJoinable
-        + hash_join::CpuHashJoinable
+        + no_partitioning_join::NullKey
+        + no_partitioning_join::CudaHashJoinable
+        + no_partitioning_join::CpuHashJoinable
         + EnsurePhysicallyBacked,
 {
     pub fn cuda_hash_join(
@@ -423,7 +423,7 @@ where
             // )?;
             // prefetch_async(mem.as_unified_ptr(), mem.len(), CPU_DEVICE_ID, &stream)?;
         }
-        let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
+        let hash_table = no_partitioning_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
         let mut result_sums = allocator::Allocator::alloc_mem(
@@ -438,7 +438,7 @@ where
 
         stream.synchronize()?;
 
-        let hj_op = hash_join::CudaHashJoinBuilder::<T>::default()
+        let hj_op = no_partitioning_join::CudaHashJoinBuilder::<T>::default()
             .hashing_scheme(self.hashing_scheme)
             .build_dim(build_dim.0.clone(), build_dim.1.clone())
             .probe_dim(probe_dim.0.clone(), probe_dim.1.clone())
@@ -502,7 +502,7 @@ where
             // prefetch_async(mem.as_unified_ptr(), mem.len(), CPU_DEVICE_ID, &stream)?;
             // stream.synchronize()?;
         }
-        let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
+        let hash_table = no_partitioning_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
         let mut result_sums = allocator::Allocator::alloc_mem(
@@ -532,7 +532,7 @@ where
             .map_err(|(err, _)| err)
             .expect("Can't use CUDA device memory on CPU!");
 
-        let hj_op = hash_join::CudaHashJoinBuilder::<T>::default()
+        let hj_op = no_partitioning_join::CudaHashJoinBuilder::<T>::default()
             .hashing_scheme(self.hashing_scheme)
             .build_dim(build_dim.0.clone(), build_dim.1.clone())
             .probe_dim(probe_dim.0.clone(), probe_dim.1.clone())
@@ -579,7 +579,7 @@ where
     ) -> Result<HashJoinPoint> {
         let ht_malloc_timer = Instant::now();
         let hash_table_mem = hash_table_alloc(self.hash_table_len);
-        let hash_table = hash_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
+        let hash_table = no_partitioning_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
         let mut result_sums = allocator::Allocator::alloc_mem(
@@ -609,7 +609,7 @@ where
             _ => unreachable!(),
         };
 
-        let hj_op = hash_join::CudaHashJoinBuilder::<T>::default()
+        let hj_op = no_partitioning_join::CudaHashJoinBuilder::<T>::default()
             .hashing_scheme(self.hashing_scheme)
             .build_dim(build_dim.0.clone(), build_dim.1.clone())
             .probe_dim(probe_dim.0.clone(), probe_dim.1.clone())
@@ -655,7 +655,7 @@ where
         let ht_malloc_timer = Instant::now();
         let mut hash_table_mem = hash_table_alloc(self.hash_table_len);
         T::ensure_physically_backed(hash_table_mem.as_mut_slice());
-        let hash_table = hash_join::HashTable::new_on_cpu(hash_table_mem, self.hash_table_len)?;
+        let hash_table = no_partitioning_join::HashTable::new_on_cpu(hash_table_mem, self.hash_table_len)?;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
         let mut result_sums = vec![0; threads];
@@ -698,7 +698,7 @@ where
             .expect("Can't use CUDA device memory on CPU!");
         let probe_pay_chunks: Vec<_> = probe_rel_pay.chunks(probe_chunk_size).collect();
 
-        let hj_builder = hash_join::CpuHashJoinBuilder::default()
+        let hj_builder = no_partitioning_join::CpuHashJoinBuilder::default()
             .hashing_scheme(self.hashing_scheme)
             .hash_table(Arc::new(hash_table));
 
@@ -751,7 +751,7 @@ where
         // FIXME: specify load factor as argument
         let ht_malloc_timer = Instant::now();
         let hash_table_mem = hash_table_alloc(self.hash_table_len);
-        let hash_table = Arc::new(hash_join::HashTable::new_on_gpu(
+        let hash_table = Arc::new(no_partitioning_join::HashTable::new_on_gpu(
             hash_table_mem,
             self.hash_table_len,
         )?);
@@ -781,11 +781,11 @@ where
             .map_err(|(err, _)| err)
             .expect("Can't use CUDA device memory on CPU!");
 
-        let cpu_hj_builder = hash_join::CpuHashJoinBuilder::default()
+        let cpu_hj_builder = no_partitioning_join::CpuHashJoinBuilder::default()
             .hashing_scheme(self.hashing_scheme)
             .hash_table(hash_table.clone());
 
-        let gpu_hj_builder = hash_join::CudaHashJoinBuilder::<T>::default()
+        let gpu_hj_builder = no_partitioning_join::CudaHashJoinBuilder::<T>::default()
             .hashing_scheme(self.hashing_scheme)
             .build_dim(build_dim.0.clone(), build_dim.1.clone())
             .probe_dim(probe_dim.0.clone(), probe_dim.1.clone())
@@ -863,7 +863,7 @@ where
         let ht_malloc_timer = Instant::now();
 
         let gpu_hash_table_mem = gpu_hash_table_alloc(self.hash_table_len);
-        let gpu_hash_table = Arc::new(hash_join::HashTable::new_on_gpu(
+        let gpu_hash_table = Arc::new(no_partitioning_join::HashTable::new_on_gpu(
             gpu_hash_table_mem,
             self.hash_table_len,
         )?);
@@ -888,7 +888,7 @@ where
             .map_err(|(err, _)| err)
             .expect("Can't use CUDA device memory on CPU!");
 
-        let gpu_hj_builder = hash_join::CudaHashJoinBuilder::<T>::default()
+        let gpu_hj_builder = no_partitioning_join::CudaHashJoinBuilder::<T>::default()
             .hashing_scheme(self.hashing_scheme)
             .build_dim(build_dim.0.clone(), build_dim.1.clone())
             .probe_dim(probe_dim.0.clone(), probe_dim.1.clone())
@@ -911,14 +911,14 @@ where
         )?;
         stream.synchronize()?;
 
-        let cpu_hash_table = Arc::new(hash_join::HashTable::new_from_hash_table(
+        let cpu_hash_table = Arc::new(no_partitioning_join::HashTable::new_from_hash_table(
             cpu_hash_table_mem,
             &gpu_hash_table,
         )?);
         let build_time = build_timer.elapsed();
 
         let probe_timer = Instant::now();
-        let cpu_hj_builder = hash_join::CpuHashJoinBuilder::default()
+        let cpu_hj_builder = no_partitioning_join::CpuHashJoinBuilder::default()
             .hashing_scheme(self.hashing_scheme)
             .hash_table(cpu_hash_table.clone());
         (probe_rel_key, probe_rel_pay)

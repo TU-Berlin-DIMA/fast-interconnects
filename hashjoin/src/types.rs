@@ -8,7 +8,7 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-use crate::operators::hash_join;
+use crate::operators::no_partitioning_join;
 use clap::arg_enum;
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::cuda::CudaTransferStrategy;
@@ -139,11 +139,11 @@ impl From<ArgTransferStrategy> for CudaTransferStrategy {
     }
 }
 
-impl From<ArgHashingScheme> for hash_join::HashingScheme {
+impl From<ArgHashingScheme> for no_partitioning_join::HashingScheme {
     fn from(ahs: ArgHashingScheme) -> Self {
         match ahs {
-            ArgHashingScheme::Perfect => hash_join::HashingScheme::Perfect,
-            ArgHashingScheme::LinearProbing => hash_join::HashingScheme::LinearProbing,
+            ArgHashingScheme::Perfect => no_partitioning_join::HashingScheme::Perfect,
+            ArgHashingScheme::LinearProbing => no_partitioning_join::HashingScheme::LinearProbing,
         }
     }
 }

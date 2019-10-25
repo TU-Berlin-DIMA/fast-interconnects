@@ -17,7 +17,7 @@ use crate::error::Result;
 use crate::measurement::data_point::DataPoint;
 use crate::measurement::harness;
 use crate::measurement::hash_join_bench::{HashJoinBenchBuilder, HashJoinPoint};
-use crate::operators::hash_join;
+use crate::operators::no_partitioning_join;
 use crate::types::*;
 
 use numa_gpu::runtime::allocator;
@@ -241,17 +241,17 @@ where
         + DeviceCopy
         + Sync
         + Send
-        + hash_join::NullKey
-        + hash_join::CudaHashJoinable
-        + hash_join::CpuHashJoinable
+        + no_partitioning_join::NullKey
+        + no_partitioning_join::CudaHashJoinable
+        + no_partitioning_join::CpuHashJoinable
         + EnsurePhysicallyBacked
         + num_traits::FromPrimitive
         + DeserializeOwned,
 {
     // Convert ArgHashingScheme to HashingScheme
     let (hashing_scheme, hash_table_load_factor) = match cmd.hashing_scheme {
-        ArgHashingScheme::Perfect => (hash_join::HashingScheme::Perfect, 1),
-        ArgHashingScheme::LinearProbing => (hash_join::HashingScheme::LinearProbing, 2),
+        ArgHashingScheme::Perfect => (no_partitioning_join::HashingScheme::Perfect, 1),
+        ArgHashingScheme::LinearProbing => (no_partitioning_join::HashingScheme::LinearProbing, 2),
     };
 
     // Device tuning
