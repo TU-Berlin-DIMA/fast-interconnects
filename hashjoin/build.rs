@@ -8,8 +8,6 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-extern crate cc;
-
 use std::env;
 use std::path::Path;
 use std::process::Command;
@@ -18,6 +16,11 @@ fn main() {
     let include_path = Path::new("include");
 
     let out_dir = env::var("OUT_DIR").unwrap();
+
+    let cache_line_size = unsafe { libc::sysconf(libc::_SC_LEVEL2_CACHE_LINESIZE) };
+    if cache_line_size == -1 {
+        panic!("Couldn't get cache line size");
+    }
 
     // Add CUDA utils
     let args = vec![
@@ -61,14 +64,18 @@ fn main() {
     // Add CPP utils
     cc::Build::new()
         .include(include_path)
+        .cpp(true)
         // Note: -march not supported by GCC-7 on Power9, use -mcpu instead
         .flag("-std=c++11")
+        .debug(true)
         .flag_if_supported("-mcpu=native")
         .flag_if_supported("-march=native")
         .flag("-mtune=native")
         // .flag("-fopenmp")
         // .flag("-lnuma")
+        .define("CACHE_LINE_SIZE", cache_line_size.to_string().as_str())
         .pic(true)
         .file("cpputils/no_partitioning_join.cpp")
+        .file("cpputils/radix_partition.cpp")
         .compile("libcpputils.a");
 }

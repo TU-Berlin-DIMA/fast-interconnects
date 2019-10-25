@@ -9,3 +9,4 @@
  */
 
 pub mod no_partitioning_join;
+pub mod radix_partition;

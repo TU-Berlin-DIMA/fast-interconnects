@@ -34,3 +34,4 @@ path = "../numa-gpu"
 
 [build-dependencies]
 cc = { version = "~1.0.25", features = ["parallel"] }
+libc = "~0.2.43"
