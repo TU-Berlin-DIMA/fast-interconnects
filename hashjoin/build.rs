@@ -21,7 +21,7 @@ fn main() {
 
     // Add CUDA utils
     let args = vec![
-        "cudautils/operators.cu",
+        "cudautils/no_partitioning_join.cu",
         "-std=c++11",
         "-fatbin",
         "-gencode",
@@ -69,6 +69,6 @@ fn main() {
         // .flag("-fopenmp")
         // .flag("-lnuma")
         .pic(true)
-        .file("cpputils/operators.cpp")
+        .file("cpputils/no_partitioning_join.cpp")
         .compile("libcpputils.a");
 }
