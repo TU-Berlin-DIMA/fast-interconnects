@@ -9,12 +9,15 @@
  */
 
 use assert_approx_eq::assert_approx_eq;
-use numa_gpu::runtime::dispatcher::{HetMorselExecutorBuilder, IntoHetMorselIterator};
+use numa_gpu::runtime::dispatcher::{
+    HetMorselExecutorBuilder, IntoHetMorselIterator, MorselSpec, WorkerCpuAffinity,
+};
 use rustacuda::memory::{CopyDestination, DeviceBox, LockedBuffer};
 use rustacuda::module::Module;
 use rustacuda::{launch, quick_init};
 use std::error::Error;
 use std::ffi::CString;
+use std::mem::size_of;
 use std::sync::Mutex;
 
 #[test]
@@ -26,7 +29,11 @@ fn test_iter() -> Result<(), Box<dyn Error>> {
     let cuda_dot = module.get_function(&CString::new("dot")?)?;
 
     let data_len = 2_usize.pow(20);
-    let morsel_len = 1024_usize;
+    let morsel_len = 1024;
+    let morsel_spec = MorselSpec {
+        cpu_morsel_bytes: morsel_len * 2 * size_of::<f32>(),
+        gpu_morsel_bytes: morsel_len * 2 * size_of::<f32>(),
+    };
     assert_eq!(data_len % morsel_len, 0);
 
     let mut data_0 = LockedBuffer::new(&1.0_f32, data_len)?;
@@ -36,8 +43,8 @@ fn test_iter() -> Result<(), Box<dyn Error>> {
     let cpu_result = Mutex::new(0.0_f32);
 
     let executor = HetMorselExecutorBuilder::new()
-        .morsel_len(morsel_len)
-        .cpu_ids(vec![0, 1])
+        .morsel_spec(morsel_spec)
+        .worker_cpu_affinity(WorkerCpuAffinity::default())
         .gpu_ids(vec![0])
         .build()?;
 
@@ -87,7 +94,11 @@ fn test_iter_non_divisor_morsel_len() -> Result<(), Box<dyn Error>> {
     let cuda_dot = module.get_function(&CString::new("dot")?)?;
 
     let data_len = 2_usize.pow(20);
-    let morsel_len = 1023_usize;
+    let morsel_len = 1023;
+    let morsel_spec = MorselSpec {
+        cpu_morsel_bytes: morsel_len * 2 * size_of::<f32>(),
+        gpu_morsel_bytes: morsel_len * 2 * size_of::<f32>(),
+    };
 
     let mut data_0 = LockedBuffer::new(&1.0_f32, data_len)?;
     let mut data_1 = LockedBuffer::new(&1.0_f32, data_len)?;
@@ -96,8 +107,8 @@ fn test_iter_non_divisor_morsel_len() -> Result<(), Box<dyn Error>> {
     let cpu_result = Mutex::new(0.0_f32);
 
     let executor = HetMorselExecutorBuilder::new()
-        .morsel_len(morsel_len)
-        .cpu_ids(vec![0, 1])
+        .morsel_spec(morsel_spec)
+        .worker_cpu_affinity(WorkerCpuAffinity::default())
         .gpu_ids(vec![0])
         .build()?;
 

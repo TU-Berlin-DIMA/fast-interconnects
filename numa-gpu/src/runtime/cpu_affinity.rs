@@ -36,7 +36,7 @@ impl CpuAffinity {
     /// CPU core affinities should be listed in a single line and separated with
     /// spaces. E.g.:
     ///
-    /// ```
+    /// ```ignore
     /// 0 2 4 6 1 3 5 7
     /// ```
     ///

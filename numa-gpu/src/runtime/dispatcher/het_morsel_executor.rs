@@ -12,6 +12,7 @@ use crate::error::Result;
 use crate::runtime::cpu_affinity::CpuAffinity;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use rustacuda::context::CurrentContext;
+use std::default::Default;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -20,7 +21,7 @@ pub struct MorselSpec {
     pub gpu_morsel_bytes: usize,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct WorkerCpuAffinity {
     pub cpu_workers: CpuAffinity,
     pub gpu_workers: CpuAffinity,
@@ -69,7 +70,13 @@ impl HetMorselExecutorBuilder {
         self
     }
 
-    pub fn worker_cpu_affinity(mut self, WorkerCpuAffinity{cpu_workers, gpu_workers}: WorkerCpuAffinity) -> Self {
+    pub fn worker_cpu_affinity(
+        mut self,
+        WorkerCpuAffinity {
+            cpu_workers,
+            gpu_workers,
+        }: WorkerCpuAffinity,
+    ) -> Self {
         self.cpu_worker_affinity = Arc::new(cpu_workers);
         self.gpu_worker_affinity = Arc::new(gpu_workers);
         self

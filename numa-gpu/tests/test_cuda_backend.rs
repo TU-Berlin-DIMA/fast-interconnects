@@ -28,6 +28,7 @@ use rustacuda::quick_init;
 
 use std::error::Error;
 use std::ffi::CString;
+use std::mem::size_of;
 
 mod errors {
     use error_chain::*;
@@ -53,7 +54,10 @@ fn test_cuda_iterator_2_pageable_copy() -> Result<(), Box<dyn Error>> {
     let result_ptr = result.as_device_ptr();
 
     (data_0.as_mut_slice(), data_1.as_mut_slice())
-        .into_cuda_iter_with_strategy(CudaTransferStrategy::PageableCopy, chunk_len)?
+        .into_cuda_iter_with_strategy(
+            CudaTransferStrategy::PageableCopy,
+            chunk_len * 2 * size_of::<f32>(),
+        )?
         .fold(|(x, y), stream| {
             assert_ne!(x.len(), 0);
             assert_eq!(x.len(), chunk_len);
@@ -97,7 +101,10 @@ fn test_cuda_iterator_2_pinned_copy() -> Result<(), Box<dyn Error>> {
     let result_ptr = result.as_device_ptr();
 
     (data_0.as_mut_slice(), data_1.as_mut_slice())
-        .into_cuda_iter_with_strategy(CudaTransferStrategy::PinnedCopy, chunk_len)?
+        .into_cuda_iter_with_strategy(
+            CudaTransferStrategy::PinnedCopy,
+            chunk_len * 2 * size_of::<f32>(),
+        )?
         .fold(|(x, y), stream| {
             assert_ne!(x.len(), 0);
             assert_eq!(x.len(), chunk_len);
@@ -141,7 +148,10 @@ fn test_cuda_iterator_2_lazy_pinned_copy() -> Result<(), Box<dyn Error>> {
     let result_ptr = result.as_device_ptr();
 
     (data_0.as_mut_slice(), data_1.as_mut_slice())
-        .into_cuda_iter_with_strategy(CudaTransferStrategy::LazyPinnedCopy, chunk_len)?
+        .into_cuda_iter_with_strategy(
+            CudaTransferStrategy::LazyPinnedCopy,
+            chunk_len * 2 * size_of::<f32>(),
+        )?
         .fold(|(x, y), stream| {
             assert_ne!(x.len(), 0);
             assert_eq!(x.len(), chunk_len);
@@ -189,7 +199,7 @@ fn test_cuda_iterator_2_prefetch() -> Result<(), Box<dyn Error>> {
     let mut result = DeviceBox::new(&0.0f32)?;
 
     (&mut data_0, &mut data_1)
-        .into_cuda_iter(chunk_len)?
+        .into_cuda_iter(chunk_len * 2 * size_of::<f32>())?
         .fold(|(x, y), stream| {
             assert_ne!(x.len(), 0);
             assert_eq!(x.len(), chunk_len);
@@ -235,7 +245,10 @@ fn test_cuda_iterator_2_coherence() -> Result<(), Box<dyn Error>> {
     let result_ptr = result.as_device_ptr();
 
     (data_0.as_mut_slice(), data_1.as_mut_slice())
-        .into_cuda_iter_with_strategy(CudaTransferStrategy::Coherence, chunk_len)?
+        .into_cuda_iter_with_strategy(
+            CudaTransferStrategy::Coherence,
+            chunk_len * 2 * size_of::<f32>(),
+        )?
         .fold(|(x, y), stream| {
             assert_ne!(x.len(), 0);
             assert_eq!(x.len(), chunk_len);
@@ -278,7 +291,10 @@ fn test_cuda_iterator_2_pageable_copy_non_divisor_chunk_len() -> Result<(), Box<
     let result_ptr = result.as_device_ptr();
 
     (data_0.as_mut_slice(), data_1.as_mut_slice())
-        .into_cuda_iter_with_strategy(CudaTransferStrategy::PageableCopy, chunk_len)?
+        .into_cuda_iter_with_strategy(
+            CudaTransferStrategy::PageableCopy,
+            chunk_len * 2 * size_of::<f32>(),
+        )?
         .fold(|(x, y), stream| {
             assert_ne!(x.len(), 0);
             assert_eq!(x.len(), y.len());
@@ -320,7 +336,10 @@ fn test_cuda_iterator_2_pinned_copy_non_divisor_chunk_len() -> Result<(), Box<dy
     let result_ptr = result.as_device_ptr();
 
     (data_0.as_mut_slice(), data_1.as_mut_slice())
-        .into_cuda_iter_with_strategy(CudaTransferStrategy::PinnedCopy, chunk_len)?
+        .into_cuda_iter_with_strategy(
+            CudaTransferStrategy::PinnedCopy,
+            chunk_len * 2 * size_of::<f32>(),
+        )?
         .fold(|(x, y), stream| {
             assert_ne!(x.len(), 0);
             assert_eq!(x.len(), y.len());
@@ -362,7 +381,10 @@ fn test_cuda_iterator_2_lazy_pinned_copy_non_divisor_chunk_len() -> Result<(), B
     let result_ptr = result.as_device_ptr();
 
     (data_0.as_mut_slice(), data_1.as_mut_slice())
-        .into_cuda_iter_with_strategy(CudaTransferStrategy::LazyPinnedCopy, chunk_len)?
+        .into_cuda_iter_with_strategy(
+            CudaTransferStrategy::LazyPinnedCopy,
+            chunk_len * 2 * size_of::<f32>(),
+        )?
         .fold(|(x, y), stream| {
             assert_ne!(x.len(), 0);
             assert_eq!(x.len(), y.len());
@@ -408,7 +430,7 @@ fn test_cuda_iterator_2_prefetch_non_divisor_chunk_len() -> Result<(), Box<dyn E
     let mut result = DeviceBox::new(&0.0f32)?;
 
     (&mut data_0, &mut data_1)
-        .into_cuda_iter(chunk_len)?
+        .into_cuda_iter(chunk_len * 2 * size_of::<f32>())?
         .fold(|(x, y), stream| {
             assert_ne!(x.len(), 0);
             assert_eq!(x.len(), y.len());
@@ -452,7 +474,10 @@ fn test_cuda_iterator_2_coherence_non_divisor_chunk_len() -> Result<(), Box<dyn 
     let result_ptr = result.as_device_ptr();
 
     (data_0.as_mut_slice(), data_1.as_mut_slice())
-        .into_cuda_iter_with_strategy(CudaTransferStrategy::Coherence, chunk_len)?
+        .into_cuda_iter_with_strategy(
+            CudaTransferStrategy::Coherence,
+            chunk_len * 2 * size_of::<f32>(),
+        )?
         .fold(|(x, y), stream| {
             assert_ne!(x.len(), 0);
             assert_eq!(x.len(), y.len());
