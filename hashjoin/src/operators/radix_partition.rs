@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Radix partitioning operators for CPU and GPU.
+//! Radix partition operators for CPU and GPU.
 //!
 //! # Overview
 //!
@@ -69,11 +69,18 @@ extern "C" {
     fn cpu_chunked_radix_partition_swwc_int64_int64(args: *mut RadixPartitionArgs);
 }
 
+/// Compute the fanout (i.e., the number of partitions) from the number of radix
+/// bits.
 fn fanout(radix_bits: u32) -> usize {
     1 << radix_bits
 }
 
+/// Arguments to the C/C++ partitioning function.
+///
+/// Note that the struct's layout must be kept in sync with its counterpart in
+/// C/C++.
 #[repr(C)]
+#[derive(Debug)]
 struct RadixPartitionArgs {
     // Inputs
     partition_attr_data: *const c_void,
@@ -90,6 +97,12 @@ struct RadixPartitionArgs {
     partitioned_relation: *mut c_void,
 }
 
+/// A key-value tuple.
+///
+/// The partitioned relation is stored as a collection of `Tuple<K, V>`.
+///
+/// Note that the struct's layout must be kept in sync with its counterpart in
+/// C/C++.
 #[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub struct Tuple<Key: Sized, Value: Sized> {
@@ -104,6 +117,13 @@ where
 {
 }
 
+/// A radix-partitioned relation, optionally with padding in front of each
+/// partition.
+///
+/// # Invariants
+///
+/// The `radix_bits` must match in `WriteCombineBuffer` and `CpuRadixPartitioner`.
+#[derive(Debug)]
 pub struct PartitionedRelation<T: DeviceCopy> {
     relation: DerefMem<T>,
     offsets: DerefMem<u64>,
@@ -111,6 +131,8 @@ pub struct PartitionedRelation<T: DeviceCopy> {
 }
 
 impl<T: DeviceCopy> PartitionedRelation<T> {
+    /// Creates a new partitioned relation, and automatically includes the
+    /// necessary padding and metadata.
     pub fn new(
         len: usize,
         radix_bits: u32,
@@ -131,21 +153,25 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
         }
     }
 
+    /// Returns the total number of elements in the relation (excluding padding).
     pub fn len(&self) -> usize {
         let num_partitions = fanout(self.radix_bits);
 
         self.relation.len() - num_partitions * self.padding_len()
     }
 
+    /// Returns the number of partitions.
     pub fn partitions(&self) -> usize {
         fanout(self.radix_bits)
     }
 
+    /// Returns the number of padding elements per partition.
     fn padding_len(&self) -> usize {
         WriteCombineBuffer::tuples_per_buffer::<T>()
     }
 }
 
+/// Returns the specified partition as a subslice of the relation.
 impl<T: DeviceCopy> Index<usize> for PartitionedRelation<T> {
     type Output = [T];
 
@@ -161,6 +187,7 @@ impl<T: DeviceCopy> Index<usize> for PartitionedRelation<T> {
     }
 }
 
+/// Returns the specified partition as a mutable subslice of the relation.
 impl<T: DeviceCopy> IndexMut<usize> for PartitionedRelation<T> {
     fn index_mut(&mut self, i: usize) -> &mut Self::Output {
         let begin = self.offsets[i] as usize;
@@ -174,12 +201,28 @@ impl<T: DeviceCopy> IndexMut<usize> for PartitionedRelation<T> {
     }
 }
 
+/// A set of buffers used for software write-combining.
+///
+/// The original code by Cagri Balkesen allocates these SWWC buffers on the stack.
+/// In contrast, this implementation allocates the SWWC buffers on the heap,
+/// because new CPUs have very large L3 caches (> 100 MB). Allocating on the
+/// stack risks a stack overflow on these CPUs. This can occur when using a large
+/// fanout (i.e., a high number of radix bits).
+///
+/// # Invariants
+///
+/// * The `radix_bits` must match in `PartitionedRelation` and `CpuRadixPartitioner`.
+///
+/// * The backing memory must be aligned to the cache-line size of the machine.
+///   Hint: `DerefMem::Numa` alignes to the page size, which is a multiple of
+///   the cache-line size
 pub struct WriteCombineBuffer {
     radix_bits: u32,
     buffers: DerefMem<u8>,
 }
 
 impl WriteCombineBuffer {
+    /// Creates a new set of SWWC buffers.
     pub fn new(radix_bits: u32, alloc_fn: DerefMemAllocFn<u8>) -> Self {
         let buffer_bytes = unsafe { cpu_swwc_buffer_bytes() };
         let bytes = buffer_bytes * fanout(radix_bits);
@@ -191,6 +234,9 @@ impl WriteCombineBuffer {
         }
     }
 
+    /// Computes the number of tuples per SWWC buffer.
+    ///
+    /// Note that `WriteCombineBuffer` contains one SWWC buffer per 
     fn tuples_per_buffer<T: Sized>() -> usize {
         let buffer_bytes = unsafe { cpu_swwc_buffer_bytes() };
         buffer_bytes / mem::size_of::<T>()
@@ -215,16 +261,21 @@ pub trait CpuRadixPartitionable: Sized + DeviceCopy {
     ) -> Result<()>;
 }
 
+/// A CPU radix partitioner that provides partitioning functions.
 #[derive(Debug)]
 pub struct CpuRadixPartitioner {
     radix_bits: u32,
 }
 
 impl CpuRadixPartitioner {
+    /// Creates a new CPU radix partitioner.
     pub fn new(radix_bits: u32) -> Self {
         Self { radix_bits }
     }
 
+    /// Radix-partitions a relation by its key attribute.
+    ///
+    /// See the module-level documentation for details on the algorithm.
     pub fn chunked_radix_partition_swwc<T: DeviceCopy + CpuRadixPartitionable>(
         &self,
         partition_attr: &[T],
