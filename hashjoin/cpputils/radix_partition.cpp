@@ -51,16 +51,24 @@
 #include <cstdint>
 #include <cstring>
 
+// Defines the cache-line size; usually this should be passed via the build
+// script.
 #ifndef CACHE_LINE_SIZE
 #define CACHE_LINE_SIZE 64
 #endif
 
+// Defines the software write-combine buffer size; usually this should be passed
+// via the build script.
 #ifndef SWWC_BUFFER_SIZE
 #define SWWC_BUFFER_SIZE CACHE_LINE_SIZE
 #endif
 
 using namespace std;
 
+// Arguments to the partitioning function.
+//
+// Note that the struct's layout must be kept in sync with its counterpart in
+// Rust.
 struct RadixPartitionArgs {
   // Inputs
   const void *const __restrict__ join_attr_data;
@@ -77,17 +85,22 @@ struct RadixPartitionArgs {
   void *const __restrict__ partitioned_relation;
 };
 
-template <typename T, typename B>
-T key_to_partition(T key, T mask, B bits) {
-  return (key & mask) >> bits;
-}
-
+// A key-value tuple.
+//
+// Note that the struct's layout must be kept in sync with its counterpart in
+// Rust.
 template <typename K, typename V>
 struct Tuple {
   K key;
   V value;
 };
 
+// A set of buffers used for software write-combinining.
+//
+// Supports two views of its data. The purpose is to align each buffer to the
+// cache-line size. This requires periodic overwriting of `meta.slot` when a
+// buffer becomes full. After emptying the buffer, the slot's value must be
+// restored.
 template <typename T, uint32_t size>
 union WriteCombineBuffer {
   struct {
@@ -101,13 +114,21 @@ union WriteCombineBuffer {
     uint64_t slot;  // Padding makes `slot` 8-byte aligned if sizeof(T) % 8 != 0
   } meta;
 
+  // Computes the number of tuples contained in a buffer.
   static constexpr size_t tuples_per_buffer() { return size / sizeof(T); }
 } __attribute__((packed));
 
-extern "C" size_t cpu_swwc_buffer_bytes() {
-  return SWWC_BUFFER_SIZE;
+// Computes the partition ID of a given key.
+template <typename T, typename B>
+T key_to_partition(T key, T mask, B bits) {
+  return (key & mask) >> bits;
 }
 
+// Flushes a SWWC buffer from cache to memory.
+//
+// If possible, uses non-temporal SIMD writes, that require vector-length
+// alignment. This in turn requires padding, because the front of a buffer may
+// contain invalid data on the first flush.
 void flush_buffer(void *const __restrict__ dst,
                   const void *const __restrict__ src) {
   auto byte_dst = static_cast<char *>(dst);
@@ -152,43 +173,18 @@ void flush_buffer(void *const __restrict__ dst,
 #endif
 }
 
+// Chunked radix partitioning with software write-combining.
+//
+// See the Rust module for details.
 template <typename K, typename V>
 void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
-  // 1. compute local histograms per partition
-  // 2. partition into combine buffers
-  //   - write out a buffer to local partitions when the buffer is full
-  //   - use non-temporal writes
-  // 3. flush all combine buffers before returning
-  //   - use regular writes
-
-  // - cache-line aligned combine buffers
-  // - within each combine buffer, store occupancy counter
-  // - keep track of combine buffer's global location
-  // - padding between partitions to avoid L1 cache conflicts
-  //   - Balkesen uses 3 tuples of padding
-  //   - combine buffers are not padded
-
-  // Inputs:
-  // - Relation (thread-local, static partitioning)
-  // - RelationSize (thread-local, static partitioning)
-  // - NumRadixBits (i.e., fanout = 2^NumRadixBits)
-  // - Padding
-  // - ThreadID
-  // - NumThreads
-  //
-  // Outputs:
-  // - Histogram buffer
-  //   - Length = fanout
-  // - Partition offsets (Balkesen: "output")
-  //   - Length = fanout + 1
-  // - Partitioned relation (Balkesen: "tmp")
-  //   - Length = RelationSize + Padding * fanout
-
   constexpr size_t tuples_per_buffer =
       WriteCombineBuffer<Tuple<K, V>, SWWC_BUFFER_SIZE>::tuples_per_buffer();
 
   // 512-bit intrinsics require 64-byte alignment
   assert(reinterpret_cast<size_t>(args.write_combine_buffer) % 64 == 0);
+
+  // Padding must be a multiple of the buffer length.
   assert(args.padding_length % tuples_per_buffer == 0);
 
   auto join_attr_data =
@@ -248,10 +244,12 @@ void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
                    buffer.tuples.data);
     }
 
+    // Restore `buffer.meta.slot` after overwriting it above, and increment its
+    // value.
     buffer.meta.slot = slot + 1;
   }
 
-  // Flush remainders of all buffers
+  // Flush remainders of all buffers.
   for (size_t i = 0; i < fanout; ++i) {
     size_t slot = buffers[i].meta.slot;
     size_t remaining = slot % tuples_per_buffer;
@@ -262,11 +260,18 @@ void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
   }
 }
 
+// Exports the the size of all SWWC buffers.
+extern "C" size_t cpu_swwc_buffer_bytes() {
+  return SWWC_BUFFER_SIZE;
+}
+
+// Exports the partitioning function for 8-byte key/value tuples.
 extern "C" void cpu_chunked_radix_partition_swwc_int32_int32(
     RadixPartitionArgs *args) {
   cpu_chunked_radix_partition_swwc<int32_t, int32_t>(*args);
 }
 
+// Exports the partitioning function for 16-byte key/value tuples.
 extern "C" void cpu_chunked_radix_partition_swwc_int64_int64(
     RadixPartitionArgs *args) {
   cpu_chunked_radix_partition_swwc<int64_t, int64_t>(*args);
