@@ -22,7 +22,7 @@ csv = "~1.1.1"
 cuda-sys = { git = "https://github.com/LutzCle/cuda-sys", branch = "cuda-10.0" }
 hostname = "~0.1.5"
 libc = "~0.2.43"
-rayon = "~1.0.3"
+rayon = "~1.2.0"
 rustacuda = { git = "https://github.com/LutzCle/RustaCUDA", branch = "custom_mods" }
 serde = "~1.0.76"
 serde_derive = "~1.0.76"
