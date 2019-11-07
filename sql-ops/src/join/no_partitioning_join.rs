@@ -314,10 +314,16 @@ macro_rules! impl_cuda_hash_join_for_type {
                     ) -> Result<()> {
 
                     if join_attr.len() != payload_attr.len() {
-                        Err(ErrorKind::InvalidArgument("Join and payload attributes have different sizes".to_string()))?;
+                        Err(ErrorKind::InvalidArgument(
+                                "Join and payload attributes have different sizes"
+                                .to_string()
+                                ))?;
                     }
                     if join_attr.len() > hj.hash_table.mem.len() {
-                        Err(ErrorKind::InvalidArgument("Hash table is too small for the build data".to_string()))?;
+                        Err(ErrorKind::InvalidArgument(
+                                "Hash table is too small for the build data"
+                                .to_string()
+                                ))?;
                     }
 
                     let (grid, block) = hj.build_dim.clone();
@@ -362,14 +368,19 @@ macro_rules! impl_cuda_hash_join_for_type {
 
                     let (grid, block) = hj.probe_dim.clone();
 
-                    if
-                       result_set.len() < (grid.x * block.x) as usize {
-                       Err(ErrorKind::InvalidArgument("Result set size is too small, must be at least grid * block size".to_string()))?;
-                        }
+                    if result_set.len() < (grid.x * block.x) as usize {
+                       Err(ErrorKind::InvalidArgument(
+                               "Result set size is too small, must be at least grid * block size"
+                               .to_string()
+                               ))?;
+                    }
 
-                        if join_attr.len() != payload_attr.len() {
-                        Err(ErrorKind::InvalidArgument("Join and payload attributes have different sizes".to_string()))?;
-                        }
+                    if join_attr.len() != payload_attr.len() {
+                        Err(ErrorKind::InvalidArgument(
+                                "Join and payload attributes have different sizes"
+                                .to_string()
+                                ))?;
+                    }
 
                     let join_attr_len = join_attr.len() as u64;
                     let hash_table_size = hj.hash_table.size as u64;
@@ -416,13 +427,19 @@ macro_rules! impl_cpu_hash_join_for_type {
         impl CpuHashJoinable for $Type {
             paste::item!{
                 fn build_impl(hj: &mut CpuHashJoin<$Type>, join_attr: &[$Type], payload_attr: &[$Type]) -> Result<()> {
-                        if join_attr.len() != payload_attr.len() {
-                        Err(ErrorKind::InvalidArgument("Join and payload attributes have different sizes".to_string()))?;
-                        }
-                    if
-                        join_attr.len() > hj.hash_table.mem.len() {
-                       Err(ErrorKind::InvalidArgument("Hash table is too small for the build data".to_string()))?;
-                        }
+                    if join_attr.len() != payload_attr.len() {
+                        Err(ErrorKind::InvalidArgument(
+                                "Join and payload attributes have different sizes"
+                                .to_string()
+                                ))?;
+                    }
+
+                    if join_attr.len() > hj.hash_table.mem.len() {
+                        Err(ErrorKind::InvalidArgument(
+                                "Hash table is too small for the build data"
+                                .to_string()
+                                ))?;
+                    }
 
                     let join_attr_len = join_attr.len() as u64;
                     let hash_table_size = hj.hash_table.size as u64;
@@ -459,9 +476,13 @@ macro_rules! impl_cpu_hash_join_for_type {
                     payload_attr: &[$Type],
                     join_result: &mut u64,
                     ) -> Result<()> {
-                        if join_attr.len() != payload_attr.len() {
-                       Err(ErrorKind::InvalidArgument("Join and payload attributes have different sizes".to_string()))?;
-                        }
+
+                    if join_attr.len() != payload_attr.len() {
+                        Err(ErrorKind::InvalidArgument(
+                                "Join and payload attributes have different sizes"
+                                .to_string()
+                                ))?;
+                    }
 
                     let join_attr_len = join_attr.len() as u64;
                     let hash_table_size = hj.hash_table.size as u64;

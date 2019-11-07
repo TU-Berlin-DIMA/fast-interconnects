@@ -304,17 +304,23 @@ macro_rules! impl_cpu_radix_partition_for_type {
                     partitioned_relation: &mut PartitionedRelation<Tuple<$Type, $Type>>
                     ) -> Result<()>
                 {
-                    if
-                        partition_attr.len() != payload_attr.len() {
-                        Err(ErrorKind::InvalidArgument("Partition and payload attributes have different sizes".to_string()))?;
+                    if partition_attr.len() != payload_attr.len() {
+                        Err(ErrorKind::InvalidArgument(
+                                "Partition and payload attributes have different sizes"
+                                .to_string()
+                                ))?;
                         }
-                    if
-                        write_combine_buffer.radix_bits != rp.radix_bits {
-                        Err(ErrorKind::InvalidArgument("WriteCombineBuffer has mismatching radix bits".to_string()))?;
+                    if write_combine_buffer.radix_bits != rp.radix_bits {
+                        Err(ErrorKind::InvalidArgument(
+                                "WriteCombineBuffer has mismatching radix bits"
+                                .to_string()
+                                ))?;
                         }
-                    if
-                        partitioned_relation.radix_bits != rp.radix_bits {
-                        Err(ErrorKind::InvalidArgument("PartitionedRelation has mismatching radix bits".to_string()))?;
+                    if partitioned_relation.radix_bits != rp.radix_bits {
+                        Err(ErrorKind::InvalidArgument(
+                                "PartitionedRelation has mismatching radix bits"
+                                .to_string()
+                                ))?;
                         }
 
                     let data_len = partition_attr.len();
