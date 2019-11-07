@@ -4,6 +4,7 @@ members = [
         "hashjoin",
         "microbench",
         "numa-gpu",
+        "sql-ops",
 ]
 
 [profile.release]

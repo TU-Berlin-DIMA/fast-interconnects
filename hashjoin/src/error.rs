@@ -13,6 +13,7 @@ use error_chain::error_chain;
 use numa_gpu::error::Error as NumaGpuError;
 use rayon::ThreadPoolBuildError;
 use rustacuda::error::CudaError;
+use sql_ops::error::Error as SqlOpsError;
 
 error_chain! {
     errors {
@@ -44,6 +45,7 @@ error_chain! {
         Datagen(DatagenError);
         Io(::std::io::Error);
         NumaGpu(NumaGpuError);
+        SqlOps(SqlOpsError);
         RayonThreadPoolBuild(ThreadPoolBuildError);
     }
 }

@@ -4,9 +4,11 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018 German Research Center for Artificial Intelligence (DFKI)
+ * Copyright 2018-2019 Clemens Lutz, German Research Center for Artificial Intelligence
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
+mod hashing_scheme;
 pub mod no_partitioning_join;
-pub mod radix_partition;
+
+pub use hashing_scheme::HashingScheme;

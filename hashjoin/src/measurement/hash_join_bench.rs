@@ -9,7 +9,6 @@
  */
 
 use crate::error::{ErrorKind, Result};
-use crate::operators::no_partitioning_join;
 use crate::types::*;
 use crate::DataGenFn;
 use csv::{ByteRecord, ReaderBuilder};
@@ -20,7 +19,9 @@ use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::cuda::{
     CudaTransferStrategy, IntoCudaIterator, IntoCudaIteratorWithStrategy,
 };
-use numa_gpu::runtime::dispatcher::{HetMorselExecutorBuilder, IntoHetMorselIterator, MorselSpec, WorkerCpuAffinity};
+use numa_gpu::runtime::dispatcher::{
+    HetMorselExecutorBuilder, IntoHetMorselIterator, MorselSpec, WorkerCpuAffinity,
+};
 use numa_gpu::runtime::memory::*;
 use numa_gpu::runtime::numa::NodeRatio;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
@@ -29,6 +30,7 @@ use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
 use rustacuda::stream::{Stream, StreamFlags};
 use serde::de::DeserializeOwned;
+use sql_ops::join::{no_partitioning_join, HashingScheme};
 use std::collections::vec_deque::VecDeque;
 use std::convert::TryInto;
 use std::fs::File;
@@ -37,7 +39,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub struct HashJoinBench<T: DeviceCopy> {
-    pub hashing_scheme: no_partitioning_join::HashingScheme,
+    pub hashing_scheme: HashingScheme,
     pub hash_table_len: usize,
     pub build_relation_key: Mem<T>,
     pub build_relation_payload: Mem<T>,
@@ -54,7 +56,7 @@ pub struct HashJoinBenchBuilder {
     outer_location: Box<[NodeRatio]>,
     inner_mem_type: ArgMemType,
     outer_mem_type: ArgMemType,
-    hashing_scheme: no_partitioning_join::HashingScheme,
+    hashing_scheme: HashingScheme,
 }
 
 #[derive(Debug, Default)]
@@ -89,7 +91,7 @@ impl Default for HashJoinBenchBuilder {
             }]),
             inner_mem_type: ArgMemType::System,
             outer_mem_type: ArgMemType::System,
-            hashing_scheme: no_partitioning_join::HashingScheme::LinearProbing,
+            hashing_scheme: HashingScheme::LinearProbing,
         }
     }
 }
@@ -130,7 +132,7 @@ impl HashJoinBenchBuilder {
         self
     }
 
-    pub fn hashing_scheme(&mut self, hashing_scheme: no_partitioning_join::HashingScheme) -> &mut Self {
+    pub fn hashing_scheme(&mut self, hashing_scheme: HashingScheme) -> &mut Self {
         self.hashing_scheme = hashing_scheme;
         self
     }
@@ -231,7 +233,7 @@ impl HashJoinBenchBuilder {
 
     fn get_hash_table_len(&self) -> Result<usize> {
         let hash_table_len = match self.hashing_scheme {
-            no_partitioning_join::HashingScheme::LinearProbing => self
+            HashingScheme::LinearProbing => self
                 .inner_len
                 .checked_next_power_of_two()
                 .and_then(|x| {
@@ -240,7 +242,7 @@ impl HashJoinBenchBuilder {
                 .ok_or_else(|| {
                     ErrorKind::IntegerOverflow("Failed to compute hash table length".to_string())
                 })?,
-            no_partitioning_join::HashingScheme::Perfect => self
+            HashingScheme::Perfect => self
                 .inner_len
                 .checked_mul(self.hash_table_elems_per_entry)
                 .ok_or_else(|| {
@@ -423,7 +425,8 @@ where
             // )?;
             // prefetch_async(mem.as_unified_ptr(), mem.len(), CPU_DEVICE_ID, &stream)?;
         }
-        let hash_table = no_partitioning_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
+        let hash_table =
+            no_partitioning_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
         let mut result_sums = allocator::Allocator::alloc_mem(
@@ -502,7 +505,8 @@ where
             // prefetch_async(mem.as_unified_ptr(), mem.len(), CPU_DEVICE_ID, &stream)?;
             // stream.synchronize()?;
         }
-        let hash_table = no_partitioning_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
+        let hash_table =
+            no_partitioning_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
         let mut result_sums = allocator::Allocator::alloc_mem(
@@ -547,12 +551,21 @@ where
             probe_relation.into_cuda_iter_with_strategy(transfer_strategy, gpu_morsel_bytes)?;
 
         let build_timer = Instant::now();
-        let build_mnts = build_iter.fold(|(key, val), stream| hj_op.build(key, val, stream))?;
+        let build_mnts = build_iter.fold(|(key, val), stream| {
+            hj_op
+                .build(key, val, stream)
+                .expect("Failed to run hash join build");
+            Ok(())
+        })?;
         let build_time = build_timer.elapsed();
 
         let probe_timer = Instant::now();
-        let probe_mnts = probe_iter
-            .fold(|(key, val), stream| hj_op.probe_sum(key, val, &result_sums, stream))?;
+        let probe_mnts = probe_iter.fold(|(key, val), stream| {
+            hj_op
+                .probe_sum(key, val, &result_sums, stream)
+                .expect("Failed to run hash join probe");
+            Ok(())
+        })?;
         let probe_time = probe_timer.elapsed();
 
         Ok(HashJoinPoint {
@@ -579,7 +592,8 @@ where
     ) -> Result<HashJoinPoint> {
         let ht_malloc_timer = Instant::now();
         let hash_table_mem = hash_table_alloc(self.hash_table_len);
-        let hash_table = no_partitioning_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
+        let hash_table =
+            no_partitioning_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
         let mut result_sums = allocator::Allocator::alloc_mem(
@@ -620,15 +634,27 @@ where
         let mut probe_relation = (probe_rel_key, probe_rel_pay);
 
         let build_timer = Instant::now();
-        let build_mnts = build_relation
-            .into_cuda_iter(gpu_morsel_bytes)?
-            .fold(|(key, val), stream| hj_op.build(key, val, stream))?;
+        let build_mnts =
+            build_relation
+                .into_cuda_iter(gpu_morsel_bytes)?
+                .fold(|(key, val), stream| {
+                    hj_op
+                        .build(key, val, stream)
+                        .expect("Failed to run hash join build");
+                    Ok(())
+                })?;
         let build_time = build_timer.elapsed();
 
         let probe_timer = Instant::now();
-        let probe_mnts = probe_relation
-            .into_cuda_iter(gpu_morsel_bytes)?
-            .fold(|(key, val), stream| hj_op.probe_sum(key, val, &result_sums, stream))?;
+        let probe_mnts =
+            probe_relation
+                .into_cuda_iter(gpu_morsel_bytes)?
+                .fold(|(key, val), stream| {
+                    hj_op
+                        .probe_sum(key, val, &result_sums, stream)
+                        .expect("Failed to run hash join probe");
+                    Ok(())
+                })?;
         let probe_time = probe_timer.elapsed();
 
         Ok(HashJoinPoint {
@@ -655,7 +681,8 @@ where
         let ht_malloc_timer = Instant::now();
         let mut hash_table_mem = hash_table_alloc(self.hash_table_len);
         T::ensure_physically_backed(hash_table_mem.as_mut_slice());
-        let hash_table = no_partitioning_join::HashTable::new_on_cpu(hash_table_mem, self.hash_table_len)?;
+        let hash_table =
+            no_partitioning_join::HashTable::new_on_cpu(hash_table_mem, self.hash_table_len)?;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
         let mut result_sums = vec![0; threads];
@@ -808,8 +835,12 @@ where
                     Ok(())
                 },
                 |(rel, pay), stream| {
-                    let hj_op = gpu_hj_builder.build()?;
-                    hj_op.build(rel, pay, stream)?;
+                    let hj_op = gpu_hj_builder
+                        .build()
+                        .expect("Failed to build GPU hash join");
+                    hj_op
+                        .build(rel, pay, stream)
+                        .expect("Failed to run GPU hash join build");
                     Ok(())
                 },
             )?;
@@ -824,15 +855,21 @@ where
 
                     // FIXME: retrieve sums of all threads, e.g., by implementing fold instead of map
                     let mut result_sum = 0;
-                    hj_op.probe_sum(rel, pay, &mut result_sum)?;
+                    hj_op
+                        .probe_sum(rel, pay, &mut result_sum)
+                        .expect("Failed to run CPU hash join probe");
 
                     Ok(())
                 },
                 |(rel, pay), stream| {
-                    let hj_op = gpu_hj_builder.build()?;
+                    let hj_op = gpu_hj_builder
+                        .build()
+                        .expect("Failed to build GPU hash join");
 
                     // FIXME: retrieve sums of all threads, e.g., by implementing fold instead of map
-                    hj_op.probe_sum(rel, pay, &result_sums, stream)?;
+                    hj_op
+                        .probe_sum(rel, pay, &result_sums, stream)
+                        .expect("Failed to run GPU hash join probe");
 
                     Ok(())
                 },
@@ -929,15 +966,21 @@ where
 
                     // FIXME: retrieve sums of all threads, e.g., by implementing fold instead of map
                     let mut result_sum = 0;
-                    hj_op.probe_sum(rel, pay, &mut result_sum)?;
+                    hj_op
+                        .probe_sum(rel, pay, &mut result_sum)
+                        .expect("Failed to run CPU hash join probe");
 
                     Ok(())
                 },
                 |(rel, pay), stream| {
-                    let hj_op = gpu_hj_builder.build()?;
+                    let hj_op = gpu_hj_builder
+                        .build()
+                        .expect("Failed to run GPU hash join build");
 
                     // FIXME: retrieve sums of all threads, e.g., by implementing fold instead of map
-                    hj_op.probe_sum(rel, pay, &result_sums, stream)?;
+                    hj_op
+                        .probe_sum(rel, pay, &result_sums, stream)
+                        .expect("Failed to run GPU hash join probe");
 
                     Ok(())
                 },

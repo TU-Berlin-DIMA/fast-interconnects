@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018 German Research Center for Artificial Intelligence (DFKI)
+ * Copyright 2018-2019 Clemens Lutz, German Research Center for Artificial Intelligence
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
@@ -26,27 +26,21 @@
 //! can also be parallelized over multiple GPUs by calling the methods multiple
 //! times using different CUDA devices.
 
+use super::HashingScheme;
+use crate::error::{ErrorKind, Result};
 use cuda_sys::cuda::cuMemsetD32_v2;
-
-use error_chain::ensure;
-
 use num_traits::cast::AsPrimitive;
-
-use numa_gpu::error;
+use numa_gpu::error::ToResult;
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::memory::*;
-
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::launch;
 use rustacuda::memory::DeviceCopy;
 use rustacuda::prelude::*;
-
 use std::ffi::CString;
 use std::mem::size_of;
 use std::os::raw::{c_uint, c_void};
 use std::sync::Arc;
-
-use error::{Error, ErrorKind, Result, ToResult};
 
 extern "C" {
     fn cpu_ht_build_linearprobing_int32(
@@ -116,22 +110,6 @@ extern "C" {
         data_length: u64,
         aggregation_result: *mut u64,
     );
-}
-
-/// Specifies the hashing scheme using in hash table insert and probe operations.
-#[derive(Clone, Copy, Debug)]
-pub enum HashingScheme {
-    /// Perfect hashing scheme.
-    ///
-    /// Perfect hashing assumes that build-side join keys are unique and in a
-    /// contiguous range, i.e., k \in [0,N-1]. Probe-side keys are allowed to be
-    /// non-unique and outside of the range.
-    Perfect,
-
-    /// Linear probing scheme.
-    ///
-    /// Linear probing makes no assumptions about the join key distribution.
-    LinearProbing,
 }
 
 /// Specifies the null key value of the given type.
@@ -334,14 +312,13 @@ macro_rules! impl_cuda_hash_join_for_type {
                     payload_attr: LaunchableSlice<$Type>,
                     stream: &Stream,
                     ) -> Result<()> {
-                    ensure!(
-                        join_attr.len() == payload_attr.len(),
-                        "Join and payload attributes have different sizes"
-                        );
-                    ensure!(
-                        join_attr.len() <= hj.hash_table.mem.len(),
-                        "Hash table is too small for the build data"
-                        );
+
+                    if join_attr.len() != payload_attr.len() {
+                        Err(ErrorKind::InvalidArgument("Join and payload attributes have different sizes".to_string()))?;
+                    }
+                    if join_attr.len() > hj.hash_table.mem.len() {
+                        Err(ErrorKind::InvalidArgument("Hash table is too small for the build data".to_string()))?;
+                    }
 
                     let (grid, block) = hj.build_dim.clone();
 
@@ -382,15 +359,17 @@ macro_rules! impl_cuda_hash_join_for_type {
                     result_set: &Mem<u64>,
                     stream: &Stream,
                     ) -> Result<()> {
+
                     let (grid, block) = hj.probe_dim.clone();
-                    ensure!(
-                        result_set.len() >= (grid.x * block.x) as usize,
-                        "Result set size is too small, must be at least grid * block size"
-                        );
-                    ensure!(
-                        join_attr.len() == payload_attr.len(),
-                        "Join and payload attributes have different sizes"
-                        );
+
+                    if
+                       result_set.len() < (grid.x * block.x) as usize {
+                       Err(ErrorKind::InvalidArgument("Result set size is too small, must be at least grid * block size".to_string()))?;
+                        }
+
+                        if join_attr.len() != payload_attr.len() {
+                        Err(ErrorKind::InvalidArgument("Join and payload attributes have different sizes".to_string()))?;
+                        }
 
                     let join_attr_len = join_attr.len() as u64;
                     let hash_table_size = hj.hash_table.size as u64;
@@ -437,14 +416,13 @@ macro_rules! impl_cpu_hash_join_for_type {
         impl CpuHashJoinable for $Type {
             paste::item!{
                 fn build_impl(hj: &mut CpuHashJoin<$Type>, join_attr: &[$Type], payload_attr: &[$Type]) -> Result<()> {
-                    ensure!(
-                        join_attr.len() == payload_attr.len(),
-                        "Join and payload attributes have different sizes"
-                        );
-                    ensure!(
-                        join_attr.len() <= hj.hash_table.mem.len(),
-                        "Hash table is too small for the build data"
-                        );
+                        if join_attr.len() != payload_attr.len() {
+                        Err(ErrorKind::InvalidArgument("Join and payload attributes have different sizes".to_string()))?;
+                        }
+                    if
+                        join_attr.len() > hj.hash_table.mem.len() {
+                       Err(ErrorKind::InvalidArgument("Hash table is too small for the build data".to_string()))?;
+                        }
 
                     let join_attr_len = join_attr.len() as u64;
                     let hash_table_size = hj.hash_table.size as u64;
@@ -481,10 +459,9 @@ macro_rules! impl_cpu_hash_join_for_type {
                     payload_attr: &[$Type],
                     join_result: &mut u64,
                     ) -> Result<()> {
-                    ensure!(
-                        join_attr.len() == payload_attr.len(),
-                        "Join and payload attributes have different sizes"
-                        );
+                        if join_attr.len() != payload_attr.len() {
+                       Err(ErrorKind::InvalidArgument("Join and payload attributes have different sizes".to_string()))?;
+                        }
 
                     let join_attr_len = join_attr.len() as u64;
                     let hash_table_size = hj.hash_table.size as u64;
@@ -528,10 +505,11 @@ impl<T: DeviceCopy + NullKey> HashTable<T> {
     /// The hash table can be used on CPUs. In the case of NVLink 2.0 on POWER9,
     /// it can also be used on GPUs.
     pub fn new_on_cpu(mut mem: DerefMem<T>, size: usize) -> Result<Self> {
-        ensure!(
-            mem.len() >= size,
-            "Provided memory must be larger than hash table size"
-        );
+        if mem.len() < size {
+            Err(ErrorKind::InvalidArgument(
+                "Provided memory must be larger than hash table size".to_string(),
+            ))?;
+        }
 
         mem.iter_mut().by_ref().for_each(|x| *x = T::null_key());
 
@@ -547,10 +525,11 @@ impl<T: DeviceCopy + NullKey> HashTable<T> {
     /// due to the possibility of using GPU device memory. This also holds true
     /// for NVLink 2.0 on POWER9.
     pub fn new_on_gpu(mut mem: Mem<T>, size: usize) -> Result<Self> {
-        ensure!(
-            mem.len() >= size,
-            "Provided memory must be larger than hash table size"
-        );
+        if mem.len() < size {
+            Err(ErrorKind::InvalidArgument(
+                "Provided memory must be larger than hash table size".to_string(),
+            ))?;
+        }
 
         let mem_ptr = mem.as_ptr();
         let mem_len = mem.len();
@@ -637,14 +616,13 @@ where
     }
 
     pub fn build(&self) -> Result<CudaHashJoin<T>> {
-        ensure!(self.hash_table_i.is_some(), "Hash table not set");
+        if self.hash_table_i.is_none() {
+            Err(ErrorKind::InvalidArgument("Hash table not set".to_string()))?;
+        }
 
-        let module_path = CString::new(env!("CUDAUTILS_PATH")).map_err(|e| {
-            Error::with_chain(
-                e,
-                ErrorKind::InvalidArgument(
-                    "Failed to load CUDA module, check your CUDAUTILS_PATH".to_string(),
-                ),
+        let module_path = CString::new(env!("CUDAUTILS_PATH")).map_err(|_| {
+            ErrorKind::NulCharError(
+                "Failed to load CUDA module, check your CUDAUTILS_PATH".to_string(),
             )
         })?;
 

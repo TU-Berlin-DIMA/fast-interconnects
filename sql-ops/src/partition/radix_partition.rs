@@ -54,8 +54,7 @@
 //!
 //! [mchj]: https://www.systems.ethz.ch/sites/default/files/file/PublishedCode/multicore-distributed-hashjoins-0_1.zip
 
-use crate::error::Result;
-use error_chain::ensure;
+use crate::error::{ErrorKind, Result};
 use numa_gpu::runtime::allocator::DerefMemAllocFn;
 use numa_gpu::runtime::memory::DerefMem;
 use rustacuda::memory::DeviceCopy;
@@ -236,7 +235,7 @@ impl WriteCombineBuffer {
 
     /// Computes the number of tuples per SWWC buffer.
     ///
-    /// Note that `WriteCombineBuffer` contains one SWWC buffer per 
+    /// Note that `WriteCombineBuffer` contains one SWWC buffer per
     fn tuples_per_buffer<T: Sized>() -> usize {
         let buffer_bytes = unsafe { cpu_swwc_buffer_bytes() };
         buffer_bytes / mem::size_of::<T>()
@@ -305,18 +304,18 @@ macro_rules! impl_cpu_radix_partition_for_type {
                     partitioned_relation: &mut PartitionedRelation<Tuple<$Type, $Type>>
                     ) -> Result<()>
                 {
-                    ensure!(
-                        partition_attr.len() == payload_attr.len(),
-                        "Partition and payload attributes have different sizes"
-                        );
-                    ensure!(
-                        write_combine_buffer.radix_bits == rp.radix_bits,
-                        "WriteCombineBuffer has mismatching radix bits"
-                        );
-                    ensure!(
-                        partitioned_relation.radix_bits == rp.radix_bits,
-                        "PartitionedRelation has mismatching radix bits"
-                        );
+                    if
+                        partition_attr.len() != payload_attr.len() {
+                        Err(ErrorKind::InvalidArgument("Partition and payload attributes have different sizes".to_string()))?;
+                        }
+                    if
+                        write_combine_buffer.radix_bits != rp.radix_bits {
+                        Err(ErrorKind::InvalidArgument("WriteCombineBuffer has mismatching radix bits".to_string()))?;
+                        }
+                    if
+                        partitioned_relation.radix_bits != rp.radix_bits {
+                        Err(ErrorKind::InvalidArgument("PartitionedRelation has mismatching radix bits".to_string()))?;
+                        }
 
                     let data_len = partition_attr.len();
 

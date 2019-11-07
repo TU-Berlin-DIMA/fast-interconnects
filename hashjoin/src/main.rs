@@ -10,15 +10,14 @@
 
 mod error;
 mod measurement;
-pub mod operators;
 mod types;
 
 use crate::error::Result;
 use crate::measurement::data_point::DataPoint;
 use crate::measurement::harness;
 use crate::measurement::hash_join_bench::{HashJoinBenchBuilder, HashJoinPoint};
-use crate::operators::no_partitioning_join;
 use crate::types::*;
+use sql_ops::join::{no_partitioning_join, HashingScheme};
 
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
@@ -250,8 +249,8 @@ where
 {
     // Convert ArgHashingScheme to HashingScheme
     let (hashing_scheme, hash_table_load_factor) = match cmd.hashing_scheme {
-        ArgHashingScheme::Perfect => (no_partitioning_join::HashingScheme::Perfect, 1),
-        ArgHashingScheme::LinearProbing => (no_partitioning_join::HashingScheme::LinearProbing, 2),
+        ArgHashingScheme::Perfect => (HashingScheme::Perfect, 1),
+        ArgHashingScheme::LinearProbing => (HashingScheme::LinearProbing, 2),
     };
 
     // Device tuning
@@ -351,7 +350,10 @@ where
         } else {
             CpuAffinity::default()
         };
-        WorkerCpuAffinity{cpu_workers, gpu_workers}
+        WorkerCpuAffinity {
+            cpu_workers,
+            gpu_workers,
+        }
     };
 
     // Create closure that wraps a hash join benchmark function
@@ -434,7 +436,8 @@ where
         ArgExecutionMethod::GpuBuildHetProbe => Box::new(move || {
             // Allocate CPU memory on NUMA node of thread 0
             let cpu_node = numa::node_of_cpu(
-                worker_cpu_affinity.cpu_workers
+                worker_cpu_affinity
+                    .cpu_workers
                     .thread_to_cpu(0)
                     .expect("Couldn't map thread to a core"),
             )?;

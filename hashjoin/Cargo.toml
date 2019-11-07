@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Clemens Lutz <lutzcle@cml.li>"]
 license = "MPL-2.0"
 repository = "https://github.com/TU-Berlin-DIMA/numa-gpu"
-description = "A hash join implementation optimized for NVLink 2.0 on POWER9"
+description = "A hash join benchmark optimized for NVLink 2.0 on POWER9"
 readme = "../README.md"
 edition = "2018"
 
@@ -12,13 +12,11 @@ edition = "2018"
 average = "~0.9.2"
 clap = "*"
 csv = "~1.1.1"
-cuda-sys = { git = "https://github.com/LutzCle/cuda-sys", branch = "cuda-10.0" }
 error-chain = "~0.12.0"
 flate2 = { version = "~1.0.11", features = ["zlib"], default-features = false }
 hostname = "~0.1.5"
 num-rational = "~0.2.0"
 num-traits = "~0.2.0"
-paste = "~0.1"
 rayon = "~1.2.0"
 rustacuda = { git = "https://github.com/LutzCle/RustaCUDA", branch = "custom_mods" }
 serde = "~1.0.76"
@@ -32,6 +30,5 @@ path = "../datagen"
 [dependencies.numa-gpu]
 path = "../numa-gpu"
 
-[build-dependencies]
-cc = { version = "~1.0.25", features = ["parallel"] }
-libc = "~0.2.43"
+[dependencies.sql-ops]
+path = "../sql-ops"

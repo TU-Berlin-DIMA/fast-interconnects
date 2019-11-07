@@ -1,0 +1,25 @@
+[package]
+name = "sql-ops"
+version = "0.1.0"
+authors = ["Clemens Lutz <lutzcle@cml.li>"]
+license = "MPL-2.0"
+repository = "https://github.com/TU-Berlin-DIMA/numa-gpu"
+description = "SQL operator implementations optimized for NVLink 2.0 on POWER9"
+readme = "../README.md"
+edition = "2018"
+
+[dependencies]
+cuda-sys = { git = "https://github.com/LutzCle/cuda-sys", branch = "cuda-10.0" }
+num-traits = "~0.2.0"
+paste = "~0.1"
+rustacuda = { git = "https://github.com/LutzCle/RustaCUDA", branch = "custom_mods" }
+
+[dependencies.datagen]
+path = "../datagen"
+
+[dependencies.numa-gpu]
+path = "../numa-gpu"
+
+[build-dependencies]
+cc = { version = "~1.0.25", features = ["parallel"] }
+libc = "~0.2.43"
