@@ -21,7 +21,7 @@ use numa_gpu::runtime::allocator::{Allocator, DerefMemType};
 use papi::criterion::PapiMeasurement;
 use papi::Papi;
 use sql_ops::partition::radix_partition::{
-    CpuRadixPartitioner, PartitionedRelation, WriteCombineBuffer,
+    CpuRadixPartitionAlgorithm, CpuRadixPartitioner, PartitionedRelation,
 };
 use std::mem;
 use std::ops::RangeInclusive;
@@ -34,7 +34,12 @@ fn papi_setup(event_name: &'static str) -> Criterion<PapiMeasurement> {
     Criterion::default().with_measurement(papi_mnt)
 }
 
-fn radix_partition_swwc_benchmark(event_name: &str, c: &mut Criterion<PapiMeasurement>) {
+fn radix_partition_benchmark(
+    algorithm: CpuRadixPartitionAlgorithm,
+    group_name: &str,
+    event_name: &str,
+    c: &mut Criterion<PapiMeasurement>,
+) {
     const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
     const NUMA_NODE: u16 = 0;
     const TUPLES: usize = (1 << 30) / (2 * mem::size_of::<i64>());
@@ -46,7 +51,7 @@ fn radix_partition_swwc_benchmark(event_name: &str, c: &mut Criterion<PapiMeasur
     UniformRelation::gen_primary_key(data_key.as_mut_slice()).unwrap();
     UniformRelation::gen_attr(data_pay.as_mut_slice(), PAYLOAD_RANGE).unwrap();
 
-    let mut group = c.benchmark_group("radix_partition_swwc");
+    let mut group = c.benchmark_group(group_name);
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(60));
     group.throughput(Throughput::Bytes(
@@ -54,7 +59,11 @@ fn radix_partition_swwc_benchmark(event_name: &str, c: &mut Criterion<PapiMeasur
     ));
 
     for &radix_bits in RADIX_BITS.iter() {
-        let radix_prnr = CpuRadixPartitioner::new(radix_bits);
+        let mut radix_prnr = CpuRadixPartitioner::new(
+            algorithm,
+            radix_bits,
+            Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(NUMA_NODE)),
+        );
 
         let mut partitioned_relation = PartitionedRelation::new(
             TUPLES,
@@ -63,19 +72,13 @@ fn radix_partition_swwc_benchmark(event_name: &str, c: &mut Criterion<PapiMeasur
             Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(NUMA_NODE)),
         );
 
-        let mut write_combine_buffer = WriteCombineBuffer::new(
-            radix_bits,
-            Allocator::deref_mem_alloc_fn::<u8>(DerefMemType::NumaMem(NUMA_NODE)),
-        );
-
         let id = BenchmarkId::new(event_name, format!("{}_radix_bits", radix_bits));
 
         group.bench_with_input(id, &radix_bits, |b, &_radix_bits| {
             b.iter(|| {
-                radix_prnr.chunked_radix_partition_swwc(
+                radix_prnr.partition(
                     data_key.as_slice(),
                     data_pay.as_slice(),
-                    &mut write_combine_buffer,
                     &mut partitioned_relation,
                 )
             })
@@ -90,7 +93,18 @@ fn benches() {
 
     for event_name in event_names.iter() {
         let mut criterion = papi_setup(event_name).configure_from_args();
-        radix_partition_swwc_benchmark(event_name, &mut criterion);
+        radix_partition_benchmark(
+            CpuRadixPartitionAlgorithm::Chunked,
+            "radix_partition",
+            event_name,
+            &mut criterion,
+        );
+        radix_partition_benchmark(
+            CpuRadixPartitionAlgorithm::ChunkedSwwc,
+            "radix_partition_swwc",
+            event_name,
+            &mut criterion,
+        );
     }
 }
 
