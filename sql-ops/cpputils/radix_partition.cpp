@@ -1,7 +1,8 @@
 /*
  * Copyright (c) 2014 Cagri Balkesen, ETH Zurich
  * Copyright (c) 2014 Claude Barthels, ETH Zurich
- * Copyright (c) 2019 Clemens Lutz, German Research Center for Artificial Intelligence
+ * Copyright (c) 2019 Clemens Lutz, German Research Center for Artificial
+ * Intelligence
  *
  * Original sources by Cagri Balkesen and Claude Barthels are copyrighted under
  * the MIT license.
@@ -10,22 +11,23 @@
  *
  * MIT license:
  *
- * Permission is hereby granted, free of charge, to any person obtaining a copy of
- * this software and associated documentation files (the "Software"), to deal in
- * the Software without restriction, including without limitation the rights to
- * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
- * the Software, and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
- * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
- * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
- * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  *
  * Apache License 2.0:
  *
@@ -43,7 +45,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 
 #include <immintrin.h>
 
@@ -78,6 +79,7 @@ struct RadixPartitionArgs {
   uint32_t const radix_bits;
 
   // State
+  uint64_t *const __restrict__ tmp_partition_offsets;
   void *const __restrict__ write_combine_buffer;
 
   // Outputs
@@ -173,6 +175,54 @@ void flush_buffer(void *const __restrict__ dst,
 #endif
 }
 
+// Chunked radix partitioning.
+//
+// See the Rust module for details.
+template <typename K, typename V>
+void cpu_chunked_radix_partition(RadixPartitionArgs &args) {
+  auto join_attr_data =
+      static_cast<const K *const __restrict__>(args.join_attr_data);
+  auto payload_attr_data =
+      static_cast<const V *const __restrict__>(args.payload_attr_data);
+  auto partitioned_relation =
+      static_cast<Tuple<K, V> *const __restrict__>(args.partitioned_relation);
+
+  const size_t fanout = 1UL << args.radix_bits;
+  const K mask = static_cast<K>(fanout - 1);
+
+  // Ensure counters are all zeroed
+  for (size_t i = 0; i < fanout; ++i) {
+    args.partition_offsets[i] = 0;
+  }
+
+  // 1. Compute local histograms per partition
+  for (size_t i = 0; i < args.data_length; ++i) {
+    auto key = join_attr_data[i];
+    auto p_index = key_to_partition(key, mask, 0);
+    args.partition_offsets[p_index] += 1;
+  }
+
+  // 2. Compute offsets with exclusive prefix sum
+  for (size_t i = 0, sum = 0, offset = 0; i < fanout; ++i, offset = sum) {
+    sum += args.partition_offsets[i];
+    offset += (i + 1) * args.padding_length;
+    args.partition_offsets[i] = offset;
+    args.tmp_partition_offsets[i] = offset;
+  }
+
+  // 3. Partition
+  for (size_t i = 0; i < args.data_length; ++i) {
+    Tuple<K, V> tuple;
+    tuple.key = join_attr_data[i];
+    tuple.value = payload_attr_data[i];
+
+    auto p_index = key_to_partition(tuple.key, mask, 0);
+    auto &offset = args.tmp_partition_offsets[p_index];
+    partitioned_relation[offset] = tuple;
+    offset += 1;
+  }
+}
+
 // Chunked radix partitioning with software write-combining.
 //
 // See the Rust module for details.
@@ -232,8 +282,8 @@ void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
     size_t slot = buffer.meta.slot;
     size_t buffer_slot = slot % tuples_per_buffer;
 
-    // `buffer.meta.slot` is overwritten on buffer_slot == (tuples_per_buffer - 1),
-    // and restored after the buffer flush.
+    // `buffer.meta.slot` is overwritten on buffer_slot == (tuples_per_buffer -
+    // 1), and restored after the buffer flush.
     buffer.tuples.data[buffer_slot] = tuple;
 
     // Flush buffer
@@ -261,8 +311,18 @@ void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
 }
 
 // Exports the the size of all SWWC buffers.
-extern "C" size_t cpu_swwc_buffer_bytes() {
-  return SWWC_BUFFER_SIZE;
+extern "C" size_t cpu_swwc_buffer_bytes() { return SWWC_BUFFER_SIZE; }
+
+// Exports the partitioning function for 8-byte key/value tuples.
+extern "C" void cpu_chunked_radix_partition_int32_int32(
+    RadixPartitionArgs *args) {
+  cpu_chunked_radix_partition<int32_t, int32_t>(*args);
+}
+
+// Exports the partitioning function for 16-byte key/value tuples.
+extern "C" void cpu_chunked_radix_partition_int64_int64(
+    RadixPartitionArgs *args) {
+  cpu_chunked_radix_partition<int64_t, int64_t>(*args);
 }
 
 // Exports the partitioning function for 8-byte key/value tuples.

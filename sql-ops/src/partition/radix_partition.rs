@@ -59,11 +59,13 @@ use numa_gpu::runtime::allocator::DerefMemAllocFn;
 use numa_gpu::runtime::memory::DerefMem;
 use rustacuda::memory::DeviceCopy;
 use std::ffi::c_void;
-use std::mem;
 use std::ops::{Index, IndexMut};
+use std::{mem, ptr};
 
 extern "C" {
     fn cpu_swwc_buffer_bytes() -> usize;
+    fn cpu_chunked_radix_partition_int32_int32(args: *mut RadixPartitionArgs);
+    fn cpu_chunked_radix_partition_int64_int64(args: *mut RadixPartitionArgs);
     fn cpu_chunked_radix_partition_swwc_int32_int32(args: *mut RadixPartitionArgs);
     fn cpu_chunked_radix_partition_swwc_int64_int64(args: *mut RadixPartitionArgs);
 }
@@ -89,6 +91,7 @@ struct RadixPartitionArgs {
     radix_bits: u32,
 
     // State
+    tmp_partition_offsets: *mut u64,
     write_combine_buffer: *mut c_void,
 
     // Outputs
@@ -251,6 +254,14 @@ impl WriteCombineBuffer {
 ///
 /// See `CudaHashJoinable` for more details on the design decision.
 pub trait CpuRadixPartitionable: Sized + DeviceCopy {
+    fn chunked_radix_partition_impl(
+        rp: &CpuRadixPartitioner,
+        partition_attr: &[Self],
+        payload_attr: &[Self],
+        tmp_partition_offsets: &mut [u64],
+        partitioned_relation: &mut PartitionedRelation<Tuple<Self, Self>>,
+    ) -> Result<()>;
+
     fn chunked_radix_partition_swwc_impl(
         rp: &CpuRadixPartitioner,
         partition_attr: &[Self],
@@ -270,6 +281,25 @@ impl CpuRadixPartitioner {
     /// Creates a new CPU radix partitioner.
     pub fn new(radix_bits: u32) -> Self {
         Self { radix_bits }
+    }
+
+    /// Radix-partitions a relation by its key attribute.
+    ///
+    /// See the module-level documentation for details on the algorithm.
+    pub fn chunked_radix_partition<T: DeviceCopy + CpuRadixPartitionable>(
+        &self,
+        partition_attr: &[T],
+        payload_attr: &[T],
+        tmp_partition_offsets: &mut [u64],
+        partitioned_relation: &mut PartitionedRelation<Tuple<T, T>>,
+    ) -> Result<()> {
+        T::chunked_radix_partition_impl(
+            self,
+            partition_attr,
+            payload_attr,
+            tmp_partition_offsets,
+            partitioned_relation,
+        )
     }
 
     /// Radix-partitions a relation by its key attribute.
@@ -296,6 +326,50 @@ macro_rules! impl_cpu_radix_partition_for_type {
     ($Type:ty, $Suffix:expr) => {
             impl CpuRadixPartitionable for $Type {
         paste::item!{
+                fn chunked_radix_partition_impl(
+                    rp: &CpuRadixPartitioner,
+                    partition_attr: &[$Type],
+                    payload_attr: &[$Type],
+                    tmp_partition_offsets: &mut[u64],
+                    partitioned_relation: &mut PartitionedRelation<Tuple<$Type, $Type>>,
+                    ) -> Result<()>
+                {
+                    if partition_attr.len() != payload_attr.len() {
+                        Err(ErrorKind::InvalidArgument(
+                                "Partition and payload attributes have different sizes"
+                                .to_string()
+                                ))?;
+                    }
+                    if partitioned_relation.radix_bits != rp.radix_bits {
+                        Err(ErrorKind::InvalidArgument(
+                                "PartitionedRelation has mismatching radix bits"
+                                .to_string()
+                                ))?;
+                    }
+
+                    let data_len = partition_attr.len();
+
+                    let mut args = RadixPartitionArgs {
+                        partition_attr_data: partition_attr.as_ptr() as *const c_void,
+                        payload_attr_data: payload_attr.as_ptr() as *const c_void,
+                        data_len,
+                        padding_len: partitioned_relation.padding_len(),
+                        radix_bits: rp.radix_bits,
+                        tmp_partition_offsets: tmp_partition_offsets.as_mut_ptr(),
+                        write_combine_buffer: ptr::null_mut(),
+                        partition_offsets: partitioned_relation.offsets.as_mut_ptr(),
+                        partitioned_relation: partitioned_relation.relation.as_mut_ptr() as *mut c_void,
+                    };
+
+                    unsafe {
+                        [<cpu_chunked_radix_partition_ $Suffix _ $Suffix>](
+                            &mut args as *mut RadixPartitionArgs
+                            );
+                    }
+
+                    Ok(())
+                }
+
                 fn chunked_radix_partition_swwc_impl(
                     rp: &CpuRadixPartitioner,
                     partition_attr: &[$Type],
@@ -309,19 +383,19 @@ macro_rules! impl_cpu_radix_partition_for_type {
                                 "Partition and payload attributes have different sizes"
                                 .to_string()
                                 ))?;
-                        }
+                    }
                     if write_combine_buffer.radix_bits != rp.radix_bits {
                         Err(ErrorKind::InvalidArgument(
                                 "WriteCombineBuffer has mismatching radix bits"
                                 .to_string()
                                 ))?;
-                        }
+                    }
                     if partitioned_relation.radix_bits != rp.radix_bits {
                         Err(ErrorKind::InvalidArgument(
                                 "PartitionedRelation has mismatching radix bits"
                                 .to_string()
                                 ))?;
-                        }
+                    }
 
                     let data_len = partition_attr.len();
 
@@ -331,6 +405,7 @@ macro_rules! impl_cpu_radix_partition_for_type {
                         data_len,
                         padding_len: partitioned_relation.padding_len(),
                         radix_bits: rp.radix_bits,
+                        tmp_partition_offsets: ptr::null_mut(),
                         write_combine_buffer: write_combine_buffer
                             .buffers
                             .as_mut_slice()
@@ -367,8 +442,55 @@ mod tests {
     use std::ops::RangeInclusive;
     use std::result::Result;
 
+    enum RadixPartitionAlgorithm {
+        Chunked,
+        ChunkedSwwc,
+    }
+
+    fn unified_radix_partition<T: DeviceCopy + CpuRadixPartitionable>(
+        algorithm: RadixPartitionAlgorithm,
+        radix_bits: u32,
+        numa_node: u16,
+        partition_attr: &[T],
+        payload_attr: &[T],
+        partitioned_relation: &mut PartitionedRelation<Tuple<T, T>>,
+    ) -> super::Result<()> {
+        let partitioner = CpuRadixPartitioner { radix_bits };
+
+        match algorithm {
+            RadixPartitionAlgorithm::Chunked => {
+                let mut tmp_partition_offsets = Allocator::alloc_deref_mem(
+                    DerefMemType::NumaMem(numa_node),
+                    partitioned_relation.partitions(), // FIXME: hide implementation detail
+                );
+
+                partitioner.chunked_radix_partition(
+                    &partition_attr,
+                    &payload_attr,
+                    &mut tmp_partition_offsets,
+                    partitioned_relation,
+                )?;
+            }
+            RadixPartitionAlgorithm::ChunkedSwwc => {
+                let mut write_combine_buffer = WriteCombineBuffer::new(
+                    radix_bits,
+                    Allocator::deref_mem_alloc_fn::<u8>(DerefMemType::NumaMem(numa_node)),
+                );
+
+                partitioner.chunked_radix_partition_swwc(
+                    &partition_attr,
+                    &payload_attr,
+                    &mut write_combine_buffer,
+                    partitioned_relation,
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
     macro_rules! test_cpu_seq {
-        ($fn_suffix:ident, $type:ty, $tuples:expr, $key_range:expr, $radix_bits:expr) => {
+        ($fn_suffix:ident, $type:ty, $tuples:expr, $key_range:expr, $algorithm:expr, $radix_bits:expr) => {
             paste::item! {
 
                 #[test]
@@ -380,7 +502,6 @@ mod tests {
                     let mut data_pay: Vec<$type> = vec![0; $tuples];
 
                     UniformRelation::gen_primary_key(&mut data_key)?;
-                    // UniformRelation::gen_attr(&mut data_key, $key_range)?;
                     UniformRelation::gen_attr(&mut data_pay, PAYLOAD_RANGE)?;
 
                     let mut original_tuples: HashMap<_, _> = data_key
@@ -395,18 +516,12 @@ mod tests {
                         Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(NUMA_NODE)),
                         );
 
-                    let mut write_combine_buffer = WriteCombineBuffer::new(
+                    unified_radix_partition(
+                        $algorithm,
                         $radix_bits,
-                        Allocator::deref_mem_alloc_fn::<u8>(DerefMemType::NumaMem(NUMA_NODE)),
-                        );
-
-                    let partitioner = CpuRadixPartitioner {
-                        radix_bits: $radix_bits,
-                    };
-                    partitioner.chunked_radix_partition_swwc(
+                        NUMA_NODE,
                         &data_key,
                         &data_pay,
-                        &mut write_combine_buffer,
                         &mut partitioned_relation,
                         )?;
 
@@ -466,18 +581,12 @@ mod tests {
                         Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(NUMA_NODE)),
                         );
 
-                    let mut write_combine_buffer = WriteCombineBuffer::new(
+                    unified_radix_partition(
+                        $algorithm,
                         $radix_bits,
-                        Allocator::deref_mem_alloc_fn::<u8>(DerefMemType::NumaMem(NUMA_NODE)),
-                        );
-
-                    let partitioner = CpuRadixPartitioner {
-                        radix_bits: $radix_bits,
-                    };
-                    partitioner.chunked_radix_partition_swwc(
+                        NUMA_NODE,
                         &data_key,
                         &data_pay,
-                        &mut write_combine_buffer,
                         &mut partitioned_relation,
                         )?;
 
@@ -502,13 +611,21 @@ mod tests {
         }
     }
 
-    test_cpu_seq!(i32_small_data, i32, 15, 1..=(32 << 20), 4);
+    test_cpu_seq!(
+        i32_small_data,
+        i32,
+        15,
+        1..=(32 << 20),
+        RadixPartitionAlgorithm::Chunked,
+        4
+    );
 
     test_cpu_seq!(
         i32_1_bit,
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
+        RadixPartitionAlgorithm::Chunked,
         1
     );
 
@@ -517,6 +634,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
+        RadixPartitionAlgorithm::Chunked,
         2
     );
 
@@ -525,6 +643,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
+        RadixPartitionAlgorithm::Chunked,
         12
     );
 
@@ -533,6 +652,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
+        RadixPartitionAlgorithm::Chunked,
         13
     );
 
@@ -541,6 +661,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
+        RadixPartitionAlgorithm::Chunked,
         14
     );
 
@@ -549,6 +670,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
+        RadixPartitionAlgorithm::Chunked,
         15
     );
 
@@ -557,6 +679,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
+        RadixPartitionAlgorithm::Chunked,
         16
     );
 
@@ -565,6 +688,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
+        RadixPartitionAlgorithm::Chunked,
         17
     );
 
@@ -573,6 +697,7 @@ mod tests {
         i32,
         (32 << 5) / size_of::<i32>(),
         1..=(32 << 20),
+        RadixPartitionAlgorithm::Chunked,
         17
     );
 
@@ -581,6 +706,7 @@ mod tests {
         i32,
         ((32 << 10) - 7) / size_of::<i32>(),
         1..=(32 << 20),
+        RadixPartitionAlgorithm::Chunked,
         10
     );
 
@@ -589,6 +715,115 @@ mod tests {
         i64,
         (64 << 20) / size_of::<i64>(),
         1..=(64 << 20),
+        RadixPartitionAlgorithm::Chunked,
+        17
+    );
+
+    test_cpu_seq!(
+        swwc_i32_small_data,
+        i32,
+        15,
+        1..=(32 << 20),
+        RadixPartitionAlgorithm::ChunkedSwwc,
+        4
+    );
+
+    test_cpu_seq!(
+        swwc_i32_1_bit,
+        i32,
+        (32 << 20) / size_of::<i32>(),
+        1..=(32 << 20),
+        RadixPartitionAlgorithm::ChunkedSwwc,
+        1
+    );
+
+    test_cpu_seq!(
+        swwc_i32_2_bits,
+        i32,
+        (32 << 20) / size_of::<i32>(),
+        1..=(32 << 20),
+        RadixPartitionAlgorithm::ChunkedSwwc,
+        2
+    );
+
+    test_cpu_seq!(
+        swwc_i32_12_bits,
+        i32,
+        (32 << 20) / size_of::<i32>(),
+        1..=(32 << 20),
+        RadixPartitionAlgorithm::ChunkedSwwc,
+        12
+    );
+
+    test_cpu_seq!(
+        swwc_i32_13_bits,
+        i32,
+        (32 << 20) / size_of::<i32>(),
+        1..=(32 << 20),
+        RadixPartitionAlgorithm::ChunkedSwwc,
+        13
+    );
+
+    test_cpu_seq!(
+        swwc_i32_14_bits,
+        i32,
+        (32 << 20) / size_of::<i32>(),
+        1..=(32 << 20),
+        RadixPartitionAlgorithm::ChunkedSwwc,
+        14
+    );
+
+    test_cpu_seq!(
+        swwc_i32_15_bits,
+        i32,
+        (32 << 20) / size_of::<i32>(),
+        1..=(32 << 20),
+        RadixPartitionAlgorithm::ChunkedSwwc,
+        15
+    );
+
+    test_cpu_seq!(
+        swwc_i32_16_bits,
+        i32,
+        (32 << 20) / size_of::<i32>(),
+        1..=(32 << 20),
+        RadixPartitionAlgorithm::ChunkedSwwc,
+        16
+    );
+
+    test_cpu_seq!(
+        swwc_i32_17_bits,
+        i32,
+        (32 << 20) / size_of::<i32>(),
+        1..=(32 << 20),
+        RadixPartitionAlgorithm::ChunkedSwwc,
+        17
+    );
+
+    test_cpu_seq!(
+        swwc_i32_less_tuples_than_partitions,
+        i32,
+        (32 << 5) / size_of::<i32>(),
+        1..=(32 << 20),
+        RadixPartitionAlgorithm::ChunkedSwwc,
+        17
+    );
+
+    test_cpu_seq!(
+        swwc_i32_non_power_2_data_len,
+        i32,
+        ((32 << 10) - 7) / size_of::<i32>(),
+        1..=(32 << 20),
+        RadixPartitionAlgorithm::ChunkedSwwc,
+        10
+    );
+
+    test_cpu_seq!(
+        swwc_i64_17_bits,
+        i64,
+        (64 << 20) / size_of::<i64>(),
+        1..=(64 << 20),
+        RadixPartitionAlgorithm::ChunkedSwwc,
         17
     );
 }
