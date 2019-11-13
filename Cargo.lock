@@ -640,13 +640,13 @@ source = "git+https://github.com/Cldfire/nvml-wrapper?branch=devel#142c2a56c46aa
 
 [[package]]
 name = "papi"
-version = "0.3.0"
-source = "git+https://github.com/LutzCle/papi-rs#0f808fb0f519a57427582e6df48814ee200db867"
+version = "0.1.0"
+source = "git+https://github.com/LutzCle/papi-rs#12ed5f2a66dda2ab4e2c3d10e900926fe65e5981"
 dependencies = [
  "criterion 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "error-chain 0.12.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "libc 0.2.65 (registry+https://github.com/rust-lang/crates.io-index)",
- "papi-sys 0.3.0 (git+https://github.com/lutzcle/papi-sys.git)",
+ "papi-sys 0.3.0 (git+https://github.com/LutzCle/papi-sys)",
  "serde 1.0.98 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_derive 1.0.80 (registry+https://github.com/rust-lang/crates.io-index)",
  "toml 0.4.10 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -655,7 +655,7 @@ dependencies = [
 [[package]]
 name = "papi-sys"
 version = "0.3.0"
-source = "git+https://github.com/lutzcle/papi-sys.git#c2a287d1804e53cb7ab2be65fc5d6c0ae8f731b5"
+source = "git+https://github.com/LutzCle/papi-sys#c2a287d1804e53cb7ab2be65fc5d6c0ae8f731b5"
 dependencies = [
  "bindgen 0.50.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -1048,7 +1048,7 @@ dependencies = [
  "libc 0.2.65 (registry+https://github.com/rust-lang/crates.io-index)",
  "num-traits 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "numa-gpu 0.1.0",
- "papi 0.3.0 (git+https://github.com/LutzCle/papi-rs)",
+ "papi 0.1.0 (git+https://github.com/LutzCle/papi-rs)",
  "paste 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "rustacuda 0.1.0 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)",
 ]
@@ -1344,8 +1344,8 @@ dependencies = [
 "checksum num_cpus 1.8.0 (registry+https://github.com/rust-lang/crates.io-index)" = "c51a3322e4bca9d212ad9a158a02abc6934d005490c054a2778df73a70aa0a30"
 "checksum nvml-wrapper 0.4.1 (git+https://github.com/Cldfire/nvml-wrapper?branch=devel)" = "<none>"
 "checksum nvml-wrapper-sys 0.3.1 (git+https://github.com/Cldfire/nvml-wrapper?branch=devel)" = "<none>"
-"checksum papi 0.3.0 (git+https://github.com/LutzCle/papi-rs)" = "<none>"
-"checksum papi-sys 0.3.0 (git+https://github.com/lutzcle/papi-sys.git)" = "<none>"
+"checksum papi 0.1.0 (git+https://github.com/LutzCle/papi-rs)" = "<none>"
+"checksum papi-sys 0.3.0 (git+https://github.com/LutzCle/papi-sys)" = "<none>"
 "checksum paste 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)" = "1f4a4a1c555c6505821f9d58b8779d0f630a6b7e4e1be24ba718610acf01fa79"
 "checksum paste-impl 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)" = "26e796e623b8b257215f27e6c80a5478856cae305f5b59810ff9acdaa34570e6"
 "checksum peeking_take_while 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)" = "19b17cddbe7ec3f8bc800887bab5e717348c95ea2ca0b1bf0837fb964dc67099"
