@@ -75,6 +75,9 @@ fn main() {
         // .flag("-fopenmp")
         // .flag("-lnuma")
         .define("CACHE_LINE_SIZE", cache_line_size.to_string().as_str())
+        // Note: Enables x86 intrinsic translations on POWER9
+        // See also "Linux on Power Porting Guide - Vector Intrinsics"
+        .define("NO_WARN_X86_INTRINSICS", None)
         .pic(true)
         .file("cpputils/no_partitioning_join.cpp")
         .file("cpputils/radix_partition.cpp")

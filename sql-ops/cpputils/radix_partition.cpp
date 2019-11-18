@@ -46,7 +46,11 @@
  * limitations under the License.
  */
 
+#if defined(__x86_64__)
 #include <immintrin.h>
+#elif defined(__ALTIVEC__)
+#include <emmintrin.h>
+#endif
 
 #include <cassert>
 #include <cstdint>
