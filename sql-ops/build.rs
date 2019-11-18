@@ -63,6 +63,7 @@ fn main() {
 
     // Add CPP utils
     cc::Build::new()
+        .compiler("gcc-8")
         .include(include_path)
         .cpp(true)
         // Note: -march not supported by GCC-7 on Power9, use -mcpu instead
