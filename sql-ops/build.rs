@@ -9,7 +9,7 @@
  */
 
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
@@ -25,11 +25,16 @@ fn main() {
     let cache_line_size = 128;
 
     // Add CUDA utils
-    // For gencodes, see: http://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/
-    let args = vec![
+    let cuda_lib_file = format!("{}/cudautils.fatbin", out_dir);
+    let cuda_files = vec![
         "cudautils/no_partitioning_join.cu",
-        "-std=c++11",
-        "-fatbin",
+        "cudautils/radix_partition.cu",
+    ];
+    let nvcc_build_args = vec!["--device-c", "-std=c++11", "--output-directory", &out_dir];
+    let nvcc_link_args = vec!["--device-link", "-fatbin", "--output-file", &cuda_lib_file];
+
+    // For gencodes, see: http://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/
+    let gpu_archs = vec![
         "-gencode",
         "arch=compute_30,code=sm_30", // Tesla K40
         "-gencode",
@@ -42,12 +47,39 @@ fn main() {
         "arch=compute_61,code=sm_61", // GTX 1080
         "-gencode",
         "arch=compute_70,code=sm_70", // Tesla V100
-        "-o",
     ];
 
     let output = Command::new("nvcc")
-        .args(args.as_slice())
-        .arg(&format!("{}/cudautils.fatbin", out_dir))
+        .args(cuda_files.as_slice())
+        .args(nvcc_build_args.as_slice())
+        .args(gpu_archs.as_slice())
+        .output()
+        .expect("Couldn't execute nvcc");
+
+    if !output.status.success() {
+        eprintln!("status: {}", output.status);
+        eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+        eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+        panic!();
+    }
+
+    let cuda_object_files: Vec<_> = cuda_files
+        .as_slice()
+        .into_iter()
+        .map(|f| {
+            let p = Path::new(f);
+            let mut obj = PathBuf::new();
+            obj.push(&out_dir);
+            obj.push(p.file_stem().unwrap());
+            obj.set_extension("o");
+            obj
+        })
+        .collect();
+
+    let output = Command::new("nvcc")
+        .args(cuda_object_files.as_slice())
+        .args(nvcc_link_args.as_slice())
+        .args(gpu_archs.as_slice())
         .output()
         .expect("Couldn't execute nvcc");
 

@@ -8,4 +8,5 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
+pub mod gpu_radix_partition;
 pub mod radix_partition;

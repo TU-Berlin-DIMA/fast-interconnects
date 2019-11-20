@@ -72,7 +72,7 @@ extern "C" {
 
 /// Compute the fanout (i.e., the number of partitions) from the number of radix
 /// bits.
-fn fanout(radix_bits: u32) -> usize {
+pub(super) fn fanout(radix_bits: u32) -> usize {
     1 << radix_bits
 }
 

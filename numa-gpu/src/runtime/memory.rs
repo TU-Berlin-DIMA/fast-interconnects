@@ -16,6 +16,7 @@ use rustacuda::memory::{
 use std::convert::{TryFrom, TryInto};
 use std::ops::Deref;
 use std::ops::DerefMut;
+use std::ptr;
 
 use super::numa::{DistributedNumaMemory, NumaMemory};
 use crate::error::{Error, ErrorKind, Result};
@@ -362,7 +363,15 @@ impl<'a, T: DeviceCopy> LaunchableMem for UnifiedBuffer<T> {
 /// `LaunchablePtr` is guaranteed to have an equivalent internal
 /// representation to a raw pointer. Thus, it can be safely reinterpreted or
 /// transmuted to `*const T`.
+#[derive(Debug)]
 pub struct LaunchablePtr<T>(*const T);
+
+impl<T: DeviceCopy> LaunchablePtr<T> {
+    /// Creates a null launchable pointer.
+    pub fn null() -> Self {
+        Self(ptr::null())
+    }
+}
 
 unsafe impl<T: DeviceCopy> DeviceCopy for LaunchablePtr<T> {}
 
@@ -389,7 +398,15 @@ impl<T> From<DevicePointer<T>> for LaunchablePtr<T> {
 /// `LaunchableMutPtr` is guaranteed to have an equivalent internal
 /// representation to a raw pointer. Thus, it can be safely reinterpreted or
 /// transmuted to `*mut T`.
+#[derive(Debug)]
 pub struct LaunchableMutPtr<T>(*mut T);
+
+impl<T: DeviceCopy> LaunchableMutPtr<T> {
+    /// Creates a null launchable mutable pointer.
+    pub fn null_mut() -> Self {
+        Self(ptr::null_mut())
+    }
+}
 
 unsafe impl<T: DeviceCopy> DeviceCopy for LaunchableMutPtr<T> {}
 
@@ -409,6 +426,7 @@ impl<T> From<DevicePointer<T>> for LaunchableMutPtr<T> {
 ///
 /// `LaunchableSlice` is intended to be passed to a function that executes a
 /// CUDA kernel with the slice as input parameter.
+#[derive(Debug)]
 pub struct LaunchableSlice<'a, T>(&'a [T]);
 
 unsafe impl<'a, T: DeviceCopy> DeviceCopy for LaunchableSlice<'a, T> {}
