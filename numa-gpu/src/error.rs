@@ -9,12 +9,8 @@
  */
 
 use cuda_sys::cuda::cudaError_t;
-
 use error_chain::error_chain;
-
 use rustacuda::error::CudaError;
-
-use rayon::ThreadPoolBuildError;
 
 error_chain! {
     errors {
@@ -43,7 +39,8 @@ error_chain! {
     foreign_links {
         Cuda(CudaError);
         Io(::std::io::Error);
-        RayonThreadPoolBuild(ThreadPoolBuildError);
+        ProcFs(procfs::ProcError);
+        RayonThreadPoolBuild(rayon::ThreadPoolBuildError);
     }
 }
 

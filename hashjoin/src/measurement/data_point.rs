@@ -89,14 +89,14 @@ impl DataPoint {
 
         // Get device information
         let dev_codename_str = match cmd.execution_method {
-            ArgExecutionMethod::Cpu => vec![cpu_codename()],
+            ArgExecutionMethod::Cpu => vec![cpu_codename()?],
             ArgExecutionMethod::Gpu | ArgExecutionMethod::GpuStream => {
                 let device = Device::get_device(cmd.device_id.into())?;
                 vec![device.name()?]
             }
             ArgExecutionMethod::Het | ArgExecutionMethod::GpuBuildHetProbe => {
                 let device = Device::get_device(cmd.device_id.into())?;
-                vec![cpu_codename(), device.name()?]
+                vec![cpu_codename()?, device.name()?]
             }
         };
 

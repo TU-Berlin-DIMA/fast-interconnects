@@ -57,20 +57,29 @@ impl fmt::Display for ProcessorCache {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
-pub fn cpu_codename() -> String {
-    extern crate raw_cpuid;
-    let cpuid = raw_cpuid::CpuId::new();
-    cpuid
-        .get_extended_function_info()
-        .as_ref()
-        .and_then(|i| i.processor_brand_string())
-        .map_or_else(|| String::from("unknown x86-64"), |s| String::from(s))
+/// Returns the codename of the current CPU.
+///
+/// For example: `Intel(R) Core(TM) i7-5600U CPU @ 2.60GHz`
+#[cfg(not(target_arch = "powerpc64"))]
+pub fn cpu_codename() -> Result<String> {
+    let cpu_id = 0;
+    Ok(procfs::cpuinfo()?
+        .model_name(cpu_id)
+        .expect("Failed to get CPU codename")
+        .to_string())
 }
 
+/// Returns the codename of the current CPU.
+///
+/// For example: `POWER9, altivec supported`
 #[cfg(target_arch = "powerpc64")]
-pub fn cpu_codename() -> String {
-    String::from("POWER9")
+pub fn cpu_codename() -> Result<String> {
+    let cpu_id = 0;
+    Ok(procfs::cpuinfo()?
+        .get_info(cpu_id)
+        .and_then(|mut m| m.remove("cpu"))
+        .expect("Failed to get CPU codename")
+        .to_string())
 }
 
 /// Extends Rustacuda's Device with methods that provide additional hardware

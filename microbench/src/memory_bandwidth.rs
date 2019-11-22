@@ -195,8 +195,8 @@ impl MemoryBandwidth {
             DeviceId::Gpu(_) => ("GPU", None),
         };
         let device_codename = match device_id {
-            DeviceId::Cpu(_) => hw_info::cpu_codename(),
-            DeviceId::Gpu(_) => device.name().expect("Couldn't get device code name"),
+            DeviceId::Cpu(_) => hw_info::cpu_codename().expect("Couldn't get CPU codename"),
+            DeviceId::Gpu(_) => device.name().expect("Couldn't get device codename"),
         };
         let mem_type_description: MemTypeDescription = (&mem_type).into();
 
