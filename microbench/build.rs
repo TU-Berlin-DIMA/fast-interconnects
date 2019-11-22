@@ -6,6 +6,7 @@ use std::path::Path;
 fn main() {
     let include_path = Path::new("include");
 
+    // For gencodes, see: http://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/
     env::set_var("CXX", "g++-7");
     cc::Build::new()
         .include(include_path)
@@ -19,6 +20,8 @@ fn main() {
         .flag("arch=compute_50,code=sm_50") // GTX 940M
         .flag("-gencode")
         .flag("arch=compute_52,code=sm_52") // GTX 980
+        .flag("-gencode")
+        .flag("arch=compute_53,code=sm_53") // Jetson Nano
         .flag("-gencode")
         .flag("arch=compute_61,code=sm_61") // GTX 1080
         .flag("-gencode")

@@ -23,6 +23,7 @@ fn main() {
     }
 
     // Add CUDA utils
+    // For gencodes, see: http://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/
     let args = vec![
         "cudautils/no_partitioning_join.cu",
         "-std=c++11",
@@ -33,6 +34,8 @@ fn main() {
         "arch=compute_50,code=sm_50", // GTX 940M
         "-gencode",
         "arch=compute_52,code=sm_52", // GTX 980
+        "-gencode",
+        "arch=compute_53,code=sm_53", // Jetson Nano
         "-gencode",
         "arch=compute_61,code=sm_61", // GTX 1080
         "-gencode",
