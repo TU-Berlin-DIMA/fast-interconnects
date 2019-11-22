@@ -27,9 +27,9 @@ use rustacuda::stream::Stream;
 use std::ffi::CString;
 use std::mem;
 
-extern "C" {
-    fn gpu_swwc_buffer_bytes() -> usize;
-}
+// extern "C" {
+//     fn gpu_swwc_buffer_bytes() -> usize;
+// }
 
 /// Arguments to the C/C++ partitioning function.
 ///
@@ -79,7 +79,9 @@ struct WriteCombineBuffer {
 impl WriteCombineBuffer {
     /// Creates a new set of SWWC buffers.
     fn new(radix_bits: u32) -> Result<Self> {
-        let buffer_bytes = unsafe { gpu_swwc_buffer_bytes() };
+        // FIXME: Find a DRY way to share buffer size between CUDA and Rust
+        // let buffer_bytes = unsafe { gpu_swwc_buffer_bytes() };
+        let buffer_bytes = 0_usize;
         let bytes = buffer_bytes * fanout(radix_bits);
         let buffers = unsafe { DeviceBuffer::uninitialized(bytes / mem::size_of::<u64>())? };
 
@@ -90,7 +92,9 @@ impl WriteCombineBuffer {
     ///
     /// Note that `WriteCombineBuffer` contains one SWWC buffer per
     fn tuples_per_buffer<T: Sized>() -> usize {
-        let buffer_bytes = unsafe { gpu_swwc_buffer_bytes() };
+        // FIXME: Find a DRY way to share buffer size between CUDA and Rust
+        // let buffer_bytes = unsafe { gpu_swwc_buffer_bytes() };
+        let buffer_bytes = 0_usize;
         buffer_bytes / mem::size_of::<T>()
     }
 }
@@ -286,6 +290,83 @@ impl GpuRadixPartitionable for i32 {
                 )
             )?;
         }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::result::Result;
+    use std::error::Error;
+    use datagen::relation::UniformRelation;
+    use numa_gpu::runtime::allocator::{Allocator, MemType};
+    use std::collections::hash_map::{Entry, HashMap};
+    use std::iter;
+    use std::mem::size_of;
+    use std::ops::RangeInclusive;
+    use rustacuda::function::{GridSize, BlockSize};
+    use rustacuda::stream::{Stream, StreamFlags};
+    use rustacuda::memory::LockedBuffer;
+
+    #[test]
+    fn gpu_verify_partitions() -> Result<(), Box<dyn Error>> {
+        const KEY_RANGE: RangeInclusive<usize> = 1..=10000;
+        const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
+        const NUMA_NODE: u16 = 0;
+        const TUPLES: usize = 32 << 20;
+        const RADIX_BITS: u32 = 12;
+        const ALGORITHM: GpuRadixPartitionAlgorithm = GpuRadixPartitionAlgorithm::Chunked;
+
+        let _context = rustacuda::quick_init()?;
+
+        let mut data_key: LockedBuffer<i32> = LockedBuffer::new(&0, TUPLES)?;
+        let mut data_pay: LockedBuffer<i32> = LockedBuffer::new(&0, TUPLES)?;
+
+        UniformRelation::gen_attr(&mut data_key, KEY_RANGE)?;
+        UniformRelation::gen_attr(&mut data_pay, PAYLOAD_RANGE)?;
+
+        let mut partitioned_relation = PartitionedRelation::new(
+            TUPLES,
+            RADIX_BITS,
+            Allocator::mem_alloc_fn(MemType::CudaUniMem),
+            Allocator::mem_alloc_fn(MemType::CudaUniMem),
+            );
+
+        let mut partitioner = GpuRadixPartitioner::new(
+            ALGORITHM,
+            RADIX_BITS,
+            Allocator::mem_alloc_fn::<u64>(MemType::CudaUniMem),
+            GridSize::from(10),
+            BlockSize::from(128),
+            )?;
+
+        let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
+        let data_key = Mem::CudaPinnedMem(data_key);
+        let data_pay = Mem::CudaPinnedMem(data_pay);
+
+        partitioner.partition(
+            data_key.as_launchable_slice(),
+            data_pay.as_launchable_slice(),
+            &mut partitioned_relation,
+            &stream,
+            )?;
+
+        // let mask = fanout(RADIX_BITS) - 1;
+        // (0..partitioned_relation.partitions())
+        //     .flat_map(|i| {
+        //         iter::repeat(i)
+        //             .zip(partitioned_relation[i].iter())
+        //     })
+        // .for_each(|(i, &tuple)| {
+        //     let dst_partition = (tuple.key) & mask as i32;
+        //     assert_eq!(
+        //         dst_partition, i as i32,
+        //         "Wrong partitioning detected: key {} in partition {}; expected partition {}",
+        //         tuple.key, i, dst_partition
+        //         );
+        // });
 
         Ok(())
     }
