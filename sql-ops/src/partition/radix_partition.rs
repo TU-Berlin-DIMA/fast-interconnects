@@ -424,7 +424,8 @@ mod tests {
 
                     let mut original_tuples: HashMap<_, _> = data_key
                         .iter()
-                        .zip(data_pay.iter().zip(std::iter::repeat(0)))
+                        .cloned()
+                        .zip(data_pay.iter().cloned().zip(std::iter::repeat(0)))
                         .collect();
 
                     let mut partitioned_relation = PartitionedRelation::new(
@@ -449,6 +450,7 @@ mod tests {
                     partitioned_relation.relation
                         .as_slice()
                         .iter()
+                        .cloned()
                         .for_each(|Tuple { key, value }| {
                             let entry = original_tuples.entry(key);
                             match entry {
@@ -466,7 +468,7 @@ mod tests {
                                 }
                                 entry @ Entry::Vacant(_) => {
                                     // skip padding entries
-                                    if **entry.key() != 0 {
+                                    if *entry.key() != 0 {
                                         assert!(false, "Invalid key: {}", entry.key());
                                     }
                                 }
