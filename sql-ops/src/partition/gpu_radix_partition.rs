@@ -24,8 +24,10 @@ use rustacuda::launch;
 use rustacuda::memory::{DeviceBox, DeviceBuffer, DeviceCopy};
 use rustacuda::module::Module;
 use rustacuda::stream::Stream;
+use std::convert::TryInto;
 use std::ffi::CString;
 use std::mem;
+use std::ops::{Index, IndexMut};
 
 // extern "C" {
 //     fn gpu_swwc_buffer_bytes() -> usize;
@@ -160,6 +162,51 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
     /// Returns the number of padding elements per partition.
     pub(super) fn padding_len(&self) -> usize {
         WriteCombineBuffer::tuples_per_buffer::<T>()
+    }
+}
+
+/// Returns the specified partition as a subslice of the relation.
+impl<T: DeviceCopy> Index<usize> for PartitionedRelation<T> {
+    type Output = [T];
+
+    fn index(&self, i: usize) -> &Self::Output {
+        let (offsets, relation): (&[u64], &[T]) =
+            match ((&self.offsets).try_into(), (&self.relation).try_into()) {
+                (Ok(offsets), Ok(relation)) => (offsets, relation),
+                _ => panic!("Trying to dereference device memory!"),
+            };
+
+        let begin = offsets[i] as usize;
+        let end = if i + 1 < self.offsets.len() {
+            offsets[i + 1] as usize - self.padding_len()
+        } else {
+            relation.len()
+        };
+
+        &relation[begin..end]
+    }
+}
+
+/// Returns the specified partition as a mutable subslice of the relation.
+impl<T: DeviceCopy> IndexMut<usize> for PartitionedRelation<T> {
+    fn index_mut(&mut self, i: usize) -> &mut Self::Output {
+        let padding_len = self.padding_len();
+        let (offsets, relation): (&mut [u64], &mut [T]) = match (
+            (&mut self.offsets).try_into(),
+            (&mut self.relation).try_into(),
+        ) {
+            (Ok(offsets), Ok(relation)) => (offsets, relation),
+            _ => panic!("Trying to dereference device memory!"),
+        };
+
+        let begin = offsets[i] as usize;
+        let end = if i + 1 < offsets.len() {
+            offsets[i + 1] as usize - padding_len
+        } else {
+            relation.len()
+        };
+
+        &mut relation[begin..end]
     }
 }
 
@@ -298,23 +345,107 @@ impl GpuRadixPartitionable for i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::result::Result;
-    use std::error::Error;
     use datagen::relation::UniformRelation;
     use numa_gpu::runtime::allocator::{Allocator, MemType};
-    use std::collections::hash_map::{Entry, HashMap};
-    use std::iter;
-    use std::mem::size_of;
-    use std::ops::RangeInclusive;
-    use rustacuda::function::{GridSize, BlockSize};
-    use rustacuda::stream::{Stream, StreamFlags};
+    use rustacuda::function::{BlockSize, GridSize};
     use rustacuda::memory::LockedBuffer;
+    use rustacuda::stream::{Stream, StreamFlags};
+    use std::collections::hash_map::{Entry, HashMap};
+    use std::error::Error;
+    use std::iter;
+    use std::ops::RangeInclusive;
+    use std::result::Result;
 
     #[test]
-    fn gpu_verify_partitions() -> Result<(), Box<dyn Error>> {
+    fn gpu_tuple_loss_or_duplicates_i32() -> Result<(), Box<dyn Error>> {
+        const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
+        const TUPLES: usize = 32 << 20;
+        const RADIX_BITS: u32 = 12;
+        const ALGORITHM: GpuRadixPartitionAlgorithm = GpuRadixPartitionAlgorithm::Chunked;
+
+        let _context = rustacuda::quick_init()?;
+
+        let mut data_key: LockedBuffer<i32> = LockedBuffer::new(&0, TUPLES)?;
+        let mut data_pay: LockedBuffer<i32> = LockedBuffer::new(&0, TUPLES)?;
+
+        UniformRelation::gen_primary_key(&mut data_key)?;
+        UniformRelation::gen_attr(&mut data_pay, PAYLOAD_RANGE)?;
+
+        let mut original_tuples: HashMap<_, _> = data_key
+            .iter()
+            .cloned()
+            .zip(data_pay.iter().cloned().zip(std::iter::repeat(0)))
+            .collect();
+
+        let mut partitioned_relation = PartitionedRelation::new(
+            TUPLES,
+            RADIX_BITS,
+            Allocator::mem_alloc_fn(MemType::CudaUniMem),
+            Allocator::mem_alloc_fn(MemType::CudaUniMem),
+        );
+
+        let mut partitioner = GpuRadixPartitioner::new(
+            ALGORITHM,
+            RADIX_BITS,
+            Allocator::mem_alloc_fn::<u64>(MemType::CudaUniMem),
+            GridSize::from(10),
+            BlockSize::from(128),
+        )?;
+
+        let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
+        let data_key = Mem::CudaPinnedMem(data_key);
+        let data_pay = Mem::CudaPinnedMem(data_pay);
+
+        partitioner.partition(
+            data_key.as_launchable_slice(),
+            data_pay.as_launchable_slice(),
+            &mut partitioned_relation,
+            &stream,
+        )?;
+
+        let relation: &[_] = (&partitioned_relation.relation)
+            .try_into()
+            .expect("Tried to convert device memory into host slice");
+
+        relation.iter().cloned().for_each(|Tuple { key, value }| {
+            let entry = original_tuples.entry(key);
+            match entry {
+                entry @ Entry::Occupied(_) => {
+                    let key = *entry.key();
+                    entry.and_modify(|(original_value, counter)| {
+                        assert_eq!(
+                            value, *original_value,
+                            "Invalid payload: {}; expected: {}",
+                            value, *original_value
+                        );
+                        assert_eq!(*counter, 0, "Duplicate key: {}", key);
+                        *counter = *counter + 1;
+                    });
+                }
+                entry @ Entry::Vacant(_) => {
+                    // skip padding entries
+                    if *entry.key() != 0 {
+                        assert!(false, "Invalid key: {}", entry.key());
+                    }
+                }
+            };
+        });
+
+        original_tuples.iter().for_each(|(&key, &(_, counter))| {
+            assert_eq!(
+                counter, 1,
+                "Key {} occurs {} times; expected exactly once",
+                key, counter
+            );
+        });
+
+        Ok(())
+    }
+
+    #[test]
+    fn gpu_verify_partitions_i32() -> Result<(), Box<dyn Error>> {
         const KEY_RANGE: RangeInclusive<usize> = 1..=10000;
         const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
-        const NUMA_NODE: u16 = 0;
         const TUPLES: usize = 32 << 20;
         const RADIX_BITS: u32 = 12;
         const ALGORITHM: GpuRadixPartitionAlgorithm = GpuRadixPartitionAlgorithm::Chunked;
@@ -332,7 +463,7 @@ mod tests {
             RADIX_BITS,
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
-            );
+        );
 
         let mut partitioner = GpuRadixPartitioner::new(
             ALGORITHM,
@@ -340,7 +471,7 @@ mod tests {
             Allocator::mem_alloc_fn::<u64>(MemType::CudaUniMem),
             GridSize::from(10),
             BlockSize::from(128),
-            )?;
+        )?;
 
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
         let data_key = Mem::CudaPinnedMem(data_key);
@@ -351,22 +482,19 @@ mod tests {
             data_pay.as_launchable_slice(),
             &mut partitioned_relation,
             &stream,
-            )?;
+        )?;
 
-        // let mask = fanout(RADIX_BITS) - 1;
-        // (0..partitioned_relation.partitions())
-        //     .flat_map(|i| {
-        //         iter::repeat(i)
-        //             .zip(partitioned_relation[i].iter())
-        //     })
-        // .for_each(|(i, &tuple)| {
-        //     let dst_partition = (tuple.key) & mask as i32;
-        //     assert_eq!(
-        //         dst_partition, i as i32,
-        //         "Wrong partitioning detected: key {} in partition {}; expected partition {}",
-        //         tuple.key, i, dst_partition
-        //         );
-        // });
+        let mask = fanout(RADIX_BITS) - 1;
+        (0..partitioned_relation.partitions())
+            .flat_map(|i| iter::repeat(i).zip(partitioned_relation[i].iter()))
+            .for_each(|(i, &tuple)| {
+                let dst_partition = (tuple.key) & mask as i32;
+                assert_eq!(
+                    dst_partition, i as i32,
+                    "Wrong partitioning detected: key {} in partition {}; expected partition {}",
+                    tuple.key, i, dst_partition
+                );
+            });
 
         Ok(())
     }

@@ -108,8 +108,8 @@ struct RadixPartitionArgs {
 #[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub struct Tuple<Key: Sized, Value: Sized> {
-    key: Key,
-    value: Value,
+    pub key: Key,
+    pub value: Value,
 }
 
 unsafe impl<K, V> DeviceCopy for Tuple<K, V>
