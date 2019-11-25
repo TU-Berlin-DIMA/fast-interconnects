@@ -8,13 +8,6 @@ description = "Performance microbenchmarks for NVLink 2.0 on POWER9"
 readme = "../README.md"
 edition = "2018"
 
-[features]
-default = ["nvml"]
-
-# NVML enables us to read the actual clock rate of the GPU.
-# Otherwise, we use the GPU's default clock rate.
-nvml = ["nvml-wrapper", "numa-gpu/nvml"]
-
 [dependencies]
 average = "~0.9.2"
 clap = "*"
@@ -31,11 +24,10 @@ structopt = "~0.2"
 [dependencies.numa-gpu]
 path = "../numa-gpu"
 
-[dependencies.nvml-wrapper]
-git = "https://github.com/Cldfire/nvml-wrapper"
-branch = "devel"
-optional = true
-features = ["serde"]
+# NVML enables us to read the actual clock rate of the GPU.
+# Otherwise, we use the GPU's default clock rate.
+[target.'cfg(not(target_arch = "aarch64"))'.dependencies]
+nvml-wrapper = { version = "0.5", features = ["serde"] }
 
 [build-dependencies]
 cc = { version = "~1.0", features = ["parallel"] }

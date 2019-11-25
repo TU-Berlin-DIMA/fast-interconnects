@@ -4,10 +4,11 @@ use numa_gpu::runtime::nvml::ThrottleReasons;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 use numa_gpu::runtime::{cuda_wrapper, hw_info, numa};
 
-#[cfg(not(feature = "nvml"))]
-use numa_gpu::runtime::hw_info::CudaDeviceInfo;
-#[cfg(feature = "nvml")]
+#[cfg(not(target_arch = "aarch64"))]
 use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
+
+#[cfg(target_arch = "aarch64")]
+use numa_gpu::runtime::hw_info::CudaDeviceInfo;
 
 use rustacuda::context::CurrentContext;
 use rustacuda::memory::DeviceBox;
@@ -155,7 +156,7 @@ struct Measurement<'h, 'd, 'c> {
 struct GpuMemoryLatency {
     device_id: u32,
 
-    #[cfg(feature = "nvml")]
+    #[cfg(not(target_arch = "aarch64"))]
     nvml: nvml_wrapper::NVML,
 }
 
@@ -253,14 +254,14 @@ impl<'h, 'd, 'c> Measurement<'h, 'd, 'c> {
 }
 
 impl GpuMemoryLatency {
-    #[cfg(feature = "nvml")]
+    #[cfg(not(target_arch = "aarch64"))]
     fn new(device_id: u32) -> Self {
         let nvml = NVML::init().expect("Couldn't initialize NVML");
 
         Self { device_id, nvml }
     }
 
-    #[cfg(not(feature = "nvml"))]
+    #[cfg(target_arch = "aarch64")]
     fn new(device_id: u32) -> Self {
         Self { device_id }
     }
@@ -308,20 +309,20 @@ impl GpuMemoryLatency {
     }
 
     fn run(
-        state: &mut Self,
+        _state: &mut Self,
         mem: &Mem<u32>,
         mp: &MeasurementParameters,
     ) -> (u32, Option<ThrottleReasons>, u64, u64) {
         // Get current GPU clock rate
-        #[cfg(feature = "nvml")]
-        let clock_rate_mhz = state
+        #[cfg(not(target_arch = "aarch64"))]
+        let clock_rate_mhz = _state
             .nvml
-            .device_by_index(state.device_id as u32)
+            .device_by_index(_state.device_id as u32)
             .expect("Couldn't get NVML device")
             .clock_info(Clock::SM)
             .expect("Couldn't get clock rate with NVML");
 
-        #[cfg(not(feature = "nvml"))]
+        #[cfg(target_arch = "aarch64")]
         let clock_rate_mhz = CurrentContext::get_device()
             .expect("Couldn't get CUDA device")
             .clock_rate()
@@ -339,16 +340,18 @@ impl GpuMemoryLatency {
         CurrentContext::synchronize().unwrap();
 
         // Check if GPU is running in a throttled state
-        #[cfg(feature = "nvml")]
-        let throttle_reasons: ThrottleReasons = state
-            .nvml
-            .device_by_index(state.device_id as u32)
-            .expect("Couldn't get NVML device")
-            .current_throttle_reasons()
-            .expect("Couldn't get current throttle reasons with NVML")
-            .into();
+        #[cfg(not(target_arch = "aarch64"))]
+        let throttle_reasons: Option<ThrottleReasons> = Some(
+            _state
+                .nvml
+                .device_by_index(_state.device_id as u32)
+                .expect("Couldn't get NVML device")
+                .current_throttle_reasons()
+                .expect("Couldn't get current throttle reasons with NVML")
+                .into(),
+        );
 
-        #[cfg(not(feature = "nvml"))]
+        #[cfg(target_arch = "aarch64")]
         let throttle_reasons = None;
 
         let mut cycles = 0;
@@ -357,7 +360,7 @@ impl GpuMemoryLatency {
             .expect("Couldn't copy result data from device");
         let ns: u64 = cycles * 1000 / (clock_rate_mhz as u64);
 
-        (clock_rate_mhz, Some(throttle_reasons), cycles, ns)
+        (clock_rate_mhz, throttle_reasons, cycles, ns)
     }
 }
 

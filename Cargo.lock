@@ -540,7 +540,7 @@ dependencies = [
  "hostname 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "libc 0.2.65 (registry+https://github.com/rust-lang/crates.io-index)",
  "numa-gpu 0.1.0",
- "nvml-wrapper 0.4.1 (git+https://github.com/Cldfire/nvml-wrapper?branch=devel)",
+ "nvml-wrapper 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "rayon 1.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "rustacuda 0.1.0 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)",
  "serde 1.0.98 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -626,7 +626,7 @@ dependencies = [
  "libc 0.2.65 (registry+https://github.com/rust-lang/crates.io-index)",
  "num-rational 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "num-traits 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)",
- "nvml-wrapper 0.4.1 (git+https://github.com/Cldfire/nvml-wrapper?branch=devel)",
+ "nvml-wrapper 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "procfs 0.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "rayon 1.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "rustacuda 0.1.0 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)",
@@ -634,20 +634,20 @@ dependencies = [
 
 [[package]]
 name = "nvml-wrapper"
-version = "0.4.1"
-source = "git+https://github.com/Cldfire/nvml-wrapper?branch=devel#142c2a56c46aa9fd6c2e8cbef923e729aa98d82f"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "bitflags 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "error-chain 0.12.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "nvml-wrapper-sys 0.3.1 (git+https://github.com/Cldfire/nvml-wrapper?branch=devel)",
+ "nvml-wrapper-sys 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde 1.0.98 (registry+https://github.com/rust-lang/crates.io-index)",
  "wrapcenum-derive 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
 name = "nvml-wrapper-sys"
-version = "0.3.1"
-source = "git+https://github.com/Cldfire/nvml-wrapper?branch=devel#142c2a56c46aa9fd6c2e8cbef923e729aa98d82f"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "papi"
@@ -1367,8 +1367,8 @@ dependencies = [
 "checksum num-rational 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)" = "f2885278d5fe2adc2f75ced642d52d879bffaceb5a2e0b1d4309ffdfb239b454"
 "checksum num-traits 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)" = "6ba9a427cfca2be13aa6f6403b0b7e7368fe982bfa16fccc450ce74c46cd9b32"
 "checksum num_cpus 1.8.0 (registry+https://github.com/rust-lang/crates.io-index)" = "c51a3322e4bca9d212ad9a158a02abc6934d005490c054a2778df73a70aa0a30"
-"checksum nvml-wrapper 0.4.1 (git+https://github.com/Cldfire/nvml-wrapper?branch=devel)" = "<none>"
-"checksum nvml-wrapper-sys 0.3.1 (git+https://github.com/Cldfire/nvml-wrapper?branch=devel)" = "<none>"
+"checksum nvml-wrapper 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)" = "546d152e9e9c7c33d18a3c4a9abcf7090d29d88a5b3a58a5877bff917565c392"
+"checksum nvml-wrapper-sys 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)" = "cf3e197c8eb4f4bb4521eaeee3a25695b419686bf490e77e1324e1a9f5819a1c"
 "checksum papi 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)" = "bd73efb38a90f0a936202455de45821a354616d8a77edd38fc5d7b26c3f8431e"
 "checksum papi-sys 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)" = "78eba51515778664c881ecc1917cdf82670c01c26024e76043ce9324d911e296"
 "checksum paste 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)" = "1f4a4a1c555c6505821f9d58b8779d0f630a6b7e4e1be24ba718610acf01fa79"

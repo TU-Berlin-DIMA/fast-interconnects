@@ -8,13 +8,6 @@ description = "A framework for CUDA and NUMA-aware execution using NVLink 2.0 on
 readme = "../README.md"
 edition = "2018"
 
-[features]
-default = ["nvml"]
-
-# NVML enables us to read the actual clock rate of the GPU.
-# Otherwise, we use the GPU's default clock rate.
-nvml = ["nvml-wrapper"]
-
 [dependencies]
 bitflags = "~1.1.0"
 crossbeam-utils = "~0.6.5"
@@ -27,11 +20,10 @@ procfs = { version = "~0.7.2", default-features = false }
 rayon = "~1.2.0"
 rustacuda = { git = "https://github.com/LutzCle/RustaCUDA", branch = "custom_mods" }
 
-[dependencies.nvml-wrapper]
-git = "https://github.com/Cldfire/nvml-wrapper"
-branch = "devel"
-optional = true
-features = ["serde"]
+# NVML enables us to read the actual clock rate of the GPU.
+# Otherwise, we use the GPU's default clock rate.
+[target.'cfg(not(target_arch = "aarch64"))'.dependencies]
+nvml-wrapper = { version = "0.5", features = ["serde"] }
 
 [dev-dependencies]
 assert_approx_eq = "~1.1.0"

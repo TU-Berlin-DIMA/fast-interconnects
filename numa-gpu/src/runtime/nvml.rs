@@ -10,7 +10,7 @@
 
 pub use nvml_impl::*;
 
-#[cfg(not(feature = "nvml"))]
+#[cfg(target_arch = "aarch64")]
 mod nvml_impl {
     use std::fmt;
 
@@ -23,7 +23,7 @@ mod nvml_impl {
     }
 }
 
-#[cfg(feature = "nvml")]
+#[cfg(not(target_arch = "aarch64"))]
 mod nvml_impl {
     use nvml_wrapper::bitmasks::device::ThrottleReasons as NvmlTR;
     use std::convert::From;

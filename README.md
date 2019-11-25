@@ -76,11 +76,10 @@ When all dependencies are installed, numa-gpu can be built using Cargo:
 cargo build --release
 ```
 
-Note that on ARM64 CPUs, Nvidia Management Library (NVML) is not supported. Thus,
-NVML must be disabled:
-```sh
-cargo build --release --no-default-features
-```
+Note that on ARM64 CPUs, Nvidia Management Library (NVML) is not supported and
+is disabled automatically. Thus, reading out the dynamic GPU clock rate is not
+supported on ARM64, and the GPU clock rate is determined statically via CUDA
+instead.
 
 ## Usage
 
