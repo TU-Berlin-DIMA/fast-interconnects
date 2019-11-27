@@ -9,6 +9,8 @@
  * Author: Clemens Lutz, DFKI GmbH <clemens.lutz@dfki.de>
  */
 
+#include <prefix_scan.h>
+
 #include <cassert>
 #include <cstdint>
 #include <cstring>
@@ -92,12 +94,10 @@ __device__ T key_to_partition(T key, T mask, B bits) {
 // See the Rust module for details.
 template <typename K, typename V>
 __device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
-  auto join_attr_data =
-      static_cast<const K *const __restrict__>(args.join_attr_data);
-  auto payload_attr_data =
-      static_cast<const V *const __restrict__>(args.payload_attr_data);
+  auto join_attr_data = static_cast<const K *>(args.join_attr_data);
+  auto payload_attr_data = static_cast<const V *>(args.payload_attr_data);
   auto partitioned_relation =
-      static_cast<Tuple<K, V> *const __restrict__>(args.partitioned_relation);
+      static_cast<Tuple<K, V> *>(args.partitioned_relation);
 
   const size_t fanout = 1UL << args.radix_bits;
   const K mask = static_cast<K>(fanout - 1);
@@ -135,6 +135,65 @@ __device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
   }
 }
 
+// Block-wise radix partitioning.
+//
+// See the Rust module for details.
+// FIXME: support for running multiple grid size > 1
+template <typename K, typename V>
+__device__ void gpu_block_radix_partition(RadixPartitionArgs &args) {
+  extern __shared__ size_t shared_mem[];
+
+  auto join_attr_data = static_cast<const K *>(args.join_attr_data);
+  auto payload_attr_data = static_cast<const V *>(args.payload_attr_data);
+  auto partitioned_relation =
+      static_cast<Tuple<K, V> *>(args.partitioned_relation);
+
+  const size_t fanout = 1ULL << args.radix_bits;
+  const K mask = static_cast<K>(fanout - 1);
+
+  size_t *const prefix_tmp = shared_mem;
+  size_t *const tmp_partition_offsets = &shared_mem[blockDim.x / warpSize];
+
+  // Ensure counters are all zeroed
+  for (size_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    tmp_partition_offsets[i] = 0;
+  }
+
+  __syncthreads();
+
+  // 1. Compute local histograms per partition for thread block
+  for (size_t i = threadIdx.x; i < args.data_length; i += blockDim.x) {
+    auto key = join_attr_data[i];
+    auto p_index = key_to_partition(key, mask, 0);
+    atomicAdd((unsigned long long *)&tmp_partition_offsets[p_index], 1ULL);
+  }
+
+  __syncthreads();
+
+  // 2. Compute offsets with exclusive prefix sum for thread block
+  block_exclusive_prefix_sum(tmp_partition_offsets, fanout, args.padding_length,
+                             prefix_tmp);
+
+  __syncthreads();
+
+  for (size_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    args.partition_offsets[i] = tmp_partition_offsets[i];
+  }
+
+  // 3. Partition
+  for (size_t i = threadIdx.x; i < args.data_length; i += blockDim.x) {
+    Tuple<K, V> tuple;
+    tuple.key = join_attr_data[i];
+    tuple.value = payload_attr_data[i];
+
+    auto p_index = key_to_partition(tuple.key, mask, 0);
+    auto offset =
+        atomicAdd((unsigned long long *)&tmp_partition_offsets[p_index], 1ULL);
+    __threadfence_block();
+    partitioned_relation[offset] = tuple;
+  }
+}
+
 // Exports the the size of all SWWC buffers.
 extern "C" size_t gpu_swwc_buffer_bytes() { return SWWC_BUFFER_SIZE; }
 
@@ -148,4 +207,16 @@ extern "C" __global__ void gpu_chunked_radix_partition_int32_int32(
 extern "C" __global__ void gpu_chunked_radix_partition_int64_int64(
     RadixPartitionArgs *args) {
   gpu_chunked_radix_partition<int64_t, int64_t>(*args);
+}
+
+// Exports the partitioning function for 8-byte key/value tuples.
+extern "C" __global__ void gpu_block_radix_partition_int32_int32(
+    RadixPartitionArgs *args) {
+  gpu_block_radix_partition<int32_t, int32_t>(*args);
+}
+
+// Exports the partitioning function for 16-byte key/value tuples.
+extern "C" __global__ void gpu_block_radix_partition_int64_int64(
+    RadixPartitionArgs *args) {
+  gpu_block_radix_partition<int64_t, int64_t>(*args);
 }

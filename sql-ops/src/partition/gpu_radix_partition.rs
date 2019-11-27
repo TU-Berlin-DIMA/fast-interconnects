@@ -19,6 +19,8 @@ use super::radix_partition::{fanout, Tuple};
 use crate::error::{ErrorKind, Result};
 use numa_gpu::runtime::allocator::MemAllocFn;
 use numa_gpu::runtime::memory::{LaunchableMutPtr, LaunchablePtr, LaunchableSlice, Mem};
+use rustacuda::context::CurrentContext;
+use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::launch;
 use rustacuda::memory::{DeviceBox, DeviceBuffer, DeviceCopy};
@@ -215,11 +217,13 @@ impl<T: DeviceCopy> IndexMut<usize> for PartitionedRelation<T> {
 pub enum GpuRadixPartitionAlgorithm {
     /// Chunked radix partition.
     Chunked,
+    Block,
 }
 
 #[derive(Debug)]
 enum RadixPartitionState {
     Chunked(Mem<u64>),
+    Block(Mem<u64>),
 }
 
 #[derive(Debug)]
@@ -245,6 +249,9 @@ impl GpuRadixPartitioner {
         let state = match algorithm {
             GpuRadixPartitionAlgorithm::Chunked => {
                 RadixPartitionState::Chunked(alloc_fn(num_partitions))
+            }
+            GpuRadixPartitionAlgorithm::Block => {
+                RadixPartitionState::Block(alloc_fn(num_partitions * block_size.x as usize))
             }
         };
 
@@ -310,6 +317,10 @@ impl GpuRadixPartitionable for i32 {
                 offsets.as_launchable_mut_ptr(),
                 LaunchableMutPtr::null_mut(),
             ),
+            RadixPartitionState::Block(ref mut offsets) => (
+                offsets.as_launchable_mut_ptr(),
+                LaunchableMutPtr::null_mut(),
+            ),
         };
 
         let args = RadixPartitionArgs {
@@ -330,12 +341,38 @@ impl GpuRadixPartitionable for i32 {
         let grid_size = rp.grid_size.clone();
         let block_size = rp.block_size.clone();
 
-        unsafe {
-            launch!(
-            module.gpu_chunked_radix_partition_int32_int32<<<grid_size, block_size, 0, stream>>>(
-                device_args.as_device_ptr()
-                )
-            )?;
+        match rp.state {
+            RadixPartitionState::Chunked(_) => unsafe {
+                launch!(
+                module.gpu_chunked_radix_partition_int32_int32<<<grid_size, block_size, 0, stream>>>(
+                    device_args.as_device_ptr()
+                    )
+                )?;
+            },
+            RadixPartitionState::Block(_) => {
+                let device = CurrentContext::get_device()?;
+                let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
+                let max_shared_mem_bytes =
+                    device.get_attribute(DeviceAttribute::MaxSharedMemoryPerBlock)? as u32;
+                let shared_mem_bytes = (block_size.x / warp_size + (fanout(rp.radix_bits) as u32))
+                    * mem::size_of::<usize>() as u32;
+                assert!(
+                    shared_mem_bytes <= max_shared_mem_bytes,
+                    "Failed to allocate enough shared memory"
+                );
+
+                unsafe {
+                    launch!(
+                        module.gpu_block_radix_partition_int32_int32<<<
+                            grid_size,
+                            block_size,
+                            shared_mem_bytes,
+                            stream
+                        >>>(
+                            device_args.as_device_ptr()
+                           ))?;
+                }
+            },
         }
 
         Ok(())
@@ -356,17 +393,18 @@ mod tests {
     use std::ops::RangeInclusive;
     use std::result::Result;
 
-    #[test]
-    fn gpu_tuple_loss_or_duplicates_i32() -> Result<(), Box<dyn Error>> {
+    fn gpu_tuple_loss_or_duplicates_i32(
+        tuples: usize,
+        algorithm: GpuRadixPartitionAlgorithm,
+        radix_bits: u32,
+        block_size: BlockSize,
+    ) -> Result<(), Box<dyn Error>> {
         const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
-        const TUPLES: usize = 32 << 20;
-        const RADIX_BITS: u32 = 12;
-        const ALGORITHM: GpuRadixPartitionAlgorithm = GpuRadixPartitionAlgorithm::Chunked;
 
         let _context = rustacuda::quick_init()?;
 
-        let mut data_key: LockedBuffer<i32> = LockedBuffer::new(&0, TUPLES)?;
-        let mut data_pay: LockedBuffer<i32> = LockedBuffer::new(&0, TUPLES)?;
+        let mut data_key: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
+        let mut data_pay: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
 
         UniformRelation::gen_primary_key(&mut data_key)?;
         UniformRelation::gen_attr(&mut data_pay, PAYLOAD_RANGE)?;
@@ -378,15 +416,15 @@ mod tests {
             .collect();
 
         let mut partitioned_relation = PartitionedRelation::new(
-            TUPLES,
-            RADIX_BITS,
+            tuples,
+            radix_bits,
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
         );
 
         let mut partitioner = GpuRadixPartitioner::new(
-            ALGORITHM,
-            RADIX_BITS,
+            algorithm,
+            radix_bits,
             Allocator::mem_alloc_fn::<u64>(MemType::CudaUniMem),
             GridSize::from(10),
             BlockSize::from(128),
@@ -402,6 +440,8 @@ mod tests {
             &mut partitioned_relation,
             &stream,
         )?;
+
+        stream.synchronize()?;
 
         let relation: &[_] = (&partitioned_relation.relation)
             .try_into()
@@ -442,35 +482,36 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn gpu_verify_partitions_i32() -> Result<(), Box<dyn Error>> {
-        const KEY_RANGE: RangeInclusive<usize> = 1..=10000;
+    fn gpu_verify_partitions_i32(
+        tuples: usize,
+        key_range: RangeInclusive<usize>,
+        algorithm: GpuRadixPartitionAlgorithm,
+        radix_bits: u32,
+        block_size: BlockSize,
+    ) -> Result<(), Box<dyn Error>> {
         const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
-        const TUPLES: usize = 32 << 20;
-        const RADIX_BITS: u32 = 12;
-        const ALGORITHM: GpuRadixPartitionAlgorithm = GpuRadixPartitionAlgorithm::Chunked;
 
         let _context = rustacuda::quick_init()?;
 
-        let mut data_key: LockedBuffer<i32> = LockedBuffer::new(&0, TUPLES)?;
-        let mut data_pay: LockedBuffer<i32> = LockedBuffer::new(&0, TUPLES)?;
+        let mut data_key: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
+        let mut data_pay: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
 
-        UniformRelation::gen_attr(&mut data_key, KEY_RANGE)?;
+        UniformRelation::gen_attr(&mut data_key, key_range)?;
         UniformRelation::gen_attr(&mut data_pay, PAYLOAD_RANGE)?;
 
         let mut partitioned_relation = PartitionedRelation::new(
-            TUPLES,
-            RADIX_BITS,
+            tuples,
+            radix_bits,
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
         );
 
         let mut partitioner = GpuRadixPartitioner::new(
-            ALGORITHM,
-            RADIX_BITS,
+            algorithm,
+            radix_bits,
             Allocator::mem_alloc_fn::<u64>(MemType::CudaUniMem),
-            GridSize::from(10),
-            BlockSize::from(128),
+            GridSize::from(1),
+            block_size,
         )?;
 
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
@@ -484,7 +525,9 @@ mod tests {
             &stream,
         )?;
 
-        let mask = fanout(RADIX_BITS) - 1;
+        stream.synchronize()?;
+
+        let mask = fanout(radix_bits) - 1;
         (0..partitioned_relation.partitions())
             .flat_map(|i| iter::repeat(i).zip(partitioned_relation[i].iter()))
             .for_each(|(i, &tuple)| {
@@ -497,5 +540,47 @@ mod tests {
             });
 
         Ok(())
+    }
+
+    #[test]
+    fn gpu_tuple_loss_or_duplicates_block_i32_10_bits() -> Result<(), Box<dyn Error>> {
+        gpu_tuple_loss_or_duplicates_i32(
+            32 << 20 / mem::size_of::<i32>(),
+            GpuRadixPartitionAlgorithm::Block,
+            10,
+            BlockSize::from(128),
+        )
+    }
+
+    #[test]
+    fn gpu_verify_partitions_block_i32_10_bits() -> Result<(), Box<dyn Error>> {
+        gpu_verify_partitions_i32(
+            32 << 20 / mem::size_of::<i32>(),
+            1..=(32 << 20),
+            GpuRadixPartitionAlgorithm::Block,
+            10,
+            BlockSize::from(128),
+        )
+    }
+
+    #[test]
+    fn gpu_tuple_loss_or_duplicates_block_i32_12_bits() -> Result<(), Box<dyn Error>> {
+        gpu_tuple_loss_or_duplicates_i32(
+            32 << 20 / mem::size_of::<i32>(),
+            GpuRadixPartitionAlgorithm::Block,
+            12,
+            BlockSize::from(1024),
+        )
+    }
+
+    #[test]
+    fn gpu_verify_partitions_block_i32_12_bits() -> Result<(), Box<dyn Error>> {
+        gpu_verify_partitions_i32(
+            32 << 20 / mem::size_of::<i32>(),
+            1..=(32 << 20),
+            GpuRadixPartitionAlgorithm::Block,
+            12,
+            BlockSize::from(1024),
+        )
     }
 }
