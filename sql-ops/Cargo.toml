@@ -27,6 +27,7 @@ libc = "~0.2.43"
 [dev-dependencies]
 criterion = "~0.3"
 papi = { version = "~0.1.0", features = ["criterion"] }
+rand = "0.7"
 
 [[bench]]
 name = "radix_partition_operator"

@@ -9,6 +9,7 @@
  */
 
 use std::env;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -48,11 +49,17 @@ fn main() {
         "-gencode",
         "arch=compute_70,code=sm_70", // Tesla V100
     ];
+    let nvcc_include = {
+        let mut s = OsString::from("-I ");
+        s.push(include_path.as_os_str());
+        s
+    };
 
     let output = Command::new("nvcc")
         .args(cuda_files.as_slice())
         .args(nvcc_build_args.as_slice())
         .args(gpu_archs.as_slice())
+        .arg(nvcc_include)
         .output()
         .expect("Couldn't execute nvcc");
 
