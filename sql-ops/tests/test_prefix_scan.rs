@@ -33,7 +33,7 @@ where
     let module = Module::load_from_file(&module_path)?;
     let warp_size = CurrentContext::get_device()?.get_attribute(DeviceAttribute::WarpSize)? as u32;
 
-    let data: Vec<usize> = (0..data_len)
+    let data: Vec<u64> = (0..data_len)
         .into_iter()
         .scan(thread_rng(), |rng, _| Some(rng.gen()))
         .collect();
@@ -44,7 +44,7 @@ where
     let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
 
     unsafe {
-        launch!(module.host_block_exclusive_prefix_sum<<<grid_size, bs, shared_mem_size, stream>>>(
+        launch!(module.host_block_exclusive_prefix_sum_uint64<<<grid_size, bs, shared_mem_size, stream>>>(
             dev_data.as_device_ptr(),
             data_len,
             0_usize

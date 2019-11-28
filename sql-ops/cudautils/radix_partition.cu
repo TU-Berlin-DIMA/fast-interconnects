@@ -141,7 +141,7 @@ __device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
 // FIXME: support for running multiple grid size > 1
 template <typename K, typename V>
 __device__ void gpu_block_radix_partition(RadixPartitionArgs &args) {
-  extern __shared__ size_t shared_mem[];
+  extern __shared__ uint64_t shared_mem[];
 
   auto join_attr_data = static_cast<const K *>(args.join_attr_data);
   auto payload_attr_data = static_cast<const V *>(args.payload_attr_data);
@@ -151,8 +151,8 @@ __device__ void gpu_block_radix_partition(RadixPartitionArgs &args) {
   const size_t fanout = 1ULL << args.radix_bits;
   const K mask = static_cast<K>(fanout - 1);
 
-  size_t *const prefix_tmp = shared_mem;
-  size_t *const tmp_partition_offsets = &shared_mem[blockDim.x / warpSize];
+  uint64_t *const prefix_tmp = shared_mem;
+  uint64_t *const tmp_partition_offsets = &shared_mem[blockDim.x / warpSize];
 
   // Ensure counters are all zeroed
   for (size_t i = threadIdx.x; i < fanout; i += blockDim.x) {

@@ -31,9 +31,12 @@
 #ifndef PREFIX_SCAN_H
 #define PREFIX_SCAN_H
 
+#include <cstdint>
+
 // Block-wise exclusive prefix sum
-__device__ void block_exclusive_prefix_sum(size_t *const data, size_t size,
-                                           size_t padding, size_t *const sums) {
+template <typename T>
+__device__ void block_exclusive_prefix_sum(T *const data, size_t size,
+                                           size_t padding, T *const sums) {
   size_t lane_id = threadIdx.x % warpSize;
   // determine a warp_id within a block
   size_t warp_id = threadIdx.x / warpSize;
@@ -42,7 +45,7 @@ __device__ void block_exclusive_prefix_sum(size_t *const data, size_t size,
   // Below is the basic structure of using a shfl instruction
   // for a scan.
   // Record "value" as a variable - we accumulate it along the way
-  size_t thread_total = 0;
+  T thread_total = 0;
   for (size_t i = 0; i < thread_items; ++i) {
     thread_total += data[threadIdx.x * thread_items + i];
   }
@@ -53,11 +56,11 @@ __device__ void block_exclusive_prefix_sum(size_t *const data, size_t size,
   // those threads where the thread 'i' away would have
   // been out of bounds of the warp are unaffected.  This
   // creates the scan sum.
-  size_t warp_sum = thread_total;
+  T warp_sum = thread_total;
   unsigned int mask = 0xffffffffU;
 #pragma unroll
   for (size_t i = 1; i <= warpSize; i *= 2) {
-    size_t n = __shfl_up_sync(mask, warp_sum, i, warpSize);
+    T n = __shfl_up_sync(mask, warp_sum, i, warpSize);
 
     if (lane_id >= i) warp_sum += n;
   }
@@ -83,9 +86,9 @@ __device__ void block_exclusive_prefix_sum(size_t *const data, size_t size,
   if (warp_id == 0 && lane_id < (blockDim.x / warpSize)) {
     size_t warp_sum = sums[lane_id];
 
-    unsigned long long mask = (1 << (blockDim.x / warpSize)) - 1;
+    unsigned int mask = (1 << (blockDim.x / warpSize)) - 1;
     for (size_t i = 1; i <= (blockDim.x / warpSize); i *= 2) {
-      size_t n = __shfl_up_sync(mask, warp_sum, i, (blockDim.x / warpSize));
+      T n = __shfl_up_sync(mask, warp_sum, i, (blockDim.x / warpSize));
 
       if (lane_id >= i) warp_sum += n;
     }
@@ -97,16 +100,16 @@ __device__ void block_exclusive_prefix_sum(size_t *const data, size_t size,
 
   // perform a uniform add across warps in the block
   // read neighbouring warp's sum and add it to threads value
-  size_t blockSum = 0;
+  T blockSum = 0;
 
   if (warp_id > 0) {
     blockSum = sums[warp_id - 1];
   }
 
   // Now write out our result
-  size_t thread_sum = blockSum + warp_sum;
+  T thread_sum = blockSum + warp_sum;
   for (size_t i = 0; i < thread_items; ++i) {
-    size_t value = data[threadIdx.x * thread_items + i];
+    T value = data[threadIdx.x * thread_items + i];
     data[threadIdx.x * thread_items + i] =
         thread_sum + (threadIdx.x + 1) * padding;
     thread_sum += value;
@@ -114,10 +117,9 @@ __device__ void block_exclusive_prefix_sum(size_t *const data, size_t size,
 }
 
 // Export `block_exlusive_prefix_sum` to host (for unit testing)
-extern "C" __global__ void host_block_exclusive_prefix_sum(size_t *const data,
-                                                           size_t size,
-                                                           size_t padding) {
-  extern __shared__ size_t shared_mem[];
+extern "C" __global__ void host_block_exclusive_prefix_sum_uint64(
+    uint64_t *const data, size_t size, size_t padding) {
+  extern __shared__ uint64_t shared_mem[];
   size_t block_size = size / gridDim.x;
   size_t *block_data = &data[block_size * blockIdx.x];
   block_exclusive_prefix_sum(block_data, block_size, padding, shared_mem);

@@ -363,16 +363,16 @@ impl GpuRadixPartitionable for i32 {
 
                 unsafe {
                     launch!(
-                        module.gpu_block_radix_partition_int32_int32<<<
-                            grid_size,
-                            block_size,
-                            shared_mem_bytes,
-                            stream
-                        >>>(
-                            device_args.as_device_ptr()
-                           ))?;
+                    module.gpu_block_radix_partition_int32_int32<<<
+                        grid_size,
+                        block_size,
+                        shared_mem_bytes,
+                        stream
+                    >>>(
+                        device_args.as_device_ptr()
+                       ))?;
                 }
-            },
+            }
         }
 
         Ok(())
