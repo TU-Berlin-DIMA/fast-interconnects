@@ -17,10 +17,12 @@ fn main() {
 
     let out_dir = env::var("OUT_DIR").unwrap();
 
-    let cache_line_size = unsafe { libc::sysconf(libc::_SC_LEVEL2_CACHE_LINESIZE) };
-    if cache_line_size == -1 {
-        panic!("Couldn't get cache line size");
-    }
+    #[cfg(target_arch = "aarch64")]
+    let cache_line_size = 64;
+    #[cfg(target_arch = "x86_64")]
+    let cache_line_size = 64;
+    #[cfg(target_arch = "powerpc64")]
+    let cache_line_size = 128;
 
     // Add CUDA utils
     // For gencodes, see: http://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/
