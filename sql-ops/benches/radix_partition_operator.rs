@@ -89,7 +89,7 @@ fn radix_partition_benchmark(
 }
 
 fn benches() {
-    let event_names = ["CPU_CLK_UNHALTED", "PAPI_TLB_DM"];
+    let event_names = ["PAPI_TOT_CYC", "perf::DTLB-LOAD-MISSES"];
 
     for event_name in event_names.iter() {
         let mut criterion = papi_setup(event_name).configure_from_args();
