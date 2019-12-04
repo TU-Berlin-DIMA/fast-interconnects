@@ -10,3 +10,7 @@ members = [
 [profile.release]
 debug = true
 opt-level = 3
+
+[profile.bench]
+debug = true
+opt-level = 3
