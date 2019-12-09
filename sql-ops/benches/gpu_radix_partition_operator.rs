@@ -226,8 +226,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     gpu_radix_partition_benchmark::<i64, _>(
         "gpu_radix_partition",
-        "block",
-        GpuRadixPartitionAlgorithm::Block,
+        "chunked",
+        GpuRadixPartitionAlgorithm::Chunked,
         options.tuples,
         &papi,
         &options.papi_preset,

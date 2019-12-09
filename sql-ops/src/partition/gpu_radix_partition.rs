@@ -23,17 +23,13 @@ use rustacuda::context::CurrentContext;
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::launch;
-use rustacuda::memory::{DeviceBox, DeviceBuffer, DeviceCopy};
+use rustacuda::memory::{DeviceBox, DeviceCopy};
 use rustacuda::module::Module;
 use rustacuda::stream::Stream;
 use std::convert::TryInto;
 use std::ffi::CString;
 use std::mem;
 use std::ops::{Index, IndexMut};
-
-// extern "C" {
-//     fn gpu_swwc_buffer_bytes() -> usize;
-// }
 
 /// Arguments to the C/C++ partitioning function.
 ///
@@ -59,49 +55,6 @@ struct RadixPartitionArgs<T> {
 }
 
 unsafe impl<T: DeviceCopy> DeviceCopy for RadixPartitionArgs<T> {}
-
-/// A set of buffers used for software write-combining.
-///
-/// The original code by Cagri Balkesen allocates these SWWC buffers on the stack.
-/// In contrast, this implementation allocates the SWWC buffers on the heap,
-/// because new CPUs have very large L3 caches (> 100 MB). Allocating on the
-/// stack risks a stack overflow on these CPUs. This can occur when using a large
-/// fanout (i.e., a high number of radix bits).
-///
-/// # Invariants
-///
-/// * The `radix_bits` must match in `PartitionedRelation` and `GpuRadixPartitioner`.
-///
-/// * The backing memory must be aligned to the cache-line size of the machine.
-///   Hint: `Mem::Numa` alignes to the page size, which is a multiple of the
-///   cache-line size
-#[derive(Debug)]
-struct WriteCombineBuffer {
-    buffers: DeviceBuffer<u64>,
-}
-
-impl WriteCombineBuffer {
-    /// Creates a new set of SWWC buffers.
-    fn new(radix_bits: u32) -> Result<Self> {
-        // FIXME: Find a DRY way to share buffer size between CUDA and Rust
-        // let buffer_bytes = unsafe { gpu_swwc_buffer_bytes() };
-        let buffer_bytes = 0_usize;
-        let bytes = buffer_bytes * fanout(radix_bits);
-        let buffers = unsafe { DeviceBuffer::uninitialized(bytes / mem::size_of::<u64>())? };
-
-        Ok(Self { buffers })
-    }
-
-    /// Computes the number of tuples per SWWC buffer.
-    ///
-    /// Note that `WriteCombineBuffer` contains one SWWC buffer per
-    fn tuples_per_buffer<T: Sized>() -> usize {
-        // FIXME: Find a DRY way to share buffer size between CUDA and Rust
-        // let buffer_bytes = unsafe { gpu_swwc_buffer_bytes() };
-        let buffer_bytes = 0_usize;
-        buffer_bytes / mem::size_of::<T>()
-    }
-}
 
 pub trait GpuRadixPartitionable: Sized + DeviceCopy {
     fn partition_impl(
@@ -135,7 +88,7 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
         partition_alloc_fn: MemAllocFn<T>,
         offsets_alloc_fn: MemAllocFn<u64>,
     ) -> Self {
-        let padding_len = WriteCombineBuffer::tuples_per_buffer::<T>();
+        let padding_len = 0;
         let num_partitions = fanout(radix_bits);
         let relation_len = len + num_partitions * padding_len;
 
@@ -163,7 +116,7 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
 
     /// Returns the number of padding elements per partition.
     pub(super) fn padding_len(&self) -> usize {
-        WriteCombineBuffer::tuples_per_buffer::<T>()
+        0
     }
 }
 
@@ -217,13 +170,11 @@ impl<T: DeviceCopy> IndexMut<usize> for PartitionedRelation<T> {
 pub enum GpuRadixPartitionAlgorithm {
     /// Chunked radix partition.
     Chunked,
-    Block,
 }
 
 #[derive(Debug)]
 enum RadixPartitionState {
     Chunked(Mem<u64>),
-    Block(Mem<u64>),
 }
 
 #[derive(Debug)]
@@ -248,10 +199,7 @@ impl GpuRadixPartitioner {
 
         let state = match algorithm {
             GpuRadixPartitionAlgorithm::Chunked => {
-                RadixPartitionState::Chunked(alloc_fn(num_partitions))
-            }
-            GpuRadixPartitionAlgorithm::Block => {
-                RadixPartitionState::Block(alloc_fn(num_partitions * block_size.x as usize))
+                RadixPartitionState::Chunked(alloc_fn(num_partitions * block_size.x as usize))
             }
         };
 
@@ -320,10 +268,6 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             offsets.as_launchable_mut_ptr(),
                             LaunchableMutPtr::null_mut(),
                             ),
-                            RadixPartitionState::Block(ref mut offsets) => (
-                                offsets.as_launchable_mut_ptr(),
-                                LaunchableMutPtr::null_mut(),
-                                ),
                     };
 
                     let args = RadixPartitionArgs {
@@ -345,18 +289,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     let block_size = rp.block_size.clone();
 
                     match rp.state {
-                        RadixPartitionState::Chunked(_) => unsafe {
-                            launch!(
-                                module.[<gpu_chunked_radix_partition_ $Suffix _ $Suffix>]<<<
-                                grid_size,
-                                block_size,
-                                0,
-                                stream
-                                >>>(
-                                    device_args.as_device_ptr()
-                                   ))?;
-                        },
-                        RadixPartitionState::Block(_) => {
+                        RadixPartitionState::Chunked(_) => {
                             let device = CurrentContext::get_device()?;
                             let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
                             let max_shared_mem_bytes =
@@ -370,7 +303,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
 
                             unsafe {
                                 launch!(
-                                    module.[<gpu_block_radix_partition_ $Suffix _ $Suffix>]<<<
+                                    module.[<gpu_chunked_radix_partition_ $Suffix _ $Suffix>]<<<
                                     grid_size,
                                     block_size,
                                     shared_mem_bytes,
@@ -440,7 +373,7 @@ mod tests {
             radix_bits,
             Allocator::mem_alloc_fn::<u64>(MemType::CudaUniMem),
             GridSize::from(10),
-            BlockSize::from(128),
+            block_size,
         )?;
 
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
@@ -556,42 +489,42 @@ mod tests {
     }
 
     #[test]
-    fn gpu_tuple_loss_or_duplicates_block_i32_10_bits() -> Result<(), Box<dyn Error>> {
+    fn gpu_tuple_loss_or_duplicates_chunked_i32_10_bits() -> Result<(), Box<dyn Error>> {
         gpu_tuple_loss_or_duplicates_i32(
             32 << 20 / mem::size_of::<i32>(),
-            GpuRadixPartitionAlgorithm::Block,
+            GpuRadixPartitionAlgorithm::Chunked,
             10,
             BlockSize::from(128),
         )
     }
 
     #[test]
-    fn gpu_verify_partitions_block_i32_10_bits() -> Result<(), Box<dyn Error>> {
+    fn gpu_verify_partitions_chunked_i32_10_bits() -> Result<(), Box<dyn Error>> {
         gpu_verify_partitions_i32(
             32 << 20 / mem::size_of::<i32>(),
             1..=(32 << 20),
-            GpuRadixPartitionAlgorithm::Block,
+            GpuRadixPartitionAlgorithm::Chunked,
             10,
             BlockSize::from(128),
         )
     }
 
     #[test]
-    fn gpu_tuple_loss_or_duplicates_block_i32_12_bits() -> Result<(), Box<dyn Error>> {
+    fn gpu_tuple_loss_or_duplicates_chunked_i32_12_bits() -> Result<(), Box<dyn Error>> {
         gpu_tuple_loss_or_duplicates_i32(
             32 << 20 / mem::size_of::<i32>(),
-            GpuRadixPartitionAlgorithm::Block,
+            GpuRadixPartitionAlgorithm::Chunked,
             12,
             BlockSize::from(1024),
         )
     }
 
     #[test]
-    fn gpu_verify_partitions_block_i32_12_bits() -> Result<(), Box<dyn Error>> {
+    fn gpu_verify_partitions_chunked_i32_12_bits() -> Result<(), Box<dyn Error>> {
         gpu_verify_partitions_i32(
             32 << 20 / mem::size_of::<i32>(),
             1..=(32 << 20),
-            GpuRadixPartitionAlgorithm::Block,
+            GpuRadixPartitionAlgorithm::Chunked,
             12,
             BlockSize::from(1024),
         )

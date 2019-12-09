@@ -15,18 +15,6 @@
 #include <cstdint>
 #include <cstring>
 
-// Defines the cache-line size; usually this should be passed via the build
-// script.
-#ifndef CACHE_LINE_SIZE
-#define CACHE_LINE_SIZE 128
-#endif
-
-// Defines the software write-combine buffer size; usually this should be passed
-// via the build script.
-#ifndef SWWC_BUFFER_SIZE
-#define SWWC_BUFFER_SIZE CACHE_LINE_SIZE
-#endif
-
 using namespace std;
 
 // Arguments to the partitioning function.
@@ -60,29 +48,6 @@ struct Tuple {
   V value;
 };
 
-// A set of buffers used for software write-combinining.
-//
-// Supports two views of its data. The purpose is to align each buffer to the
-// cache-line size. This requires periodic overwriting of `meta.slot` when a
-// buffer becomes full. After emptying the buffer, the slot's value must be
-// restored.
-template <typename T, uint32_t size>
-union WriteCombineBuffer {
-  struct {
-    T data[size / sizeof(T)];
-  } tuples;
-
-  struct {
-    T data[(size - sizeof(uint64_t)) / sizeof(T)];
-    char _padding[(size - sizeof(uint64_t)) -
-                  (((size - sizeof(uint64_t)) / sizeof(T)) * sizeof(T))];
-    uint64_t slot;  // Padding makes `slot` 8-byte aligned if sizeof(T) % 8 != 0
-  } meta;
-
-  // Computes the number of tuples contained in a buffer.
-  static constexpr size_t tuples_per_buffer() { return size / sizeof(T); }
-} __attribute__((packed));
-
 // Computes the partition ID of a given key.
 template <typename T, typename B>
 __device__ T key_to_partition(T key, T mask, B bits) {
@@ -92,55 +57,9 @@ __device__ T key_to_partition(T key, T mask, B bits) {
 // Chunked radix partitioning.
 //
 // See the Rust module for details.
-template <typename K, typename V>
-__device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
-  auto join_attr_data = static_cast<const K *>(args.join_attr_data);
-  auto payload_attr_data = static_cast<const V *>(args.payload_attr_data);
-  auto partitioned_relation =
-      static_cast<Tuple<K, V> *>(args.partitioned_relation);
-
-  const size_t fanout = 1UL << args.radix_bits;
-  const K mask = static_cast<K>(fanout - 1);
-
-  // Ensure counters are all zeroed
-  for (size_t i = 0; i < fanout; ++i) {
-    args.partition_offsets[i] = 0;
-  }
-
-  // 1. Compute local histograms per partition
-  for (size_t i = 0; i < args.data_length; ++i) {
-    auto key = join_attr_data[i];
-    auto p_index = key_to_partition(key, mask, 0);
-    args.partition_offsets[p_index] += 1;
-  }
-
-  // 2. Compute offsets with exclusive prefix sum
-  for (size_t i = 0, sum = 0, offset = 0; i < fanout; ++i, offset = sum) {
-    sum += args.partition_offsets[i];
-    offset += (i + 1) * args.padding_length;
-    args.partition_offsets[i] = offset;
-    args.tmp_partition_offsets[i] = offset;
-  }
-
-  // 3. Partition
-  for (size_t i = 0; i < args.data_length; ++i) {
-    Tuple<K, V> tuple;
-    tuple.key = join_attr_data[i];
-    tuple.value = payload_attr_data[i];
-
-    auto p_index = key_to_partition(tuple.key, mask, 0);
-    auto &offset = args.tmp_partition_offsets[p_index];
-    partitioned_relation[offset] = tuple;
-    offset += 1;
-  }
-}
-
-// Block-wise radix partitioning.
-//
-// See the Rust module for details.
 // FIXME: support for running multiple grid size > 1
 template <typename K, typename V>
-__device__ void gpu_block_radix_partition(RadixPartitionArgs &args) {
+__device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
   extern __shared__ uint64_t shared_mem[];
 
   auto join_attr_data = static_cast<const K *>(args.join_attr_data);
@@ -194,9 +113,6 @@ __device__ void gpu_block_radix_partition(RadixPartitionArgs &args) {
   }
 }
 
-// Exports the the size of all SWWC buffers.
-extern "C" size_t gpu_swwc_buffer_bytes() { return SWWC_BUFFER_SIZE; }
-
 // Exports the partitioning function for 8-byte key/value tuples.
 extern "C" __global__ void gpu_chunked_radix_partition_int32_int32(
     RadixPartitionArgs *args) {
@@ -207,16 +123,4 @@ extern "C" __global__ void gpu_chunked_radix_partition_int32_int32(
 extern "C" __global__ void gpu_chunked_radix_partition_int64_int64(
     RadixPartitionArgs *args) {
   gpu_chunked_radix_partition<int64_t, int64_t>(*args);
-}
-
-// Exports the partitioning function for 8-byte key/value tuples.
-extern "C" __global__ void gpu_block_radix_partition_int32_int32(
-    RadixPartitionArgs *args) {
-  gpu_block_radix_partition<int32_t, int32_t>(*args);
-}
-
-// Exports the partitioning function for 16-byte key/value tuples.
-extern "C" __global__ void gpu_block_radix_partition_int64_int64(
-    RadixPartitionArgs *args) {
-  gpu_block_radix_partition<int64_t, int64_t>(*args);
 }
