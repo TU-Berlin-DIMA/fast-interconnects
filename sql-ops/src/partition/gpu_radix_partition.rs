@@ -292,92 +292,105 @@ impl GpuRadixPartitioner {
     }
 }
 
-impl GpuRadixPartitionable for i32 {
-    fn partition_impl(
-        rp: &mut GpuRadixPartitioner,
-        partition_attr: LaunchableSlice<i32>,
-        payload_attr: LaunchableSlice<i32>,
-        partitioned_relation: &mut PartitionedRelation<Tuple<i32, i32>>,
-        stream: &Stream,
-    ) -> Result<()> {
-        if partition_attr.len() != payload_attr.len() {
-            Err(ErrorKind::InvalidArgument(
-                "Partition and payload attributes have different sizes".to_string(),
-            ))?;
-        }
-        if partitioned_relation.radix_bits != rp.radix_bits {
-            Err(ErrorKind::InvalidArgument(
-                "PartitionedRelation has mismatching radix bits".to_string(),
-            ))?;
-        }
+macro_rules! impl_gpu_radix_partition_for_type {
+    ($Type:ty, $Suffix:expr) => {
+        impl GpuRadixPartitionable for $Type {
+            paste::item! {
+                fn partition_impl(
+                    rp: &mut GpuRadixPartitioner,
+                    partition_attr: LaunchableSlice<$Type>,
+                    payload_attr: LaunchableSlice<$Type>,
+                    partitioned_relation: &mut PartitionedRelation<Tuple<$Type, $Type>>,
+                    stream: &Stream,
+                    ) -> Result<()> {
+                    if partition_attr.len() != payload_attr.len() {
+                        Err(ErrorKind::InvalidArgument(
+                                "Partition and payload attributes have different sizes".to_string(),
+                                ))?;
+                    }
+                    if partitioned_relation.radix_bits != rp.radix_bits {
+                        Err(ErrorKind::InvalidArgument(
+                                "PartitionedRelation has mismatching radix bits".to_string(),
+                                ))?;
+                    }
 
-        let data_len = partition_attr.len();
-        let (tmp_partition_offsets, write_combine_buffer) = match rp.state {
-            RadixPartitionState::Chunked(ref mut offsets) => (
-                offsets.as_launchable_mut_ptr(),
-                LaunchableMutPtr::null_mut(),
-            ),
-            RadixPartitionState::Block(ref mut offsets) => (
-                offsets.as_launchable_mut_ptr(),
-                LaunchableMutPtr::null_mut(),
-            ),
-        };
+                    let data_len = partition_attr.len();
+                    let (tmp_partition_offsets, write_combine_buffer) = match rp.state {
+                        RadixPartitionState::Chunked(ref mut offsets) => (
+                            offsets.as_launchable_mut_ptr(),
+                            LaunchableMutPtr::null_mut(),
+                            ),
+                            RadixPartitionState::Block(ref mut offsets) => (
+                                offsets.as_launchable_mut_ptr(),
+                                LaunchableMutPtr::null_mut(),
+                                ),
+                    };
 
-        let args = RadixPartitionArgs {
-            partition_attr_data: partition_attr.as_launchable_ptr(),
-            payload_attr_data: payload_attr.as_launchable_ptr(),
-            data_len,
-            padding_len: partitioned_relation.padding_len(),
-            radix_bits: rp.radix_bits,
-            tmp_partition_offsets,
-            write_combine_buffer,
-            partition_offsets: partitioned_relation.offsets.as_launchable_mut_ptr(),
-            partitioned_relation: partitioned_relation.relation.as_launchable_mut_ptr(),
-        };
+                    let args = RadixPartitionArgs {
+                        partition_attr_data: partition_attr.as_launchable_ptr(),
+                        payload_attr_data: payload_attr.as_launchable_ptr(),
+                        data_len,
+                        padding_len: partitioned_relation.padding_len(),
+                        radix_bits: rp.radix_bits,
+                        tmp_partition_offsets,
+                        write_combine_buffer,
+                        partition_offsets: partitioned_relation.offsets.as_launchable_mut_ptr(),
+                        partitioned_relation: partitioned_relation.relation.as_launchable_mut_ptr(),
+                    };
 
-        let mut device_args = DeviceBox::new(&args)?;
+                    let mut device_args = DeviceBox::new(&args)?;
 
-        let module = &rp.module;
-        let grid_size = rp.grid_size.clone();
-        let block_size = rp.block_size.clone();
+                    let module = &rp.module;
+                    let grid_size = rp.grid_size.clone();
+                    let block_size = rp.block_size.clone();
 
-        match rp.state {
-            RadixPartitionState::Chunked(_) => unsafe {
-                launch!(
-                module.gpu_chunked_radix_partition_int32_int32<<<grid_size, block_size, 0, stream>>>(
-                    device_args.as_device_ptr()
-                    )
-                )?;
-            },
-            RadixPartitionState::Block(_) => {
-                let device = CurrentContext::get_device()?;
-                let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
-                let max_shared_mem_bytes =
-                    device.get_attribute(DeviceAttribute::MaxSharedMemoryPerBlock)? as u32;
-                let shared_mem_bytes = (block_size.x / warp_size + (fanout(rp.radix_bits) as u32))
-                    * mem::size_of::<usize>() as u32;
-                assert!(
-                    shared_mem_bytes <= max_shared_mem_bytes,
-                    "Failed to allocate enough shared memory"
-                );
+                    match rp.state {
+                        RadixPartitionState::Chunked(_) => unsafe {
+                            launch!(
+                                module.[<gpu_chunked_radix_partition_ $Suffix _ $Suffix>]<<<
+                                grid_size,
+                                block_size,
+                                0,
+                                stream
+                                >>>(
+                                    device_args.as_device_ptr()
+                                   ))?;
+                        },
+                        RadixPartitionState::Block(_) => {
+                            let device = CurrentContext::get_device()?;
+                            let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
+                            let max_shared_mem_bytes =
+                                device.get_attribute(DeviceAttribute::MaxSharedMemoryPerBlock)? as u32;
+                            let shared_mem_bytes = (block_size.x / warp_size + (fanout(rp.radix_bits) as u32))
+                                * mem::size_of::<usize>() as u32;
+                            assert!(
+                                shared_mem_bytes <= max_shared_mem_bytes,
+                                "Failed to allocate enough shared memory"
+                                );
 
-                unsafe {
-                    launch!(
-                    module.gpu_block_radix_partition_int32_int32<<<
-                        grid_size,
-                        block_size,
-                        shared_mem_bytes,
-                        stream
-                    >>>(
-                        device_args.as_device_ptr()
-                       ))?;
+                            unsafe {
+                                launch!(
+                                    module.[<gpu_block_radix_partition_ $Suffix _ $Suffix>]<<<
+                                    grid_size,
+                                    block_size,
+                                    shared_mem_bytes,
+                                    stream
+                                    >>>(
+                                        device_args.as_device_ptr()
+                                       ))?;
+                            }
+                        }
+                    }
+
+                    Ok(())
                 }
             }
         }
-
-        Ok(())
     }
 }
+
+impl_gpu_radix_partition_for_type!(i32, int32);
+impl_gpu_radix_partition_for_type!(i64, int64);
 
 #[cfg(test)]
 mod tests {

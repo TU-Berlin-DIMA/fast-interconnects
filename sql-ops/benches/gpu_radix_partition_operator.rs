@@ -9,6 +9,7 @@
  */
 
 use datagen::relation::UniformRelation;
+use num_traits::cast::FromPrimitive;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::memory::Mem;
 use papi::event_set::{EventSetBuilder, Sample};
@@ -17,14 +18,16 @@ use rustacuda::context::CurrentContext;
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceBuffer;
+use rustacuda::memory::DeviceCopy;
 use rustacuda::stream::{Stream, StreamFlags};
 use serde_derive::Serialize;
 use sql_ops::partition::gpu_radix_partition::{
-    GpuRadixPartitionAlgorithm, GpuRadixPartitioner, PartitionedRelation,
+    GpuRadixPartitionAlgorithm, GpuRadixPartitionable, GpuRadixPartitioner, PartitionedRelation,
 };
 use std::error::Error;
 use std::fs;
 use std::io::Write;
+use std::mem;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -70,6 +73,7 @@ struct DataPoint {
     pub threads: Option<usize>,
     pub grid_size: Option<u32>,
     pub block_size: Option<u32>,
+    pub tuple_bytes: Option<usize>,
     pub tuples: Option<usize>,
     pub ns: Option<u128>,
     pub papi_name_0: Option<String>,
@@ -84,7 +88,7 @@ struct DataPoint {
     pub papi_value_4: Option<i64>,
 }
 
-fn gpu_radix_partition_benchmark<W: Write>(
+fn gpu_radix_partition_benchmark<T, W>(
     bench_group: &str,
     bench_function: &str,
     algorithm: GpuRadixPartitionAlgorithm,
@@ -93,7 +97,11 @@ fn gpu_radix_partition_benchmark<W: Write>(
     papi_preset: &str,
     repeat: u32,
     csv_writer: &mut csv::Writer<W>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn Error>>
+where
+    T: Clone + Default + DeviceCopy + FromPrimitive + GpuRadixPartitionable,
+    W: Write,
+{
     const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
     const NUMA_NODE: u16 = 0;
     const RADIX_BITS: [u32; 2] = [8, 10];
@@ -109,9 +117,9 @@ fn gpu_radix_partition_benchmark<W: Write>(
     let grid_size = GridSize::x(multiprocessors * grid_overcommit_factor);
 
     let mut host_data_key =
-        Allocator::alloc_deref_mem::<i32>(DerefMemType::NumaMem(NUMA_NODE), tuples);
+        Allocator::alloc_deref_mem::<T>(DerefMemType::NumaMem(NUMA_NODE), tuples);
     let mut host_data_pay =
-        Allocator::alloc_deref_mem::<i32>(DerefMemType::NumaMem(NUMA_NODE), tuples);
+        Allocator::alloc_deref_mem::<T>(DerefMemType::NumaMem(NUMA_NODE), tuples);
 
     UniformRelation::gen_primary_key(host_data_key.as_mut_slice()).unwrap();
     UniformRelation::gen_attr(host_data_pay.as_mut_slice(), PAYLOAD_RANGE).unwrap();
@@ -128,6 +136,7 @@ fn gpu_radix_partition_benchmark<W: Write>(
             .into_string()
             .expect("Couldn't convert hostname into UTF-8 string"),
         device_codename: Some(device.name()?),
+        tuple_bytes: Some(mem::size_of::<T>()),
         tuples: Some(tuples),
         ..DataPoint::default()
     };
@@ -215,7 +224,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let csv_file = std::fs::File::create(&options.csv)?;
     let mut csv_writer = csv::Writer::from_writer(csv_file);
 
-    gpu_radix_partition_benchmark(
+    gpu_radix_partition_benchmark::<i64, _>(
         "gpu_radix_partition",
         "block",
         GpuRadixPartitionAlgorithm::Block,
