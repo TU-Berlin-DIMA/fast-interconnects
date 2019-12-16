@@ -13,7 +13,6 @@
 
 #include <cassert>
 #include <cstdint>
-#include <cstring>
 
 using namespace std;
 
@@ -31,7 +30,6 @@ struct RadixPartitionArgs {
 
   // State
   uint64_t *const __restrict__ tmp_partition_offsets;
-  void *const __restrict__ write_combine_buffer;
 
   // Outputs
   uint64_t *const __restrict__ partition_offsets;
@@ -50,38 +48,47 @@ struct Tuple {
 
 // Computes the partition ID of a given key.
 template <typename T, typename B>
-__device__ T key_to_partition(T key, T mask, B bits) {
-  return (key & mask) >> bits;
+__device__ size_t key_to_partition(T key, size_t mask, B bits) {
+  return (static_cast<size_t>(key) & mask) >> bits;
 }
 
 // Chunked radix partitioning.
 //
 // See the Rust module for details.
-// FIXME: support for running multiple grid size > 1
 template <typename K, typename V>
 __device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
   extern __shared__ uint64_t shared_mem[];
 
-  auto join_attr_data = static_cast<const K *>(args.join_attr_data);
-  auto payload_attr_data = static_cast<const V *>(args.payload_attr_data);
-  auto partitioned_relation =
-      static_cast<Tuple<K, V> *>(args.partitioned_relation);
-
   const size_t fanout = 1ULL << args.radix_bits;
-  const K mask = static_cast<K>(fanout - 1);
+  // const K mask = static_cast<K>(fanout - 1);
+  const size_t mask = fanout - 1;
+
+  // Calculate the data_length per block
+  size_t data_length = (args.data_length + gridDim.x - 1) / gridDim.x;
+  size_t data_offset = data_length * blockIdx.x;
+  if (blockIdx.x + 1 == gridDim.x) {
+    data_length = args.data_length - data_offset;
+  }
+
+  auto join_attr_data =
+      static_cast<const K *>(args.join_attr_data) + data_offset;
+  auto payload_attr_data =
+      static_cast<const V *>(args.payload_attr_data) + data_offset;
+  auto partitioned_relation =
+      static_cast<Tuple<K, V> *>(args.partitioned_relation) + data_offset;
 
   uint64_t *const prefix_tmp = shared_mem;
   uint64_t *const tmp_partition_offsets = &shared_mem[blockDim.x / warpSize];
 
-  // Ensure counters are all zeroed
+  // Ensure counters are all zeroed.
   for (size_t i = threadIdx.x; i < fanout; i += blockDim.x) {
     tmp_partition_offsets[i] = 0;
   }
 
   __syncthreads();
 
-  // 1. Compute local histograms per partition for thread block
-  for (size_t i = threadIdx.x; i < args.data_length; i += blockDim.x) {
+  // 1. Compute local histograms per partition for thread block.
+  for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
     auto key = join_attr_data[i];
     auto p_index = key_to_partition(key, mask, 0);
     atomicAdd((unsigned long long *)&tmp_partition_offsets[p_index], 1ULL);
@@ -89,18 +96,22 @@ __device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
 
   __syncthreads();
 
-  // 2. Compute offsets with exclusive prefix sum for thread block
+  // 2. Compute offsets with exclusive prefix sum for thread block.
   block_exclusive_prefix_sum(tmp_partition_offsets, fanout, args.padding_length,
                              prefix_tmp);
 
   __syncthreads();
 
+  // Add data offset onto partitions offsets and write out to global memory.
   for (size_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    args.partition_offsets[i] = tmp_partition_offsets[i];
+    size_t offset = tmp_partition_offsets[i] + data_offset;
+    args.partition_offsets[blockIdx.x * fanout + i] = offset;
   }
 
+  __syncthreads();
+
   // 3. Partition
-  for (size_t i = threadIdx.x; i < args.data_length; i += blockDim.x) {
+  for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
     Tuple<K, V> tuple;
     tuple.key = join_attr_data[i];
     tuple.value = payload_attr_data[i];
@@ -108,7 +119,6 @@ __device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
     auto p_index = key_to_partition(tuple.key, mask, 0);
     auto offset =
         atomicAdd((unsigned long long *)&tmp_partition_offsets[p_index], 1ULL);
-    __threadfence_block();
     partitioned_relation[offset] = tuple;
   }
 }

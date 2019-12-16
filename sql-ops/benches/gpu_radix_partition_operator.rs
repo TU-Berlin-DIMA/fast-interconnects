@@ -155,6 +155,7 @@ where
             let mut partitioned_relation = PartitionedRelation::new(
                 tuples,
                 radix_bits,
+                grid_size.x,
                 Allocator::mem_alloc_fn(MemType::CudaDevMem),
                 Allocator::mem_alloc_fn(MemType::CudaDevMem),
             );

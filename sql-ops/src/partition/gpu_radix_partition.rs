@@ -47,7 +47,6 @@ struct RadixPartitionArgs<T> {
 
     // State
     tmp_partition_offsets: LaunchableMutPtr<u64>,
-    write_combine_buffer: LaunchableMutPtr<T>,
 
     // Outputs
     partition_offsets: LaunchableMutPtr<u64>,
@@ -69,13 +68,20 @@ pub trait GpuRadixPartitionable: Sized + DeviceCopy {
 /// A radix-partitioned relation, optionally with padding in front of each
 /// partition.
 ///
+/// The relation supports chunking on a single GPU. E.g. in the `Chunked`
+/// algorithm, there is a chunk per thread block. In this case, `chunks` should
+/// equal the grid size.
+///
 /// # Invariants
 ///
-/// The `radix_bits` must match in `WriteCombineBuffer` and `CpuRadixPartitioner`.
+///  - `radix_bits` must match in `GpuRadixPartitioner`.
+///  - `chunks` must equal the actual number of chunks computed at runtime
+///     (e.g., the grid size).
 #[derive(Debug)]
 pub struct PartitionedRelation<T: DeviceCopy> {
     pub(super) relation: Mem<T>,
     pub(super) offsets: Mem<u64>,
+    pub(super) chunks: u32,
     pub(super) radix_bits: u32,
 }
 
@@ -85,19 +91,21 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
     pub fn new(
         len: usize,
         radix_bits: u32,
+        chunks: u32,
         partition_alloc_fn: MemAllocFn<T>,
         offsets_alloc_fn: MemAllocFn<u64>,
     ) -> Self {
         let padding_len = 0;
         let num_partitions = fanout(radix_bits);
-        let relation_len = len + num_partitions * padding_len;
+        let relation_len = len + (num_partitions * chunks as usize) * padding_len;
 
         let relation = partition_alloc_fn(relation_len);
-        let offsets = offsets_alloc_fn(num_partitions);
+        let offsets = offsets_alloc_fn(num_partitions * chunks as usize);
 
         Self {
             relation,
             offsets,
+            chunks,
             radix_bits,
         }
     }
@@ -106,7 +114,12 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
     pub fn len(&self) -> usize {
         let num_partitions = fanout(self.radix_bits);
 
-        self.relation.len() - num_partitions * self.padding_len()
+        self.relation.len() - (num_partitions * self.chunks() as usize) * self.padding_len()
+    }
+
+    /// Returs the number of chunks.
+    pub fn chunks(&self) -> u32 {
+        self.chunks
     }
 
     /// Returns the number of partitions.
@@ -120,20 +133,21 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
     }
 }
 
-/// Returns the specified partition as a subslice of the relation.
-impl<T: DeviceCopy> Index<usize> for PartitionedRelation<T> {
+/// Returns the specified chunk and partition as a subslice of the relation.
+impl<T: DeviceCopy> Index<(usize, usize)> for PartitionedRelation<T> {
     type Output = [T];
 
-    fn index(&self, i: usize) -> &Self::Output {
+    fn index(&self, i: (usize, usize)) -> &Self::Output {
         let (offsets, relation): (&[u64], &[T]) =
             match ((&self.offsets).try_into(), (&self.relation).try_into()) {
                 (Ok(offsets), Ok(relation)) => (offsets, relation),
                 _ => panic!("Trying to dereference device memory!"),
             };
 
-        let begin = offsets[i] as usize;
-        let end = if i + 1 < self.offsets.len() {
-            offsets[i + 1] as usize - self.padding_len()
+        let ofi = i.0 * self.partitions() + i.1;
+        let begin = offsets[ofi] as usize;
+        let end = if ofi + 1 < self.offsets.len() {
+            offsets[ofi + 1] as usize - self.padding_len()
         } else {
             relation.len()
         };
@@ -142,10 +156,14 @@ impl<T: DeviceCopy> Index<usize> for PartitionedRelation<T> {
     }
 }
 
-/// Returns the specified partition as a mutable subslice of the relation.
-impl<T: DeviceCopy> IndexMut<usize> for PartitionedRelation<T> {
-    fn index_mut(&mut self, i: usize) -> &mut Self::Output {
+/// Returns the specified chunk and partition as a mutable subslice of the
+/// relation.
+impl<T: DeviceCopy> IndexMut<(usize, usize)> for PartitionedRelation<T> {
+    fn index_mut(&mut self, i: (usize, usize)) -> &mut Self::Output {
         let padding_len = self.padding_len();
+        let offsets_len = self.offsets.len();
+        let partitions = self.partitions();
+
         let (offsets, relation): (&mut [u64], &mut [T]) = match (
             (&mut self.offsets).try_into(),
             (&mut self.relation).try_into(),
@@ -154,9 +172,10 @@ impl<T: DeviceCopy> IndexMut<usize> for PartitionedRelation<T> {
             _ => panic!("Trying to dereference device memory!"),
         };
 
-        let begin = offsets[i] as usize;
-        let end = if i + 1 < offsets.len() {
-            offsets[i + 1] as usize - padding_len
+        let ofi = i.0 * partitions + i.1;
+        let begin = offsets[ofi] as usize;
+        let end = if ofi + 1 < offsets_len {
+            offsets[ofi + 1] as usize - padding_len
         } else {
             relation.len()
         };
@@ -174,7 +193,7 @@ pub enum GpuRadixPartitionAlgorithm {
 
 #[derive(Debug)]
 enum RadixPartitionState {
-    Chunked(Mem<u64>),
+    Chunked,
 }
 
 #[derive(Debug)]
@@ -191,16 +210,14 @@ impl GpuRadixPartitioner {
     pub fn new(
         algorithm: GpuRadixPartitionAlgorithm,
         radix_bits: u32,
-        alloc_fn: MemAllocFn<u64>,
+        _alloc_fn: MemAllocFn<u64>,
         grid_size: GridSize,
         block_size: BlockSize,
     ) -> Result<Self> {
-        let num_partitions = fanout(radix_bits);
+        let _num_partitions = fanout(radix_bits);
 
         let state = match algorithm {
-            GpuRadixPartitionAlgorithm::Chunked => {
-                RadixPartitionState::Chunked(alloc_fn(num_partitions * block_size.x as usize))
-            }
+            GpuRadixPartitionAlgorithm::Chunked => RadixPartitionState::Chunked,
         };
 
         let module_path = CString::new(env!("CUDAUTILS_PATH")).map_err(|_| {
@@ -261,13 +278,20 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 "PartitionedRelation has mismatching radix bits".to_string(),
                                 ))?;
                     }
+                    match rp.state {
+                        RadixPartitionState::Chunked => {
+                            if partitioned_relation.chunks() != rp.grid_size.x {
+                                Err(ErrorKind::InvalidArgument(
+                                        "PartitionedRelation has mismatching number of chunks".to_string(),
+                                        ))?;
+                            }
+                        }
+                    }
 
                     let data_len = partition_attr.len();
-                    let (tmp_partition_offsets, write_combine_buffer) = match rp.state {
-                        RadixPartitionState::Chunked(ref mut offsets) => (
-                            offsets.as_launchable_mut_ptr(),
+                    let tmp_partition_offsets = match rp.state {
+                        RadixPartitionState::Chunked =>
                             LaunchableMutPtr::null_mut(),
-                            ),
                     };
 
                     let args = RadixPartitionArgs {
@@ -277,7 +301,6 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         padding_len: partitioned_relation.padding_len(),
                         radix_bits: rp.radix_bits,
                         tmp_partition_offsets,
-                        write_combine_buffer,
                         partition_offsets: partitioned_relation.offsets.as_launchable_mut_ptr(),
                         partitioned_relation: partitioned_relation.relation.as_launchable_mut_ptr(),
                     };
@@ -289,7 +312,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     let block_size = rp.block_size.clone();
 
                     match rp.state {
-                        RadixPartitionState::Chunked(_) => {
+                        RadixPartitionState::Chunked => {
                             let device = CurrentContext::get_device()?;
                             let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
                             let max_shared_mem_bytes =
@@ -343,10 +366,10 @@ mod tests {
         tuples: usize,
         algorithm: GpuRadixPartitionAlgorithm,
         radix_bits: u32,
+        grid_size: GridSize,
         block_size: BlockSize,
     ) -> Result<(), Box<dyn Error>> {
         const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
-
         let _context = rustacuda::quick_init()?;
 
         let mut data_key: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
@@ -364,6 +387,7 @@ mod tests {
         let mut partitioned_relation = PartitionedRelation::new(
             tuples,
             radix_bits,
+            grid_size.x,
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
         );
@@ -372,7 +396,7 @@ mod tests {
             algorithm,
             radix_bits,
             Allocator::mem_alloc_fn::<u64>(MemType::CudaUniMem),
-            GridSize::from(10),
+            grid_size,
             block_size,
         )?;
 
@@ -433,6 +457,7 @@ mod tests {
         key_range: RangeInclusive<usize>,
         algorithm: GpuRadixPartitionAlgorithm,
         radix_bits: u32,
+        grid_size: GridSize,
         block_size: BlockSize,
     ) -> Result<(), Box<dyn Error>> {
         const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
@@ -448,6 +473,7 @@ mod tests {
         let mut partitioned_relation = PartitionedRelation::new(
             tuples,
             radix_bits,
+            grid_size.x,
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
         );
@@ -456,7 +482,7 @@ mod tests {
             algorithm,
             radix_bits,
             Allocator::mem_alloc_fn::<u64>(MemType::CudaUniMem),
-            GridSize::from(1),
+            grid_size,
             block_size,
         )?;
 
@@ -474,14 +500,15 @@ mod tests {
         stream.synchronize()?;
 
         let mask = fanout(radix_bits) - 1;
-        (0..partitioned_relation.partitions())
-            .flat_map(|i| iter::repeat(i).zip(partitioned_relation[i].iter()))
-            .for_each(|(i, &tuple)| {
-                let dst_partition = (tuple.key) & mask as i32;
+        (0..partitioned_relation.chunks())
+            .flat_map(|c| iter::repeat(c).zip(0..partitioned_relation.partitions()))
+            .flat_map(|(c, p)| iter::repeat((c, p)).zip(partitioned_relation[(c as usize, p)].iter()))
+            .for_each(|((c, p), &tuple)| {
+                let dst_partition = (tuple.key) as usize & mask;
                 assert_eq!(
-                    dst_partition, i as i32,
-                    "Wrong partitioning detected: key {} in partition {}; expected partition {}",
-                    tuple.key, i, dst_partition
+                    dst_partition, p,
+                    "Wrong partitioning detected in chunk {}: key {} in partition {}; expected partition {}",
+                    c, tuple.key, p, dst_partition
                 );
             });
 
@@ -489,11 +516,35 @@ mod tests {
     }
 
     #[test]
+    fn gpu_tuple_loss_or_duplicates_chunked_i32_2_bits() -> Result<(), Box<dyn Error>> {
+        gpu_tuple_loss_or_duplicates_i32(
+            (32 << 20) / mem::size_of::<i32>(),
+            GpuRadixPartitionAlgorithm::Chunked,
+            2,
+            GridSize::from(10),
+            BlockSize::from(128),
+        )
+    }
+
+    #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_i32_10_bits() -> Result<(), Box<dyn Error>> {
         gpu_tuple_loss_or_duplicates_i32(
-            32 << 20 / mem::size_of::<i32>(),
+            (32 << 20) / mem::size_of::<i32>(),
             GpuRadixPartitionAlgorithm::Chunked,
             10,
+            GridSize::from(10),
+            BlockSize::from(128),
+        )
+    }
+
+    #[test]
+    fn gpu_verify_partitions_chunked_i32_2_bits() -> Result<(), Box<dyn Error>> {
+        gpu_verify_partitions_i32(
+            (32 << 20) / mem::size_of::<i32>(),
+            1..=(32 << 20),
+            GpuRadixPartitionAlgorithm::Chunked,
+            2,
+            GridSize::from(10),
             BlockSize::from(128),
         )
     }
@@ -501,10 +552,11 @@ mod tests {
     #[test]
     fn gpu_verify_partitions_chunked_i32_10_bits() -> Result<(), Box<dyn Error>> {
         gpu_verify_partitions_i32(
-            32 << 20 / mem::size_of::<i32>(),
+            (32 << 20) / mem::size_of::<i32>(),
             1..=(32 << 20),
             GpuRadixPartitionAlgorithm::Chunked,
             10,
+            GridSize::from(10),
             BlockSize::from(128),
         )
     }
@@ -512,21 +564,23 @@ mod tests {
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_i32_12_bits() -> Result<(), Box<dyn Error>> {
         gpu_tuple_loss_or_duplicates_i32(
-            32 << 20 / mem::size_of::<i32>(),
+            (32 << 20) / mem::size_of::<i32>(),
             GpuRadixPartitionAlgorithm::Chunked,
             12,
-            BlockSize::from(1024),
+            GridSize::from(10),
+            BlockSize::from(128),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_i32_12_bits() -> Result<(), Box<dyn Error>> {
         gpu_verify_partitions_i32(
-            32 << 20 / mem::size_of::<i32>(),
+            (32 << 20) / mem::size_of::<i32>(),
             1..=(32 << 20),
             GpuRadixPartitionAlgorithm::Chunked,
             12,
-            BlockSize::from(1024),
+            GridSize::from(10),
+            BlockSize::from(128),
         )
     }
 }
