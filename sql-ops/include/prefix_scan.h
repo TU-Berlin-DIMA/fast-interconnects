@@ -40,7 +40,8 @@ __device__ void block_exclusive_prefix_sum(T *const data, size_t size,
   size_t lane_id = threadIdx.x % warpSize;
   // determine a warp_id within a block
   size_t warp_id = threadIdx.x / warpSize;
-  size_t thread_items = (size + blockDim.x - 1) / blockDim.x;
+  size_t thread_items =
+      (threadIdx.x < size) ? (size + blockDim.x - 1) / blockDim.x : 0;
 
   // Below is the basic structure of using a shfl instruction
   // for a scan.
