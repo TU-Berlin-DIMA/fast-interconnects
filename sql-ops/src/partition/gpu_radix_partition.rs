@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-use super::radix_partition::{fanout, Tuple};
+use super::{fanout, Tuple};
 use crate::error::{ErrorKind, Result};
 use numa_gpu::runtime::allocator::MemAllocFn;
 use numa_gpu::runtime::memory::{LaunchableMutPtr, LaunchablePtr, LaunchableSlice, Mem};

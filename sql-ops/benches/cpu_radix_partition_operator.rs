@@ -13,7 +13,7 @@ use datagen::relation::UniformRelation;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType};
 use papi::criterion::PapiMeasurement;
 use papi::Papi;
-use sql_ops::partition::radix_partition::{
+use sql_ops::partition::cpu_radix_partition::{
     CpuRadixPartitionAlgorithm, CpuRadixPartitioner, PartitionedRelation,
 };
 use std::mem;

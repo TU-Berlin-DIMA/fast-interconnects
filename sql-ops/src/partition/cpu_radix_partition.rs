@@ -54,6 +54,7 @@
 //!
 //! [mchj]: https://www.systems.ethz.ch/sites/default/files/file/PublishedCode/multicore-distributed-hashjoins-0_1.zip
 
+use super::{fanout, Tuple};
 use crate::error::{ErrorKind, Result};
 use numa_gpu::runtime::allocator::DerefMemAllocFn;
 use numa_gpu::runtime::memory::DerefMem;
@@ -68,12 +69,6 @@ extern "C" {
     fn cpu_chunked_radix_partition_int64_int64(args: *mut RadixPartitionArgs);
     fn cpu_chunked_radix_partition_swwc_int32_int32(args: *mut RadixPartitionArgs);
     fn cpu_chunked_radix_partition_swwc_int64_int64(args: *mut RadixPartitionArgs);
-}
-
-/// Compute the fanout (i.e., the number of partitions) from the number of radix
-/// bits.
-pub(super) fn fanout(radix_bits: u32) -> usize {
-    1 << radix_bits
 }
 
 /// Arguments to the C/C++ partitioning function.
@@ -97,26 +92,6 @@ struct RadixPartitionArgs {
     // Outputs
     partition_offsets: *mut u64,
     partitioned_relation: *mut c_void,
-}
-
-/// A key-value tuple.
-///
-/// The partitioned relation is stored as a collection of `Tuple<K, V>`.
-///
-/// Note that the struct's layout must be kept in sync with its counterpart in
-/// C/C++.
-#[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
-#[repr(C)]
-pub struct Tuple<Key: Sized, Value: Sized> {
-    pub key: Key,
-    pub value: Value,
-}
-
-unsafe impl<K, V> DeviceCopy for Tuple<K, V>
-where
-    K: DeviceCopy,
-    V: DeviceCopy,
-{
 }
 
 /// A radix-partitioned relation, optionally with padding in front of each
