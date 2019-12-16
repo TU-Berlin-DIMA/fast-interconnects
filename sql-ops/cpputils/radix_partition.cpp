@@ -126,8 +126,8 @@ union WriteCombineBuffer {
 
 // Computes the partition ID of a given key.
 template <typename T, typename B>
-T key_to_partition(T key, T mask, B bits) {
-  return (key & mask) >> bits;
+size_t key_to_partition(T key, size_t mask, B bits) {
+  return (static_cast<size_t>(key) & mask) >> bits;
 }
 
 // Flushes a SWWC buffer from cache to memory.
@@ -192,7 +192,7 @@ void cpu_chunked_radix_partition(RadixPartitionArgs &args) {
       static_cast<Tuple<K, V> *const __restrict__>(args.partitioned_relation);
 
   const size_t fanout = 1UL << args.radix_bits;
-  const K mask = static_cast<K>(fanout - 1);
+  const size_t mask = fanout - 1;
 
   // Ensure counters are all zeroed
   for (size_t i = 0; i < fanout; ++i) {
@@ -252,7 +252,7 @@ void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
       args.write_combine_buffer);
 
   const size_t fanout = 1UL << args.radix_bits;
-  const K mask = static_cast<K>(fanout - 1);
+  const size_t mask = fanout - 1;
 
   // Ensure counters are all zeroed
   for (size_t i = 0; i < fanout; ++i) {
