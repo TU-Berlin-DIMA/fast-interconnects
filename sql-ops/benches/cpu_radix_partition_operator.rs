@@ -141,7 +141,7 @@ where
         hostname: hostname::get()?
             .into_string()
             .expect("Couldn't convert hostname into UTF-8 string"),
-        device_codename: Some(hw_info::cpu_codename()),
+        device_codename: Some(hw_info::cpu_codename()?),
         tuple_bytes: Some(mem::size_of::<T>()),
         tuples: Some(tuples),
         ..DataPoint::default()
