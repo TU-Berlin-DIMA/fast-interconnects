@@ -11,6 +11,7 @@
 use datagen::relation::UniformRelation;
 use num_traits::cast::FromPrimitive;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType};
+use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::hw_info;
 use papi::event_set::{EventSetBuilder, Sample};
 use papi::Papi;
@@ -24,6 +25,7 @@ use std::io::Write;
 use std::mem;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 use structopt::StructOpt;
 
@@ -37,8 +39,31 @@ struct Options {
     #[structopt(long)]
     bench: bool,
 
+    /// Number of tuples in the relation
+    #[structopt(long, default_value = "10000000")]
+    tuples: usize,
+
+    #[structopt(
+        long = "radix-bits",
+        default_value = "8,10,12,14,16",
+        require_delimiter = true
+    )]
+    /// Radix bits with which to partition (e.g.: 8,10,12)
+    radix_bits: Vec<u32>,
+
+    #[structopt(long = "threads")]
+    threads: Option<usize>,
+
+    /// Path to CPU affinity map file for CPU workers
+    #[structopt(long = "cpu-affinity", parse(from_os_str))]
+    cpu_affinity: Option<PathBuf>,
+
+    /// Allocate memory for base relation on NUMA node (See numactl -H)
+    #[structopt(long = "rel-location", default_value = "0")]
+    rel_location: u16,
+
     /// Output path for the measurements CSV file
-    #[structopt(long, default_value = "target/bench/gpu_radix_partition_operator.csv")]
+    #[structopt(long, default_value = "target/bench/cpu_radix_partition_operator.csv")]
     csv: PathBuf,
 
     /// PAPI configuration file
@@ -46,12 +71,8 @@ struct Options {
     papi_config: PathBuf,
 
     /// Choose a PAPI preset from the PAPI configuration file
-    #[structopt(long, default_value = "gpu_default")]
+    #[structopt(long, default_value = "cpu_default")]
     papi_preset: String,
-
-    /// Number of tuples in the relation
-    #[structopt(long, default_value = "10000000")]
-    tuples: usize,
 
     /// Number of samples to gather
     #[structopt(long, default_value = "30")]
@@ -87,6 +108,10 @@ fn cpu_radix_partition_benchmark<T, W>(
     bench_function: &str,
     algorithm: CpuRadixPartitionAlgorithm,
     tuples: usize,
+    radix_bits_list: &[u32],
+    threads: usize,
+    cpu_affinity: &CpuAffinity,
+    rel_location: u16,
     papi: &Papi,
     papi_preset: &str,
     repeat: u32,
@@ -97,15 +122,18 @@ where
     W: Write,
 {
     const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
-    const NUMA_NODE: u16 = 0; // FIXME: configurable
-    const RADIX_BITS: [u32; 5] = [8, 10, 12, 14, 16]; // FIXME: configurable
-    let threads = num_cpus::get_physical();
 
-    let mut data_key = Allocator::alloc_deref_mem::<i64>(DerefMemType::NumaMem(NUMA_NODE), tuples);
-    let mut data_pay = Allocator::alloc_deref_mem::<i64>(DerefMemType::NumaMem(NUMA_NODE), tuples);
+    let mut data_key =
+        Allocator::alloc_deref_mem::<i64>(DerefMemType::NumaMem(rel_location), tuples);
+    let mut data_pay =
+        Allocator::alloc_deref_mem::<i64>(DerefMemType::NumaMem(rel_location), tuples);
 
     UniformRelation::gen_primary_key_par(data_key.as_mut_slice()).unwrap();
     UniformRelation::gen_attr_par(data_pay.as_mut_slice(), PAYLOAD_RANGE).unwrap();
+
+    let chunk_len = (tuples + threads - 1) / threads;
+    let data_key_chunks: Vec<_> = data_key.chunks(chunk_len).collect();
+    let data_pay_chunks: Vec<_> = data_pay.chunks(chunk_len).collect();
 
     let template = DataPoint {
         group: bench_group.to_string(),
@@ -119,21 +147,42 @@ where
         ..DataPoint::default()
     };
 
-    RADIX_BITS
+    let boxed_cpu_affinity = Arc::new(cpu_affinity.clone());
+    let thread_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .start_handler(move |tid| {
+            boxed_cpu_affinity
+                .clone()
+                .set_affinity(tid as u16)
+                .expect("Couldn't set CPU core affinity")
+        })
+        .build()?;
+
+    radix_bits_list
         .iter()
         .map(|&radix_bits| {
-            let mut radix_prnr = CpuRadixPartitioner::new(
-                algorithm,
-                radix_bits,
-                Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(NUMA_NODE)),
-            );
+            let mut radix_prnrs: Vec<_> = (0..threads)
+                .map(|_| {
+                    CpuRadixPartitioner::new(
+                        algorithm,
+                        radix_bits,
+                        Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(rel_location)),
+                    )
+                })
+                .collect();
 
-            let mut partitioned_relation = PartitionedRelation::new(
-                tuples,
-                radix_bits,
-                Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(NUMA_NODE)),
-                Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(NUMA_NODE)),
-            );
+            let mut partitioned_relation_chunks: Vec<_> = data_key_chunks
+                .iter()
+                .map(|chunk| chunk.len())
+                .map(|chunk_len| {
+                    PartitionedRelation::new(
+                        chunk_len,
+                        radix_bits,
+                        Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(rel_location)),
+                        Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(rel_location)),
+                    )
+                })
+                .collect();
 
             let result: Result<(), Box<dyn Error>> = (0..repeat).into_iter().try_for_each(|_| {
                 let ready_event_set = EventSetBuilder::new(&papi)?
@@ -145,12 +194,21 @@ where
                 let timer = Instant::now();
                 let running_event_set = ready_event_set.start()?;
 
-                // FIXME: Parallelize
-                radix_prnr.partition(
-                    data_key.as_slice(),
-                    data_pay.as_slice(),
-                    &mut partitioned_relation,
-                )?;
+                thread_pool.scope(|s| {
+                    for ((((_tid, radix_prnr), key_chunk), pay_chunk), partitioned_chunk) in (0
+                        ..threads)
+                        .zip(radix_prnrs.iter_mut())
+                        .zip(data_key_chunks.iter())
+                        .zip(data_pay_chunks.iter())
+                        .zip(partitioned_relation_chunks.iter_mut())
+                    {
+                        s.spawn(move |_| {
+                            radix_prnr
+                                .partition(key_chunk, pay_chunk, partitioned_chunk)
+                                .expect("Failed to partition data");
+                        });
+                    }
+                });
 
                 running_event_set.stop(&mut sample)?;
                 let time = timer.elapsed();
@@ -189,6 +247,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     let papi_config = papi::Config::parse_file(&options.papi_config)?;
     let papi = Papi::init_with_config(papi_config)?;
 
+    let threads = if let Some(threads) = options.threads {
+        threads
+    } else {
+        num_cpus::get_physical()
+    };
+
+    let cpu_affinity = if let Some(ref cpu_affinity_file) = options.cpu_affinity {
+        CpuAffinity::from_file(cpu_affinity_file.as_path())?
+    } else {
+        CpuAffinity::default()
+    };
+
     if let Some(parent) = options.csv.parent() {
         if !parent.exists() {
             fs::create_dir_all(parent)?;
@@ -203,6 +273,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         "chunked",
         CpuRadixPartitionAlgorithm::Chunked,
         options.tuples,
+        &options.radix_bits,
+        threads,
+        &cpu_affinity,
+        options.rel_location,
         &papi,
         &options.papi_preset,
         options.repeat,
@@ -214,6 +288,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         "chunked_swwc",
         CpuRadixPartitionAlgorithm::ChunkedSwwc,
         options.tuples,
+        &options.radix_bits,
+        threads,
+        &cpu_affinity,
+        options.rel_location,
         &papi,
         &options.papi_preset,
         options.repeat,
