@@ -1,6 +1,7 @@
 [presets]
 
-cpu_default = ["CPU_CLK_UNHALTED", "PAPI_TLB_DM"]
+cpu_default = ["CYCLES"]
+cpu_llc_misses = ["perf::LLC-LOAD-MISSES", "perf::LLC-STORE-MISSES"]
 
 gpu_default = ["cuda:::event:elapsed_cycles_sm:device=0", "cuda:::metric:inst_executed:device=0"]
 gpu_dram_tput = ["cuda:::metric:dram_read_throughput:device=0", "cuda:::metric:dram_write_throughput:device=0"]
