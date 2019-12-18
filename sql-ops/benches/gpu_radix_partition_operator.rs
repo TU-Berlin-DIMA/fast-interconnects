@@ -75,6 +75,7 @@ struct DataPoint {
     pub block_size: Option<u32>,
     pub tuple_bytes: Option<usize>,
     pub tuples: Option<usize>,
+    pub radix_bits: Option<u32>,
     pub ns: Option<u128>,
     pub papi_name_0: Option<String>,
     pub papi_value_0: Option<i64>,
@@ -183,6 +184,7 @@ where
                 let sample_vec = sample.into_iter().collect::<Vec<_>>();
 
                 let dp = DataPoint {
+                    radix_bits: Some(radix_bits),
                     grid_size: Some(grid_size.x),
                     block_size: Some(block_size.x),
                     ns: Some(time.as_nanos()),
