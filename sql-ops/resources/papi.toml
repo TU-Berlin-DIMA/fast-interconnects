@@ -1,7 +1,21 @@
 [presets]
 
-cpu_default = ["CYCLES"]
+cpu_default = ["perf::CYCLES", "perf::INSTRUCTIONS"]
 cpu_llc_misses = ["perf::LLC-LOAD-MISSES", "perf::LLC-STORE-MISSES"]
+cpu_tlb_misses = ["PAPI_TLB_DM"]
+
+# https://developer.ibm.com/articles/power9-in-memory-collection-counters/
+# (((Sum of all RD counts) + (Sum of all WR counts))* 64) / (1024 * 1024 * 1024)
+ppc64_mem_bw = [
+  "pcp:::perfevent.hwcounters.nest_mcs01_imc.PM_MCS01_128B_RD_DISP_PORT01.value:cpu0",
+  "pcp:::perfevent.hwcounters.nest_mcs01_imc.PM_MCS01_128B_RD_DISP_PORT23.value:cpu0",
+  "pcp:::perfevent.hwcounters.nest_mcs01_imc.PM_MCS01_128B_WR_DISP_PORT01.value:cpu0",
+  "pcp:::perfevent.hwcounters.nest_mcs01_imc.PM_MCS01_128B_WR_DISP_PORT23.value:cpu0",
+  "pcp:::perfevent.hwcounters.nest_mcs01_imc.PM_MCS23_128B_RD_DISP_PORT01.value:cpu0",
+  "pcp:::perfevent.hwcounters.nest_mcs01_imc.PM_MCS23_128B_RD_DISP_PORT23.value:cpu0",
+  "pcp:::perfevent.hwcounters.nest_mcs01_imc.PM_MCS23_128B_WR_DISP_PORT01.value:cpu0",
+  "pcp:::perfevent.hwcounters.nest_mcs01_imc.PM_MCS23_128B_WR_DISP_PORT23.value:cpu0"
+]
 
 gpu_default = ["cuda:::event:elapsed_cycles_sm:device=0", "cuda:::metric:inst_executed:device=0"]
 gpu_dram_tput = ["cuda:::metric:dram_read_throughput:device=0", "cuda:::metric:dram_write_throughput:device=0"]
