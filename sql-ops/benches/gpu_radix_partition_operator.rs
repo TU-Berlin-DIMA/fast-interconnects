@@ -136,7 +136,7 @@ where
             .into_string()
             .expect("Couldn't convert hostname into UTF-8 string"),
         device_codename: Some(device.name()?),
-        tuple_bytes: Some(mem::size_of::<T>()),
+        tuple_bytes: Some(2 * mem::size_of::<T>()),
         tuples: Some(tuples),
         ..DataPoint::default()
     };
