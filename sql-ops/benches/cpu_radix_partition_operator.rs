@@ -48,7 +48,7 @@ struct Options {
         default_value = "8,10,12,14,16",
         require_delimiter = true
     )]
-    /// Radix bits with which to partition (e.g.: 8,10,12)
+    /// Radix bits with which to partition
     radix_bits: Vec<u32>,
 
     #[structopt(long = "threads")]

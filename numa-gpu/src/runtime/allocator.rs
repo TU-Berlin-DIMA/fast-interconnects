@@ -19,11 +19,13 @@
 
 use rustacuda::memory::{DeviceBuffer, DeviceCopy, LockedBuffer, UnifiedBuffer};
 
+use std::convert::TryFrom;
 use std::default::Default;
 use std::mem::size_of;
 
 use super::memory::{DerefMem, Mem};
 use super::numa::{DistributedNumaMemory, NodeRatio, NumaMemory};
+use crate::error::{Error, ErrorKind, Result};
 
 /// Heterogeneous memory allocator.
 pub struct Allocator;
@@ -72,6 +74,24 @@ impl From<DerefMemType> for MemType {
             DerefMemType::DistributedNumaMem(nodes) => MemType::DistributedNumaMem(nodes),
             DerefMemType::CudaPinnedMem => MemType::CudaPinnedMem,
             DerefMemType::CudaUniMem => MemType::CudaUniMem,
+        }
+    }
+}
+
+impl TryFrom<MemType> for DerefMemType {
+    type Error = Error;
+
+    fn try_from(mt: MemType) -> Result<Self> {
+        match mt {
+            MemType::SysMem => Ok(DerefMemType::SysMem),
+            MemType::NumaMem(node) => Ok(DerefMemType::NumaMem(node)),
+            MemType::DistributedNumaMem(nodes) => Ok(DerefMemType::DistributedNumaMem(nodes)),
+            MemType::CudaPinnedMem => Ok(DerefMemType::CudaPinnedMem),
+            MemType::CudaUniMem => Ok(DerefMemType::CudaUniMem),
+            MemType::CudaDevMem => Err(ErrorKind::InvalidConversion(
+                "Cannot convert device memory to &[T] slice",
+            )
+            .into()),
         }
     }
 }
