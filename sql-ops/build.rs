@@ -31,7 +31,14 @@ fn main() {
         "cudautils/no_partitioning_join.cu",
         "cudautils/radix_partition.cu",
     ];
-    let nvcc_build_args = vec!["--device-c", "-std=c++11", "--output-directory", &out_dir];
+    let nvcc_build_args = vec![
+        "-ccbin",
+        "/usr/bin/g++-7",
+        "--device-c",
+        "-std=c++11",
+        "--output-directory",
+        &out_dir,
+    ];
     let nvcc_link_args = vec!["--device-link", "-fatbin", "--output-file", &cuda_lib_file];
 
     // For gencodes, see: http://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/

@@ -142,8 +142,8 @@ void flush_buffer(void *const __restrict__ dst,
 
 #if defined(__AVX512F__)
   for (size_t i = 0; i < SWWC_BUFFER_SIZE; i += 64) {
-    auto avx_dst = reinterpret_cast<__512i *>(byte_dst + i);
-    auto avx_src = reinterpret_cast<const __512i *>(byte_src + i);
+    auto avx_dst = reinterpret_cast<__m512i *>(byte_dst + i);
+    auto avx_src = reinterpret_cast<const __m512i *>(byte_src + i);
 
     _mm512_stream_si512(avx_dst, *avx_src);
   }
