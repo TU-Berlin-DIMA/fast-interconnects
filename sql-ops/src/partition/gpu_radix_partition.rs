@@ -42,11 +42,11 @@ struct RadixPartitionArgs<T> {
     partition_attr_data: LaunchablePtr<T>,
     payload_attr_data: LaunchablePtr<T>,
     data_len: usize,
-    padding_len: usize,
+    padding_len: u32,
     radix_bits: u32,
 
     // State
-    tmp_partition_offsets: LaunchableMutPtr<u64>,
+    tmp_partition_offsets: LaunchableMutPtr<u32>,
 
     // Outputs
     partition_offsets: LaunchableMutPtr<u64>,
@@ -114,7 +114,8 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
     pub fn len(&self) -> usize {
         let num_partitions = fanout(self.radix_bits);
 
-        self.relation.len() - (num_partitions * self.chunks() as usize) * self.padding_len()
+        self.relation.len()
+            - (num_partitions * self.chunks() as usize) * self.padding_len() as usize
     }
 
     /// Returs the number of chunks.
@@ -128,7 +129,7 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
     }
 
     /// Returns the number of padding elements per partition.
-    pub(super) fn padding_len(&self) -> usize {
+    pub(super) fn padding_len(&self) -> u32 {
         0
     }
 }
@@ -147,7 +148,7 @@ impl<T: DeviceCopy> Index<(usize, usize)> for PartitionedRelation<T> {
         let ofi = i.0 * self.partitions() + i.1;
         let begin = offsets[ofi] as usize;
         let end = if ofi + 1 < self.offsets.len() {
-            offsets[ofi + 1] as usize - self.padding_len()
+            offsets[ofi + 1] as usize - self.padding_len() as usize
         } else {
             relation.len()
         };
@@ -175,7 +176,7 @@ impl<T: DeviceCopy> IndexMut<(usize, usize)> for PartitionedRelation<T> {
         let ofi = i.0 * partitions + i.1;
         let begin = offsets[ofi] as usize;
         let end = if ofi + 1 < offsets_len {
-            offsets[ofi + 1] as usize - padding_len
+            offsets[ofi + 1] as usize - padding_len as usize
         } else {
             relation.len()
         };

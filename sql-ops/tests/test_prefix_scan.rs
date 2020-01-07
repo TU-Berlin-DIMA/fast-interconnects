@@ -42,12 +42,13 @@ where
     let bs: BlockSize = block_size.into();
     let shared_mem_size = bs.x / warp_size;
     let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
+    let data_len_u32 = data_len as u32;
 
     unsafe {
         launch!(module.host_block_exclusive_prefix_sum_uint64<<<grid_size, bs, shared_mem_size, stream>>>(
             dev_data.as_device_ptr(),
-            data_len,
-            0_usize
+            data_len_u32,
+            0_u32
         ))?;
     }
 
