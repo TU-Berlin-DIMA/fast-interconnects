@@ -233,8 +233,8 @@ where
                 let mut sample = Sample::default();
                 ready_event_set.init_sample(&mut sample)?;
 
-                let timer = Instant::now();
                 let running_event_set = ready_event_set.start()?;
+                let timer = Instant::now();
 
                 radix_prnr.partition(
                     input_data.0.as_launchable_slice(),
@@ -244,8 +244,8 @@ where
                 )?;
                 stream.synchronize()?;
 
-                running_event_set.stop(&mut sample)?;
                 let time = timer.elapsed();
+                running_event_set.stop(&mut sample)?;
                 let sample_vec = sample.into_iter().collect::<Vec<_>>();
 
                 let dp = DataPoint {

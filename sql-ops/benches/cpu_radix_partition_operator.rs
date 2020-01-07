@@ -192,8 +192,8 @@ where
                 let mut sample = Sample::default();
                 ready_event_set.init_sample(&mut sample)?;
 
-                let timer = Instant::now();
                 let running_event_set = ready_event_set.start()?;
+                let timer = Instant::now();
 
                 thread_pool.scope(|s| {
                     for ((((_tid, radix_prnr), key_chunk), pay_chunk), partitioned_chunk) in (0
@@ -211,8 +211,8 @@ where
                     }
                 });
 
-                running_event_set.stop(&mut sample)?;
                 let time = timer.elapsed();
+                running_event_set.stop(&mut sample)?;
                 let sample_vec = sample.into_iter().collect::<Vec<_>>();
 
                 let dp = DataPoint {
