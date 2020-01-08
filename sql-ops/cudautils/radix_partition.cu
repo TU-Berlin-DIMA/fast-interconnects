@@ -124,13 +124,13 @@ __device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
 }
 
 // Exports the partitioning function for 8-byte key/value tuples.
-extern "C" __global__ void gpu_chunked_radix_partition_int32_int32(
-    RadixPartitionArgs *args) {
+extern "C" __launch_bounds__(1024, 2) __global__
+    void gpu_chunked_radix_partition_int32_int32(RadixPartitionArgs *args) {
   gpu_chunked_radix_partition<int32_t, int32_t>(*args);
 }
 
 // Exports the partitioning function for 16-byte key/value tuples.
-extern "C" __global__ void gpu_chunked_radix_partition_int64_int64(
-    RadixPartitionArgs *args) {
+extern "C" __launch_bounds__(1024, 2) __global__
+    void gpu_chunked_radix_partition_int64_int64(RadixPartitionArgs *args) {
   gpu_chunked_radix_partition<int64_t, int64_t>(*args);
 }
