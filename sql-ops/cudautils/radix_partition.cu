@@ -77,8 +77,8 @@ __device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
   auto partitioned_relation =
       static_cast<Tuple<K, V> *>(args.partitioned_relation) + data_offset;
 
-  uint32_t *const prefix_tmp = shared_mem;
-  uint32_t *const tmp_partition_offsets = &shared_mem[blockDim.x / warpSize];
+  uint32_t *const tmp_partition_offsets = shared_mem;
+  uint32_t *const prefix_tmp = &shared_mem[fanout];
 
   // Ensure counters are all zeroed.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {

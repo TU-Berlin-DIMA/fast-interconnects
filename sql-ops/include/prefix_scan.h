@@ -35,14 +35,88 @@
 #define SIZE_T unsigned int
 #endif
 
+#ifndef LOG2_NUM_BANKS
+#define LOG2_NUM_BANKS 5
+#endif
+
 #include <cstdint>
 
 // Block-wise exclusive prefix sum
 template <typename T>
+__device__ void block_exclusive_prefix_sum(T *const data, SIZE_T size,
+                                           SIZE_T padding, T *const temp) {
+  SIZE_T thread_items =
+      (threadIdx.x < size) ? (size + blockDim.x - 1) / blockDim.x : 0;
+
+  // Below is the basic structure of using a shfl instruction
+  // for a scan.
+  // Record "value" as a variable - we accumulate it along the way
+  T thread_total = 0;
+  for (SIZE_T i = 0; i < thread_items; ++i) {
+    thread_total += data[threadIdx.x * thread_items + i];
+  }
+
+  temp[threadIdx.x + (threadIdx.x >> LOG2_NUM_BANKS)] = thread_total;
+
+  // Up sweep
+  SIZE_T offset = 1;
+#pragma unroll
+  for (SIZE_T d = blockDim.x >> 1; d > 0U; d >>= 1) {
+    __syncthreads();
+
+    if (threadIdx.x < d) {
+      SIZE_T ai = offset * (2U * threadIdx.x + 1U) - 1U;
+      SIZE_T bi = offset * (2U * threadIdx.x + 2U) - 1U;
+      ai += ai >> LOG2_NUM_BANKS;
+      bi += bi >> LOG2_NUM_BANKS;
+
+      temp[bi] += temp[ai];
+    }
+
+    offset *= 2;
+  }
+
+  if (threadIdx.x == 0) {
+    temp[blockDim.x - 1 + ((blockDim.x - 1) >> LOG2_NUM_BANKS)] = 0;
+  }
+
+  // Down sweep
+#pragma unroll
+  for (SIZE_T d = 1U; d < blockDim.x; d *= 2U) {
+    offset >>= 1;
+
+    __syncthreads();
+
+    if (threadIdx.x < d) {
+      SIZE_T ai = offset * (2U * threadIdx.x + 1U) - 1U;
+      SIZE_T bi = offset * (2U * threadIdx.x + 2U) - 1U;
+      ai += ai >> LOG2_NUM_BANKS;
+      bi += bi >> LOG2_NUM_BANKS;
+
+      T t = temp[ai];
+
+      temp[ai] = temp[bi];
+      temp[bi] += t;
+    }
+  }
+
+  __syncthreads();
+
+  T thread_sum = temp[threadIdx.x + (threadIdx.x >> LOG2_NUM_BANKS)];
+  for (SIZE_T i = 0; i < thread_items; ++i) {
+    T value = data[threadIdx.x * thread_items + i];
+    data[threadIdx.x * thread_items + i] =
+        thread_sum + (threadIdx.x + 1) * padding;
+    thread_sum += value;
+  }
+}
+
+// Block-wise exclusive prefix sum using warp-level shuffle
+template <typename T>
 __noinline__  // Reduce GPU register usage
     __device__ void
-    block_exclusive_prefix_sum(T *const data, SIZE_T size, SIZE_T padding,
-                               T *const sums) {
+    block_shuffle_exclusive_prefix_sum(T *const data, SIZE_T size,
+                                       SIZE_T padding, T *const sums) {
   unsigned int lane_id = threadIdx.x % warpSize;
   // determine a warp_id within a block
   unsigned int warp_id = threadIdx.x / warpSize;

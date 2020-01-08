@@ -200,6 +200,7 @@ enum RadixPartitionState {
 #[derive(Debug)]
 pub struct GpuRadixPartitioner {
     radix_bits: u32,
+    log2_num_banks: u32,
     state: RadixPartitionState,
     module: Module,
     grid_size: GridSize,
@@ -216,6 +217,9 @@ impl GpuRadixPartitioner {
         block_size: BlockSize,
     ) -> Result<Self> {
         let _num_partitions = fanout(radix_bits);
+        let log2_num_banks = env!("LOG2_NUM_BANKS")
+            .parse::<u32>()
+            .expect("Failed to parse \"log2_num_banks\" string to an integer");
 
         let state = match algorithm {
             GpuRadixPartitionAlgorithm::Chunked => RadixPartitionState::Chunked,
@@ -231,6 +235,7 @@ impl GpuRadixPartitioner {
 
         Ok(Self {
             radix_bits,
+            log2_num_banks,
             state,
             module,
             grid_size,
@@ -315,11 +320,11 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     match rp.state {
                         RadixPartitionState::Chunked => {
                             let device = CurrentContext::get_device()?;
-                            let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
+                            let _warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
                             let max_shared_mem_bytes =
                                 device.get_attribute(DeviceAttribute::MaxSharedMemoryPerBlock)? as u32;
-                            let shared_mem_bytes = (block_size.x / warp_size + (fanout(rp.radix_bits) as u32))
-                                * mem::size_of::<usize>() as u32;
+                            let shared_mem_bytes = ((block_size.x + (block_size.x >> rp.log2_num_banks)) + (fanout(rp.radix_bits) as u32))
+                                * mem::size_of::<u32>() as u32;
                             assert!(
                                 shared_mem_bytes <= max_shared_mem_bytes,
                                 "Failed to allocate enough shared memory"

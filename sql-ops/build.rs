@@ -14,6 +14,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
+    // Number of GPU shared memory banks
+    let log2_num_banks = "5";
+
     let include_path = Path::new("include");
 
     let out_dir = env::var("OUT_DIR").unwrap();
@@ -31,7 +34,9 @@ fn main() {
         "cudautils/no_partitioning_join.cu",
         "cudautils/radix_partition.cu",
     ];
+    let num_banks_arg = format!("-DLOG2_NUM_BANKS={}", log2_num_banks);
     let nvcc_build_args = vec![
+        num_banks_arg.as_str(),
         "-ccbin",
         "/usr/bin/g++-7",
         "--device-c",
@@ -104,6 +109,7 @@ fn main() {
         panic!();
     }
 
+    println!("cargo:rustc-env=LOG2_NUM_BANKS={}", log2_num_banks);
     println!(
         "cargo:rustc-env=CUDAUTILS_PATH={}/cudautils.fatbin",
         out_dir

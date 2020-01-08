@@ -18,6 +18,7 @@ use rustacuda::memory::CopyDestination;
 use rustacuda::prelude::*;
 use std::error::Error;
 use std::ffi::CString;
+use std::mem::size_of;
 
 fn block_prefix_sum<G, B>(
     data_len: usize,
@@ -31,7 +32,8 @@ where
     let _context = rustacuda::quick_init()?;
     let module_path = CString::new(env!("CUDAUTILS_PATH"))?;
     let module = Module::load_from_file(&module_path)?;
-    let warp_size = CurrentContext::get_device()?.get_attribute(DeviceAttribute::WarpSize)? as u32;
+    let _warp_size = CurrentContext::get_device()?.get_attribute(DeviceAttribute::WarpSize)? as u32;
+    let log2_num_banks = env!("LOG2_NUM_BANKS").parse::<u32>()?;
 
     let data: Vec<u64> = (0..data_len)
         .into_iter()
@@ -40,7 +42,9 @@ where
     let mut dev_data = DeviceBuffer::from_slice(&data)?;
 
     let bs: BlockSize = block_size.into();
-    let shared_mem_size = bs.x / warp_size;
+    // let shared_mem_size = bs.x / warp_size;
+    let mut shared_mem_size = bs.x * size_of::<u64>() as u32;
+    shared_mem_size += shared_mem_size >> log2_num_banks;
     let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
     let data_len_u32 = data_len as u32;
 
