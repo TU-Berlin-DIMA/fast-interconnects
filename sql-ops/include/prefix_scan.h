@@ -198,6 +198,12 @@ __noinline__  // Reduce GPU register usage
   }
 }
 
+// Compute shared memory size as number of elements
+template <typename T>
+__device__ uint32_t block_exclusive_prefix_sum_size() {
+  return blockDim.x + (blockDim.x >> LOG2_NUM_BANKS);
+}
+
 // Export `block_exlusive_prefix_sum` to host (for unit testing)
 extern "C" __global__ void host_block_exclusive_prefix_sum_uint64(
     uint64_t *const data, SIZE_T size, SIZE_T padding) {
