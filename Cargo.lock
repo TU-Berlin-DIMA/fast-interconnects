@@ -382,7 +382,7 @@ dependencies = [
  "num-traits 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "numa-gpu 0.1.0",
  "rayon 1.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "rustacuda 0.1.0 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)",
+ "rustacuda 0.1.1 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)",
  "serde 1.0.98 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_derive 1.0.80 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_repr 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -527,7 +527,7 @@ dependencies = [
  "numa-gpu 0.1.0",
  "nvml-wrapper 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "rayon 1.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "rustacuda 0.1.0 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)",
+ "rustacuda 0.1.1 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)",
  "serde 1.0.98 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_derive 1.0.80 (registry+https://github.com/rust-lang/crates.io-index)",
  "structopt 0.2.18 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -615,7 +615,7 @@ dependencies = [
  "nvml-wrapper 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "procfs 0.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "rayon 1.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "rustacuda 0.1.0 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)",
+ "rustacuda 0.1.1 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)",
 ]
 
 [[package]]
@@ -973,24 +973,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "rustacuda"
-version = "0.1.0"
-source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#09b29c527cfebb61312aacf46a5c6c9b09f0ebc8"
+version = "0.1.1"
+source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#f274a3aeedf6838aea79eef785aca8ec38020779"
 dependencies = [
  "bitflags 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "cuda-sys 0.2.1-alpha.0 (git+https://github.com/LutzCle/cuda-sys?branch=cuda-10.0)",
- "rustacuda_core 0.1.0 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)",
- "rustacuda_derive 0.1.0 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)",
+ "rustacuda_core 0.1.1 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)",
+ "rustacuda_derive 0.1.1 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)",
 ]
 
 [[package]]
 name = "rustacuda_core"
-version = "0.1.0"
-source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#09b29c527cfebb61312aacf46a5c6c9b09f0ebc8"
+version = "0.1.1"
+source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#f274a3aeedf6838aea79eef785aca8ec38020779"
 
 [[package]]
 name = "rustacuda_derive"
-version = "0.1.0"
-source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#09b29c527cfebb61312aacf46a5c6c9b09f0ebc8"
+version = "0.1.1"
+source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#f274a3aeedf6838aea79eef785aca8ec38020779"
 dependencies = [
  "proc-macro2 0.4.23 (registry+https://github.com/rust-lang/crates.io-index)",
  "quote 0.6.10 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1084,7 +1084,7 @@ dependencies = [
  "paste 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "rand 0.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "rayon 1.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "rustacuda 0.1.0 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)",
+ "rustacuda 0.1.1 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)",
  "serde 1.0.98 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_derive 1.0.80 (registry+https://github.com/rust-lang/crates.io-index)",
  "structopt 0.3.5 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1443,9 +1443,9 @@ dependencies = [
 "checksum regex-automata 0.1.8 (registry+https://github.com/rust-lang/crates.io-index)" = "92b73c2a1770c255c240eaa4ee600df1704a38dc3feaa6e949e7fcd4f8dc09f9"
 "checksum regex-syntax 0.6.12 (registry+https://github.com/rust-lang/crates.io-index)" = "11a7e20d1cce64ef2fed88b66d347f88bd9babb82845b2b858f3edbf59a4f716"
 "checksum rle-decode-fast 1.0.1 (registry+https://github.com/rust-lang/crates.io-index)" = "cabe4fa914dec5870285fa7f71f602645da47c486e68486d2b4ceb4a343e90ac"
-"checksum rustacuda 0.1.0 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)" = "<none>"
-"checksum rustacuda_core 0.1.0 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)" = "<none>"
-"checksum rustacuda_derive 0.1.0 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)" = "<none>"
+"checksum rustacuda 0.1.1 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)" = "<none>"
+"checksum rustacuda_core 0.1.1 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)" = "<none>"
+"checksum rustacuda_derive 0.1.1 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)" = "<none>"
 "checksum rustc-demangle 0.1.9 (registry+https://github.com/rust-lang/crates.io-index)" = "bcfe5b13211b4d78e5c2cadfebd7769197d95c639c35a50057eb4c05de811395"
 "checksum rustc_version 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)" = "138e3e0acb6c9fb258b19b67cb8abd63c00679d2851805ea151465464fe9030a"
 "checksum ryu 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)" = "c92464b447c0ee8c4fb3824ecc8383b81717b9f1e74ba2e72540aef7b9f82997"
