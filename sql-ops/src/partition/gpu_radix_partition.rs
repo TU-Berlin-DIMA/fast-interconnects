@@ -324,7 +324,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     let device = CurrentContext::get_device()?;
                     let _warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
                     let max_shared_mem_bytes =
-                        device.get_attribute(DeviceAttribute::MaxSharedMemoryPerBlock)? as u32;
+                        device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
                     let fanout_u32 = fanout(rp.radix_bits) as u32;
 
                     match rp.state {
@@ -365,9 +365,15 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 "Failed to allocate enough shared memory"
                                 );
 
+                            let name = std::ffi::CString::new(
+                                stringify!([<gpu_chunked_sswwc_radix_partition_ $Suffix _ $Suffix>])
+                                ).unwrap();
+                            let mut function = module.get_function(&name)?;
+                            function.set_max_dynamic_shared_size_bytes(max_shared_mem_bytes)?;
+
                             unsafe {
                                 launch!(
-                                    module.[<gpu_chunked_sswwc_radix_partition_ $Suffix _ $Suffix>]<<<
+                                    function<<<
                                     grid_size,
                                     block_size,
                                     shared_mem_bytes,
