@@ -12,7 +12,7 @@
 #include <prefix_scan.h>
 
 #ifndef TUPLES_PER_THREAD
-#define TUPLES_PER_THREAD 1U
+#define TUPLES_PER_THREAD 4U
 #endif
 
 #include <cassert>
@@ -193,6 +193,7 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args) {
 
   // Reuse space from prefix sum for storing cache offsets
   uint32_t *const cache_offsets = prefix_tmp;
+  data_length = (data_length / (blockDim.x * TUPLES_PER_THREAD)) * (blockDim.x * TUPLES_PER_THREAD);
   for (size_t i = threadIdx.x; i < data_length;
        i += blockDim.x * TUPLES_PER_THREAD) {
 
@@ -288,14 +289,14 @@ extern "C" __launch_bounds__(1024, 2) __global__
 }
 
 // Exports the partitioning function for 8-byte key/value tuples.
-extern "C" __launch_bounds__(1024, 2) __global__
+extern "C" __launch_bounds__(1024, 1) __global__
     void gpu_chunked_sswwc_radix_partition_int32_int32(
         RadixPartitionArgs *args) {
   gpu_chunked_sswwc_radix_partition<int32_t, int32_t>(*args);
 }
 
 // Exports the partitioning function for 16-byte key/value tuples.
-extern "C" __launch_bounds__(1024, 2) __global__
+extern "C" __launch_bounds__(1024, 1) __global__
     void gpu_chunked_sswwc_radix_partition_int64_int64(
         RadixPartitionArgs *args) {
   gpu_chunked_sswwc_radix_partition<int64_t, int64_t>(*args);

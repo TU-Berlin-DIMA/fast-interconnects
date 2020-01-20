@@ -193,7 +193,7 @@ where
     let multiprocessors = device.get_attribute(DeviceAttribute::MultiprocessorCount)? as u32;
     let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
     let warp_overcommit_factor = 32;
-    let grid_overcommit_factor = 2;
+    let grid_overcommit_factor = 1;
     let block_size = BlockSize::x(warp_size * warp_overcommit_factor);
     let grid_size = GridSize::x(multiprocessors * grid_overcommit_factor);
 
