@@ -30,6 +30,20 @@ arg_enum! {
 }
 
 arg_enum! {
+    #[derive(Copy, Clone, Debug, PartialEq)]
+    pub enum ArgDataDistribution {
+        Uniform,
+        Zipf,
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum DataDistribution {
+    Uniform,
+    Zipf(f64),
+}
+
+arg_enum! {
     #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
     pub enum ArgMemType {
         System,

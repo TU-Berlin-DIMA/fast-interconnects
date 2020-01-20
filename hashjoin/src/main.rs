@@ -144,6 +144,24 @@ struct CmdOpt {
     )]
     data_set: ArgDataSet,
 
+    /// Outer relation's data distribution
+    #[structopt(
+        long = "data-distribution",
+        default_value = "Uniform",
+        raw(
+            possible_values = "&ArgDataDistribution::variants()",
+            case_insensitive = "true"
+        )
+    )]
+    data_distribution: ArgDataDistribution,
+
+    /// Zipf exponent for Zipf-sampled outer relations
+    #[structopt(
+        long = "zipf-exponent",
+        raw(required_if = r#""data-distribution", "Zipf""#)
+    )]
+    zipf_exponent: Option<f64>,
+
     /// Load data set from a TSV file with "key value" pairs and automatic gzip decompression
     #[structopt(
         long = "inner-rel-file",
@@ -325,8 +343,17 @@ where
         ) {
             hjb_builder.build_with_files(inner_rel_path, outer_rel_path)?
         } else {
-            let (inner_relation_len, outer_relation_len, data_gen) =
-                data_gen_fn::<_>(cmd.data_set, cmd.inner_rel_tuples, cmd.outer_rel_tuples);
+            let data_distribution = match cmd.data_distribution {
+                ArgDataDistribution::Uniform => DataDistribution::Uniform,
+                ArgDataDistribution::Zipf => DataDistribution::Zipf(cmd.zipf_exponent.unwrap()),
+            };
+
+            let (inner_relation_len, outer_relation_len, data_gen) = data_gen_fn::<_>(
+                cmd.data_set,
+                cmd.inner_rel_tuples,
+                cmd.outer_rel_tuples,
+                data_distribution,
+            );
             hjb_builder
                 .inner_len(inner_relation_len)
                 .outer_len(outer_relation_len)
@@ -483,6 +510,7 @@ fn data_gen_fn<T>(
     description: ArgDataSet,
     inner_rel_tuples: Option<usize>,
     outer_rel_tuples: Option<usize>,
+    data_distribution: DataDistribution,
 ) -> (usize, usize, DataGenFn<T>)
 where
     T: Copy + Send + num_traits::FromPrimitive,
@@ -549,10 +577,19 @@ where
             )
         }
         ArgDataSet::Custom => {
-            let gen = |pk_rel: &mut [_], fk_rel: &mut [_]| {
-                datagen::relation::UniformRelation::gen_primary_key_par(pk_rel)?;
-                datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
-                Ok(())
+            let gen: DataGenFn<T> = match data_distribution {
+                DataDistribution::Uniform => Box::new(|pk_rel: &mut [_], fk_rel: &mut [_]| {
+                    datagen::relation::UniformRelation::gen_primary_key_par(pk_rel)?;
+                    datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
+                    Ok(())
+                }),
+                DataDistribution::Zipf(exp) => {
+                    Box::new(move |pk_rel: &mut [_], fk_rel: &mut [_]| {
+                        datagen::relation::UniformRelation::gen_primary_key_par(pk_rel)?;
+                        datagen::relation::ZipfRelation::gen_attr_par(fk_rel, pk_rel.len(), exp)?;
+                        Ok(())
+                    })
+                }
             };
 
             (
@@ -562,7 +599,7 @@ where
                 outer_rel_tuples.expect(
                     "Couldn't find outer relation size. Did you specify --outer-rel-tuples?",
                 ),
-                Box::new(gen),
+                gen,
             )
         }
     }
