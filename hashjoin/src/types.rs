@@ -30,7 +30,7 @@ arg_enum! {
 }
 
 arg_enum! {
-    #[derive(Copy, Clone, Debug, PartialEq)]
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
     pub enum ArgDataDistribution {
         Uniform,
         Zipf,

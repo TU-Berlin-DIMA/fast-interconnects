@@ -47,6 +47,8 @@ pub struct DataPoint {
     pub build_bytes: Option<usize>,
     pub probe_tuples: Option<usize>,
     pub probe_bytes: Option<usize>,
+    pub data_distribution: Option<ArgDataDistribution>,
+    pub zipf_exponent: Option<f64>,
     pub warm_up: Option<bool>,
     pub build_ns: Option<f64>,
     pub probe_ns: Option<f64>,
@@ -139,6 +141,12 @@ impl DataPoint {
             relation_memory_type: Some(cmd.mem_type),
             inner_relation_memory_location: Some(cmd.inner_rel_location),
             outer_relation_memory_location: Some(cmd.outer_rel_location),
+            data_distribution: Some(cmd.data_distribution),
+            zipf_exponent: if cmd.data_distribution == ArgDataDistribution::Zipf {
+                cmd.zipf_exponent
+            } else {
+                None
+            },
             ..self.clone()
         };
 
