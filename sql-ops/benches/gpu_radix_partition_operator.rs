@@ -176,7 +176,7 @@ fn gpu_radix_partition_benchmark<T, W>(
     radix_bits_list: &[u32],
     input_data: &(Mem<T>, Mem<T>),
     output_mem_type: &MemType,
-    papi: &Papi,
+    // papi: &Papi,
     papi_preset: &str,
     repeat: u32,
     template: &DataPoint,
@@ -227,13 +227,13 @@ where
             );
 
             let result: Result<(), Box<dyn Error>> = (0..repeat).into_iter().try_for_each(|_| {
-                let ready_event_set = EventSetBuilder::new(&papi)?
-                    .use_preset(papi_preset)?
-                    .build()?;
+                // let ready_event_set = EventSetBuilder::new(&papi)?
+                //     .use_preset(papi_preset)?
+                //     .build()?;
                 let mut sample = Sample::default();
-                ready_event_set.init_sample(&mut sample)?;
+                // ready_event_set.init_sample(&mut sample)?;
 
-                let running_event_set = ready_event_set.start()?;
+                // let running_event_set = ready_event_set.start()?;
                 let timer = Instant::now();
 
                 radix_prnr.partition(
@@ -245,7 +245,7 @@ where
                 stream.synchronize()?;
 
                 let time = timer.elapsed();
-                running_event_set.stop(&mut sample)?;
+                // running_event_set.stop(&mut sample)?;
                 let sample_vec = sample.into_iter().collect::<Vec<_>>();
 
                 let dp = DataPoint {
@@ -309,7 +309,7 @@ where
 fn main() -> Result<(), Box<dyn Error>> {
     let options = Options::from_args();
     let papi_config = papi::Config::parse_file(&options.papi_config)?;
-    let papi = Papi::init_with_config(papi_config)?;
+    // let papi = Papi::init_with_config(papi_config)?;
 
     let _context = rustacuda::quick_init()?;
 
@@ -354,19 +354,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         ..DataPoint::default()
     };
 
-    gpu_radix_partition_benchmark::<i64, _>(
-        "gpu_radix_partition",
-        "chunked",
-        GpuRadixPartitionAlgorithm::Chunked,
-        &options.radix_bits,
-        &input_data,
-        &output_mem_type,
-        &papi,
-        &options.papi_preset,
-        options.repeat,
-        &template,
-        &mut csv_writer,
-    )?;
+    // gpu_radix_partition_benchmark::<i64, _>(
+    //     "gpu_radix_partition",
+    //     "chunked",
+    //     GpuRadixPartitionAlgorithm::Chunked,
+    //     &options.radix_bits,
+    //     &input_data,
+    //     &output_mem_type,
+    //     &papi,
+    //     &options.papi_preset,
+    //     options.repeat,
+    //     &template,
+    //     &mut csv_writer,
+    // )?;
 
     gpu_radix_partition_benchmark::<i64, _>(
         "gpu_radix_partition",
@@ -375,7 +375,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &options.radix_bits,
         &input_data,
         &output_mem_type,
-        &papi,
+        // &papi,
         &options.papi_preset,
         options.repeat,
         &template,
