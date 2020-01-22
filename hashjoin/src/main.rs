@@ -577,12 +577,15 @@ where
             )
         }
         ArgDataSet::Custom => {
+            let uniform_gen = Box::new(|pk_rel: &mut [_], fk_rel: &mut [_]| {
+                datagen::relation::UniformRelation::gen_primary_key_par(pk_rel)?;
+                datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
+                Ok(())
+            });
+
             let gen: DataGenFn<T> = match data_distribution {
-                DataDistribution::Uniform => Box::new(|pk_rel: &mut [_], fk_rel: &mut [_]| {
-                    datagen::relation::UniformRelation::gen_primary_key_par(pk_rel)?;
-                    datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
-                    Ok(())
-                }),
+                DataDistribution::Uniform => uniform_gen,
+                DataDistribution::Zipf(exp) if !(exp > 0.0) => uniform_gen,
                 DataDistribution::Zipf(exp) => {
                     Box::new(move |pk_rel: &mut [_], fk_rel: &mut [_]| {
                         datagen::relation::UniformRelation::gen_primary_key_par(pk_rel)?;
