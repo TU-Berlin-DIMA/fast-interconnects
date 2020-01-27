@@ -78,17 +78,6 @@ impl DataPoint {
     }
 
     pub(crate) fn fill_from_cmd_options(&self, cmd: &CmdOpt) -> Result<DataPoint> {
-        let mut sorted_ht_location = cmd.hash_table_location.clone();
-        sorted_ht_location.sort();
-
-        let mut ht_prop_loc: Vec<_> = cmd
-            .hash_table_proportions
-            .iter()
-            .zip(cmd.hash_table_location.iter())
-            .collect();
-        ht_prop_loc.sort_by_key(|(_, &key)| key);
-        let sorted_ht_proportions: Vec<_> = ht_prop_loc.iter().map(|(&val, _)| val).collect();
-
         // Get device information
         let dev_codename_str = match cmd.execution_method {
             ArgExecutionMethod::Cpu => vec![cpu_codename()?],
@@ -135,8 +124,8 @@ impl DataPoint {
             },
             hashing_scheme: Some(cmd.hashing_scheme),
             hash_table_memory_type: Some(cmd.hash_table_mem_type),
-            hash_table_memory_location: Some(sorted_ht_location),
-            hash_table_proportions: Some(sorted_ht_proportions),
+            hash_table_memory_location: Some(cmd.hash_table_location.clone()),
+            hash_table_proportions: Some(cmd.hash_table_proportions.clone()),
             tuple_bytes: Some(cmd.tuple_bytes),
             relation_memory_type: Some(cmd.mem_type),
             inner_relation_memory_location: Some(cmd.inner_rel_location),
