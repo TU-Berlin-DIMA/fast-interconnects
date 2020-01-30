@@ -5,6 +5,7 @@ members = [
         "microbench",
         "numa-gpu",
         "sql-ops",
+        "tpch-bench",
 ]
 
 [profile.release]

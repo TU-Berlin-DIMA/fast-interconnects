@@ -21,7 +21,7 @@ pub enum ErrorKind {
 
 #[derive(Debug)]
 pub struct Error {
-    kind: ErrorKind,
+    pub kind: ErrorKind,
 }
 
 impl Error {

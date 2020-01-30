@@ -4,11 +4,9 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018 German Research Center for Artificial Intelligence (DFKI)
+ * Copyright (c) 2020, Clemens Lutz <lutzcle@cml.li>
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-pub mod error;
-pub mod runtime;
-pub mod store;
-pub mod utils;
+pub mod cpu;
+pub mod tables;
