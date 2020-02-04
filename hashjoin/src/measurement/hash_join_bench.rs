@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019, Clemens Lutz <lutzcle@cml.li>
+ * Copyright (c) 2019-2020, Clemens Lutz <lutzcle@cml.li>
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
@@ -25,6 +25,7 @@ use numa_gpu::runtime::dispatcher::{
 use numa_gpu::runtime::memory::*;
 use numa_gpu::runtime::numa::NodeRatio;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
+use numa_gpu::utils::CachePadded;
 use rustacuda::event::{Event, EventFlags};
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
@@ -685,7 +686,7 @@ where
             no_partitioning_join::HashTable::new_on_cpu(hash_table_mem, self.hash_table_len)?;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
-        let mut result_sums = vec![0; threads];
+        let mut result_sums = vec![CachePadded { value: 0 }; threads];
 
         let boxed_cpu_affinity = Arc::new(cpu_affinity.clone());
         let thread_pool = rayon::ThreadPoolBuilder::new()
@@ -742,7 +743,7 @@ where
 
         let probe_timer = Instant::now();
         thread_pool.scope(|s| {
-            for (((_tid, rel), pay), mut res) in (0..threads)
+            for (((_tid, rel), pay), res) in (0..threads)
                 .zip(probe_rel_chunks)
                 .zip(probe_pay_chunks)
                 .zip(result_sums.iter_mut())
@@ -750,7 +751,7 @@ where
                 let mut hj_op = hj_builder.build();
                 s.spawn(move |_| {
                     hj_op
-                        .probe_sum(rel, pay, &mut res)
+                        .probe_sum(rel, pay, &mut res.value)
                         .expect("Couldn't execute hash table probe");
                 });
             }
@@ -854,9 +855,9 @@ where
                     let mut hj_op = cpu_hj_builder.build();
 
                     // FIXME: retrieve sums of all threads, e.g., by implementing fold instead of map
-                    let mut result_sum = 0;
+                    let mut result_sum = CachePadded { value: 0 };
                     hj_op
-                        .probe_sum(rel, pay, &mut result_sum)
+                        .probe_sum(rel, pay, &mut result_sum.value)
                         .expect("Failed to run CPU hash join probe");
 
                     Ok(())
@@ -965,9 +966,9 @@ where
                     let mut hj_op = cpu_hj_builder.build();
 
                     // FIXME: retrieve sums of all threads, e.g., by implementing fold instead of map
-                    let mut result_sum = 0;
+                    let mut result_sum = CachePadded { value: 0 };
                     hj_op
-                        .probe_sum(rel, pay, &mut result_sum)
+                        .probe_sum(rel, pay, &mut result_sum.value)
                         .expect("Failed to run CPU hash join probe");
 
                     Ok(())
