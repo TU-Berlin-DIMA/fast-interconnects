@@ -17,6 +17,7 @@ mod types;
 use crate::data_point::DataPoint;
 use crate::error::Result;
 use crate::query_6::cpu::Query6Cpu;
+use crate::query_6::gpu::Query6Gpu;
 use crate::query_6::tables::{LineItem, LineItemTuple};
 use crate::types::*;
 use num_rational::Ratio;
@@ -24,9 +25,12 @@ use numa_gpu::runtime::allocator::DerefMemType;
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::hw_info::cpu_codename;
 use numa_gpu::runtime::numa::NodeRatio;
+use rustacuda::device::DeviceAttribute;
+use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::prelude::*;
 use std::mem;
 use std::path::PathBuf;
+use std::time::Duration;
 use structopt::StructOpt;
 
 fn main() -> Result<()> {
@@ -68,9 +72,23 @@ fn main() -> Result<()> {
             let lineitem = LineItem::new(cmd.scale_factor, mem_type)?;
             template.tuples = Some(lineitem.len());
             template.bytes = Some(mem::size_of::<LineItemTuple>() * lineitem.len());
-            let query = match cmd.execution_method {
+            let query: Box<dyn FnMut() -> Result<(i64, Duration)>> = match cmd.execution_method {
                 ArgExecutionMethod::Cpu => {
                     let q = Query6Cpu::new(cmd.threads, &cpu_affinity, cmd.selection_variant);
+                    Box::new(move || q.run(&lineitem))
+                }
+                ArgExecutionMethod::Gpu => {
+                    // Device tuning
+                    let multiprocessors =
+                        device.get_attribute(DeviceAttribute::MultiprocessorCount)? as u32;
+                    let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
+                    let warp_overcommit_factor = 4;
+                    let grid_overcommit_factor = 2;
+
+                    let block_size = BlockSize::x(warp_size * warp_overcommit_factor);
+                    let grid_size = GridSize::x(multiprocessors * grid_overcommit_factor);
+
+                    let q = Query6Gpu::new(grid_size, block_size, cmd.selection_variant)?;
                     Box::new(move || q.run(&lineitem))
                 }
                 em @ _ => unimplemented!("Execution method {:?} is not yet implemented!", em),

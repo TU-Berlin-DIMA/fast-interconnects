@@ -21,11 +21,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum ErrorKind {
     CsvError(CsvError),
     CudaError(CudaError),
-    IoError(IoError),
-    Msg(String),
-    NumaGpuError(NumaGpuError),
     IntegerOverflow(String),
     InvalidArgument(String),
+    IoError(IoError),
+    Msg(String),
+    NulCharError(String),
+    NumaGpuError(NumaGpuError),
     RuntimeError(String),
 }
 
@@ -45,10 +46,11 @@ impl std::error::Error for Error {
         match self.kind {
             ErrorKind::CsvError(ref e) => e.description(),
             ErrorKind::CudaError(ref e) => e.description(),
-            ErrorKind::IoError(ref e) => e.description(),
-            ErrorKind::NumaGpuError(ref e) => e.description(),
             ErrorKind::IntegerOverflow(ref s) => s.as_str(),
             ErrorKind::InvalidArgument(ref s) => s.as_str(),
+            ErrorKind::IoError(ref e) => e.description(),
+            ErrorKind::NulCharError(ref s) => s.as_str(),
+            ErrorKind::NumaGpuError(ref e) => e.description(),
             ErrorKind::Msg(ref s) => s.as_str(),
             ErrorKind::RuntimeError(ref s) => s.as_str(),
         }
@@ -76,10 +78,11 @@ impl std::fmt::Display for ErrorKind {
         match self {
             ErrorKind::CsvError(ref e) => e.fmt(f),
             ErrorKind::CudaError(ref e) => e.fmt(f),
-            ErrorKind::IoError(ref e) => e.fmt(f),
-            ErrorKind::NumaGpuError(ref e) => e.fmt(f),
             ErrorKind::IntegerOverflow(ref s) => write!(f, "IntegerOverflow: {}", s),
             ErrorKind::InvalidArgument(ref s) => write!(f, "InvalidArgument: {}", s),
+            ErrorKind::IoError(ref e) => e.fmt(f),
+            ErrorKind::NulCharError(ref s) => write!(f, "NulCharError: {}", s),
+            ErrorKind::NumaGpuError(ref e) => e.fmt(f),
             ErrorKind::Msg(ref s) => write!(f, "Msg: {}", s),
             ErrorKind::RuntimeError(ref s) => write!(f, "Runtime: {}", s),
         }

@@ -237,6 +237,32 @@ impl<T: DeviceCopy> DerefMem<T> {
             DerefMem::CudaUniMem(m) => m.as_mut_slice(),
         }
     }
+
+    pub fn as_launchable_slice(&self) -> LaunchableSlice<T> {
+        // Note: This is implementation is a short-cut. The proper way is
+        // implemented in as_launchable_mut_ptr(). The reason we don't do the
+        // proper way here is because RUSTACuda doesn't have a *const T
+        // equivalent for UnifiedPointer and DevicePointer.
+        unsafe { LaunchableSlice(std::slice::from_raw_parts(self.as_ptr(), self.len())) }
+    }
+
+    pub fn as_launchable_ptr(&self) -> LaunchablePtr<T> {
+        // Note: This is implementation is a short-cut. The proper way is
+        // implemented in as_launchable_mut_ptr(). The reason we don't do the
+        // proper way here is because RUSTACuda doesn't have a *const T
+        // equivalent for UnifiedPointer and DevicePointer.
+        LaunchablePtr(self.as_ptr())
+    }
+
+    pub fn as_launchable_mut_ptr(&mut self) -> LaunchableMutPtr<T> {
+        match self {
+            Self::SysMem(m) => LaunchableMutPtr(m.as_mut_ptr()),
+            Self::NumaMem(m) => LaunchableMutPtr(m.as_mut_ptr()),
+            Self::DistributedNumaMem(m) => LaunchableMutPtr(m.as_mut_ptr()),
+            Self::CudaPinnedMem(m) => LaunchableMutPtr(m.as_mut_ptr()),
+            Self::CudaUniMem(m) => m.as_unified_ptr().into(),
+        }
+    }
 }
 
 impl<T: DeviceCopy> Deref for DerefMem<T> {
@@ -363,7 +389,7 @@ impl<'a, T: DeviceCopy> LaunchableMem for UnifiedBuffer<T> {
 /// `LaunchablePtr` is guaranteed to have an equivalent internal
 /// representation to a raw pointer. Thus, it can be safely reinterpreted or
 /// transmuted to `*const T`.
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 pub struct LaunchablePtr<T>(*const T);
 
 impl<T: DeviceCopy> LaunchablePtr<T> {
@@ -398,7 +424,7 @@ impl<T> From<DevicePointer<T>> for LaunchablePtr<T> {
 /// `LaunchableMutPtr` is guaranteed to have an equivalent internal
 /// representation to a raw pointer. Thus, it can be safely reinterpreted or
 /// transmuted to `*mut T`.
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 pub struct LaunchableMutPtr<T>(*mut T);
 
 impl<T: DeviceCopy> LaunchableMutPtr<T> {
