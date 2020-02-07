@@ -44,7 +44,7 @@ fn main() -> Result<()> {
         Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
 
     let node_ratios = Box::new([NodeRatio {
-        node: 0,
+        node: cmd.rel_location,
         ratio: Ratio::from_integer(1),
     }]);
     let mem_type: DerefMemType = ArgMemTypeHelper {
