@@ -38,10 +38,16 @@ fn main() -> Result<()> {
     let cmd = CmdOpt::from_args();
 
     // Initialize CUDA
-    rustacuda::init(CudaFlags::empty())?;
-    let device = Device::get_device(cmd.device_id.into())?;
-    let _context =
-        Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
+    let _context = if cmd.execution_method != ArgExecutionMethod::Cpu {
+        rustacuda::init(CudaFlags::empty())?;
+        let device = Device::get_device(cmd.device_id.into())?;
+        Some(Context::create_and_push(
+            ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO,
+            device,
+        )?)
+    } else {
+        None
+    };
 
     let node_ratios = Box::new([NodeRatio {
         node: cmd.rel_location,
@@ -79,6 +85,7 @@ fn main() -> Result<()> {
                 }
                 ArgExecutionMethod::Gpu => {
                     // Device tuning
+                    let device = Device::get_device(cmd.device_id.into())?;
                     let multiprocessors =
                         device.get_attribute(DeviceAttribute::MultiprocessorCount)? as u32;
                     let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
