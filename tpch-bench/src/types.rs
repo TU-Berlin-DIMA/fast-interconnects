@@ -18,11 +18,9 @@ arg_enum! {
     pub enum ArgMemType {
         System,
         Numa,
-        NumaLazyPinned,
         DistributedNuma,
         Pinned,
         Unified,
-        Device,
     }
 }
 
