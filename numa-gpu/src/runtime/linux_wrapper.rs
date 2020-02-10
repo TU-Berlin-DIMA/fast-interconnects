@@ -35,6 +35,40 @@ mod bindings {
     }
 }
 
+/// Huge page size configuration for mmap
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(i32)]
+pub enum HugePageSize {
+    /// Equivalent to zero
+    None = 0,
+
+    /// Equivalent to MAP_HUGETLB | (21 << Self::MAP_HUGE_SHIFT)
+    Size2MB = 21,
+
+    /// Equivalent to MAP_HUGETLB | (21 << Self::MAP_HUGE_SHIFT)
+    Size1GB = 30,
+}
+
+impl HugePageSize {
+    const MAP_HUGE_SHIFT: i32 = 26;
+
+    /// Returns the page size in bytes
+    pub fn page_size(self) -> usize {
+        1_usize << (self as i32)
+    }
+}
+
+impl std::ops::BitOr<i32> for HugePageSize {
+    type Output = i32;
+
+    fn bitor(self, rhs: i32) -> Self::Output {
+        match self {
+            Self::None => rhs,
+            _ => libc::MAP_HUGETLB | ((self as i32) << Self::MAP_HUGE_SHIFT) | rhs,
+        }
+    }
+}
+
 bitflags! {
 /// Flags for `mbind`
 ///
