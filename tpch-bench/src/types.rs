@@ -18,6 +18,7 @@ arg_enum! {
     pub enum ArgMemType {
         System,
         Numa,
+        NumaPinned,
         DistributedNuma,
         Pinned,
         Unified,
@@ -59,11 +60,10 @@ impl From<ArgMemTypeHelper> for allocator::DerefMemType {
         match mem_type {
             ArgMemType::System => allocator::DerefMemType::SysMem,
             ArgMemType::Numa => allocator::DerefMemType::NumaMem(node_ratios[0].node),
-            ArgMemType::NumaLazyPinned => allocator::DerefMemType::NumaMem(node_ratios[0].node),
+            ArgMemType::NumaPinned => allocator::DerefMemType::NumaPinnedMem(node_ratios[0].node),
             ArgMemType::DistributedNuma => allocator::DerefMemType::DistributedNumaMem(node_ratios),
             ArgMemType::Pinned => allocator::DerefMemType::CudaPinnedMem,
             ArgMemType::Unified => allocator::DerefMemType::CudaUniMem,
-            ArgMemType::Device => panic!("Error: Device memory not supported in this context!"),
         }
     }
 }
