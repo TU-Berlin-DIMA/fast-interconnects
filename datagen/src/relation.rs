@@ -16,6 +16,7 @@ use num_traits::FromPrimitive;
 
 use crate::error::{ErrorKind, Result};
 
+use std::convert::TryFrom;
 use std::ops::RangeInclusive;
 
 use rand::distributions::{Distribution, Uniform};
@@ -26,9 +27,34 @@ use rayon::prelude::*;
 
 use zipf::ZipfDistribution;
 
-pub trait Integer {}
+pub trait KeyAttribute: Sized {
+    fn null_key() -> Self;
+    fn try_from_usize(x: usize) -> Result<Self>;
+}
 
-impl Integer for i64 {}
+impl KeyAttribute for i32 {
+    fn null_key() -> Self {
+        -1
+    }
+
+    fn try_from_usize(x: usize) -> Result<Self> {
+        Self::try_from(x).map_err(|_| {
+            ErrorKind::IntegerOverflow("Failed to covnert from usize".to_string()).into()
+        })
+    }
+}
+
+impl KeyAttribute for i64 {
+    fn null_key() -> Self {
+        -1
+    }
+
+    fn try_from_usize(x: usize) -> Result<Self> {
+        Self::try_from(x).map_err(|_| {
+            ErrorKind::IntegerOverflow("Failed to covnert from usize".to_string()).into()
+        })
+    }
+}
 
 /// Generator for relations with uniform distribution.
 pub struct UniformRelation;
@@ -39,19 +65,30 @@ impl UniformRelation {
     /// The generated keys are unique and contiguous. The key range starts from
     /// 1 and ends at, i.e. including, attr.len(). Keys are placed at random
     /// locations within the slice.
-    pub fn gen_primary_key<T: FromPrimitive>(attr: &mut [T]) -> Result<()> {
+    ///
+    /// `selectivity` specifies the join selectivity in percent. An according
+    /// percentage of keys are set to the `NULL` value. By default (`None`), the
+    /// selectivity is 100%.
+    pub fn gen_primary_key<T: KeyAttribute>(
+        attr: &mut [T],
+        selectivity: Option<u32>,
+    ) -> Result<()> {
+        let selectivity = selectivity.unwrap_or_else(|| 100);
+        let percent = Uniform::from(0..=100);
         let mut rng = thread_rng();
 
         attr.iter_mut()
             .by_ref()
             .zip(1..)
             .map(|(x, i)| {
-                FromPrimitive::from_usize(i)
-                    .ok_or_else(|| {
-                        ErrorKind::IntegerOverflow("Failed to convert from usize".to_string())
-                            .into()
-                    })
-                    .map(|i| *x = i)
+                T::try_from_usize(i).map(|i| {
+                    let val = if percent.sample(&mut rng) <= selectivity {
+                        i
+                    } else {
+                        T::null_key()
+                    };
+                    *x = val
+                })
             })
             .collect::<Result<()>>()?;
 
@@ -64,18 +101,29 @@ impl UniformRelation {
     /// The generated keys are unique and contiguous. The key range starts from
     /// 1 and ends at, i.e. including, attr.len(). Keys are placed at random
     /// locations within the slice.
-    pub fn gen_primary_key_par<T: Clone + Send + FromPrimitive>(attr: &mut [T]) -> Result<()> {
+    ///
+    /// `selectivity` specifies the join selectivity in percent. An according
+    /// percentage of keys are set to the `NULL` value. By default (`None`), the
+    /// selectivity is 100%.
+    pub fn gen_primary_key_par<T: Clone + Send + KeyAttribute>(
+        attr: &mut [T],
+        selectivity: Option<u32>,
+    ) -> Result<()> {
+        let selectivity = selectivity.unwrap_or_else(|| 100);
+        let percent = Uniform::from(0..=100);
         let mut shuffled: Vec<(usize, T)> = (1..(attr.len() + 1))
             .into_par_iter()
             .map_init(
                 || thread_rng(),
-                |rng, i| {
-                    FromPrimitive::from_usize(i)
-                        .ok_or_else(|| {
-                            ErrorKind::IntegerOverflow("Failed to convert from usize".to_string())
-                                .into()
-                        })
-                        .map(|i| (rng.gen(), i))
+                |mut rng, i| {
+                    T::try_from_usize(i).map(|i| {
+                        let val = if percent.sample(&mut rng) <= selectivity {
+                            i
+                        } else {
+                            T::null_key()
+                        };
+                        (rng.gen(), val)
+                    })
                 },
             )
             .collect::<Result<_>>()?;

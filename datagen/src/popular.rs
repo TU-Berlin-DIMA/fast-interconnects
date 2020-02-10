@@ -11,7 +11,7 @@
 //! A collection of data set generators for data sets frequently found in
 //! published papers.
 
-use super::relation::UniformRelation;
+use super::relation::{KeyAttribute, UniformRelation};
 use crate::error::Result;
 use num_traits::FromPrimitive;
 
@@ -39,11 +39,19 @@ impl Kim {
     /// Requires a slice for the primary key attribute, and a slice for the
     /// foreign key attribute. Both slices must have the lengths specified by
     /// the primary_key_len() and foreign_key_len() functions.
-    pub fn gen<T: Copy + Send + FromPrimitive>(pk_attr: &mut [T], fk_attr: &mut [T]) -> Result<()> {
+    ///
+    /// `selectivity` specifies the join selectivity in percent. An according
+    /// percentage of keys are set to the `NULL` value. By default (`None`), the
+    /// selectivity is 100%.
+    pub fn gen<T: Copy + Send + KeyAttribute + FromPrimitive>(
+        pk_attr: &mut [T],
+        fk_attr: &mut [T],
+        selectivity: Option<u32>,
+    ) -> Result<()> {
         assert!(pk_attr.len() == Self::primary_key_len());
         assert!(fk_attr.len() == Self::foreign_key_len());
 
-        UniformRelation::gen_primary_key_par(pk_attr)?;
+        UniformRelation::gen_primary_key_par(pk_attr, selectivity)?;
         UniformRelation::gen_attr_par(fk_attr, 1..=pk_attr.len())?;
         Ok(())
     }
@@ -74,11 +82,19 @@ impl Blanas {
     /// Requires a slice for the primary key attribute, and a slice for the
     /// foreign key attribute. Both slices must have the lengths specified by
     /// the primary_key_len() and foreign_key_len() functions.
-    pub fn gen<T: Copy + Send + FromPrimitive>(pk_attr: &mut [T], fk_attr: &mut [T]) -> Result<()> {
+    ///
+    /// `selectivity` specifies the join selectivity in percent. An according
+    /// percentage of keys are set to the `NULL` value. By default (`None`), the
+    /// selectivity is 100%.
+    pub fn gen<T: Copy + Send + KeyAttribute + FromPrimitive>(
+        pk_attr: &mut [T],
+        fk_attr: &mut [T],
+        selectivity: Option<u32>,
+    ) -> Result<()> {
         assert!(pk_attr.len() == Self::primary_key_len());
         assert!(fk_attr.len() == Self::foreign_key_len());
 
-        UniformRelation::gen_primary_key_par(pk_attr)?;
+        UniformRelation::gen_primary_key_par(pk_attr, selectivity)?;
         UniformRelation::gen_attr_par(fk_attr, 1..=pk_attr.len())?;
         Ok(())
     }

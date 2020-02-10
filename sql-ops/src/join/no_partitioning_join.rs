@@ -29,6 +29,7 @@
 use super::HashingScheme;
 use crate::error::{ErrorKind, Result};
 use cuda_sys::cuda::cuMemsetD32_v2;
+use datagen::relation::KeyAttribute;
 use num_traits::cast::AsPrimitive;
 use numa_gpu::error::ToResult;
 use numa_gpu::runtime::allocator;
@@ -119,19 +120,20 @@ extern "C" {
 /// equals 0xF...F.
 ///
 /// The null key in Rust must be kept in sync with the null key in C++ and CUDA.
+// FIXME: Replace with datagen::relation::KeyAttribute
 pub trait NullKey: AsPrimitive<c_uint> {
     fn null_key() -> Self;
 }
 
 impl NullKey for i32 {
     fn null_key() -> i32 {
-        -1
+        <Self as KeyAttribute>::null_key()
     }
 }
 
 impl NullKey for i64 {
     fn null_key() -> i64 {
-        -1
+        <Self as KeyAttribute>::null_key()
     }
 }
 

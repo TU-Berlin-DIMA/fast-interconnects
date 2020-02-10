@@ -17,26 +17,21 @@ use crate::measurement::data_point::DataPoint;
 use crate::measurement::harness;
 use crate::measurement::hash_join_bench::{HashJoinBenchBuilder, HashJoinPoint};
 use crate::types::*;
-use sql_ops::join::{no_partitioning_join, HashingScheme};
-
+use datagen::relation::KeyAttribute;
+use num_rational::Ratio;
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::dispatcher::{MorselSpec, WorkerCpuAffinity};
 use numa_gpu::runtime::numa::{self, NodeRatio};
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
-
-use num_rational::Ratio;
-
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
 use rustacuda::prelude::*;
-
 use serde::de::DeserializeOwned;
-
+use sql_ops::join::{no_partitioning_join, HashingScheme};
 use std::mem::size_of;
 use std::path::PathBuf;
-
 use structopt::StructOpt;
 
 fn main() -> Result<()> {
@@ -162,6 +157,14 @@ struct CmdOpt {
     )]
     zipf_exponent: Option<f64>,
 
+    /// Selectivity of the join, in percent
+    #[structopt(
+        long = "selectivity",
+        default_value = "100",
+        raw(validator = "is_percent")
+    )]
+    selectivity: u32,
+
     /// Load data set from a TSV file with "key value" pairs and automatic gzip decompression
     #[structopt(
         long = "inner-rel-file",
@@ -249,6 +252,24 @@ struct CmdOpt {
     gpu_affinity: Option<PathBuf>,
 }
 
+fn is_percent(x: String) -> std::result::Result<(), String> {
+    x.parse::<i32>()
+        .map_err(|_| {
+            String::from(
+                "Failed to parse integer. The value must be a percentage between [0, 100].",
+            )
+        })
+        .and_then(|x| {
+            if 0 <= x && x <= 100 {
+                Ok(())
+            } else {
+                Err(String::from(
+                    "The value must be a percentage between [0, 100].",
+                ))
+            }
+        })
+}
+
 fn args_to_bench<T>(
     cmd: &CmdOpt,
     device: Device,
@@ -262,6 +283,7 @@ where
         + no_partitioning_join::CudaHashJoinable
         + no_partitioning_join::CpuHashJoinable
         + EnsurePhysicallyBacked
+        + KeyAttribute
         + num_traits::FromPrimitive
         + DeserializeOwned,
 {
@@ -353,6 +375,7 @@ where
                 cmd.inner_rel_tuples,
                 cmd.outer_rel_tuples,
                 data_distribution,
+                Some(cmd.selectivity),
             );
             hjb_builder
                 .inner_len(inner_relation_len)
@@ -511,28 +534,29 @@ fn data_gen_fn<T>(
     inner_rel_tuples: Option<usize>,
     outer_rel_tuples: Option<usize>,
     data_distribution: DataDistribution,
+    selectivity: Option<u32>,
 ) -> (usize, usize, DataGenFn<T>)
 where
-    T: Copy + Send + num_traits::FromPrimitive,
+    T: Copy + Send + KeyAttribute + num_traits::FromPrimitive,
 {
     match description {
         ArgDataSet::Blanas => (
             datagen::popular::Blanas::primary_key_len(),
             datagen::popular::Blanas::foreign_key_len(),
-            Box::new(|pk_rel, fk_rel| {
-                datagen::popular::Blanas::gen(pk_rel, fk_rel).map_err(|e| e.into())
+            Box::new(move |pk_rel, fk_rel| {
+                datagen::popular::Blanas::gen(pk_rel, fk_rel, selectivity).map_err(|e| e.into())
             }),
         ),
         ArgDataSet::Kim => (
             datagen::popular::Kim::primary_key_len(),
             datagen::popular::Kim::foreign_key_len(),
-            Box::new(|pk_rel, fk_rel| {
-                datagen::popular::Kim::gen(pk_rel, fk_rel).map_err(|e| e.into())
+            Box::new(move |pk_rel, fk_rel| {
+                datagen::popular::Kim::gen(pk_rel, fk_rel, selectivity).map_err(|e| e.into())
             }),
         ),
         ArgDataSet::Blanas4MB => {
-            let gen = |pk_rel: &mut [_], fk_rel: &mut [_]| {
-                datagen::relation::UniformRelation::gen_primary_key_par(pk_rel)?;
+            let gen = move |pk_rel: &mut [_], fk_rel: &mut [_]| {
+                datagen::relation::UniformRelation::gen_primary_key_par(pk_rel, selectivity)?;
                 datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
                 Ok(())
             };
@@ -540,8 +564,8 @@ where
             (512 * 2_usize.pow(10), 256 * 2_usize.pow(20), Box::new(gen))
         }
         ArgDataSet::Test => {
-            let gen = |pk_rel: &mut [_], fk_rel: &mut [_]| {
-                datagen::relation::UniformRelation::gen_primary_key(pk_rel)?;
+            let gen = move |pk_rel: &mut [_], fk_rel: &mut [_]| {
+                datagen::relation::UniformRelation::gen_primary_key(pk_rel, selectivity)?;
                 datagen::relation::UniformRelation::gen_foreign_key_from_primary_key(
                     fk_rel, pk_rel,
                 );
@@ -551,8 +575,8 @@ where
             (1000, 1000, Box::new(gen))
         }
         ArgDataSet::Lutz2Gv32G => {
-            let gen = |pk_rel: &mut [_], fk_rel: &mut [_]| {
-                datagen::relation::UniformRelation::gen_primary_key_par(pk_rel)?;
+            let gen = move |pk_rel: &mut [_], fk_rel: &mut [_]| {
+                datagen::relation::UniformRelation::gen_primary_key_par(pk_rel, selectivity)?;
                 datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
                 Ok(())
             };
@@ -564,8 +588,8 @@ where
             )
         }
         ArgDataSet::Lutz32Gv32G => {
-            let gen = |pk_rel: &mut [_], fk_rel: &mut [_]| {
-                datagen::relation::UniformRelation::gen_primary_key_par(pk_rel)?;
+            let gen = move |pk_rel: &mut [_], fk_rel: &mut [_]| {
+                datagen::relation::UniformRelation::gen_primary_key_par(pk_rel, selectivity)?;
                 datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
                 Ok(())
             };
@@ -577,8 +601,8 @@ where
             )
         }
         ArgDataSet::Custom => {
-            let uniform_gen = Box::new(|pk_rel: &mut [_], fk_rel: &mut [_]| {
-                datagen::relation::UniformRelation::gen_primary_key_par(pk_rel)?;
+            let uniform_gen = Box::new(move |pk_rel: &mut [_], fk_rel: &mut [_]| {
+                datagen::relation::UniformRelation::gen_primary_key_par(pk_rel, selectivity)?;
                 datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
                 Ok(())
             });
@@ -588,7 +612,10 @@ where
                 DataDistribution::Zipf(exp) if !(exp > 0.0) => uniform_gen,
                 DataDistribution::Zipf(exp) => {
                     Box::new(move |pk_rel: &mut [_], fk_rel: &mut [_]| {
-                        datagen::relation::UniformRelation::gen_primary_key_par(pk_rel)?;
+                        datagen::relation::UniformRelation::gen_primary_key_par(
+                            pk_rel,
+                            selectivity,
+                        )?;
                         datagen::relation::ZipfRelation::gen_attr_par(fk_rel, pk_rel.len(), exp)?;
                         Ok(())
                     })

@@ -10,7 +10,7 @@
 
 use crossbeam_utils::thread;
 use datagen::popular;
-use datagen::relation::{UniformRelation, ZipfRelation};
+use datagen::relation::{KeyAttribute, UniformRelation, ZipfRelation};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use rand::distributions::uniform::SampleUniform;
@@ -61,9 +61,9 @@ fn main() -> Result<()> {
                     let (inner_rel, outer_rel) = if let (Some(inner), Some(outer)) =
                         (join_cmd.inner_rel_tuples, join_cmd.outer_rel_tuples)
                     {
-                        generate::<i32>(inner, outer, distribution)?
+                        generate::<i32>(inner, outer, distribution, Some(join_cmd.selectivity))?
                     } else if let Some(data_set) = join_cmd.data_set {
-                        generate_popular::<i32>(data_set)?
+                        generate_popular::<i32>(data_set, Some(join_cmd.selectivity))?
                     } else {
                         unreachable!()
                     };
@@ -91,9 +91,9 @@ fn main() -> Result<()> {
                     let (inner_rel, outer_rel) = if let (Some(inner), Some(outer)) =
                         (join_cmd.inner_rel_tuples, join_cmd.outer_rel_tuples)
                     {
-                        generate::<i64>(inner, outer, distribution)?
+                        generate::<i64>(inner, outer, distribution, Some(join_cmd.selectivity))?
                     } else if let Some(data_set) = join_cmd.data_set {
-                        generate_popular::<i64>(data_set)?
+                        generate_popular::<i64>(data_set, Some(join_cmd.selectivity))?
                     } else {
                         unreachable!()
                     };
@@ -217,6 +217,14 @@ struct CmdPkFkJoin {
     #[structopt(long = "zipf-exponent", raw(required_if = r#""distribution", "Zipf""#))]
     zipf_exponent: Option<f64>,
 
+    /// Selectivity of the join, in percent
+    #[structopt(
+        long = "selectivity",
+        default_value = "100",
+        raw(validator = "is_percent")
+    )]
+    selectivity: u32,
+
     /// Set the output file type
     #[structopt(
         long = "file-type",
@@ -243,6 +251,24 @@ struct CmdPkFkJoin {
     outer_rel_tuples: Option<usize>,
 }
 
+fn is_percent(x: String) -> std::result::Result<(), String> {
+    x.parse::<i32>()
+        .map_err(|_| {
+            String::from(
+                "Failed to parse integer. The value must be a percentage between [0, 100].",
+            )
+        })
+        .and_then(|x| {
+            if 0 <= x && x <= 100 {
+                Ok(())
+            } else {
+                Err(String::from(
+                    "The value must be a percentage between [0, 100].",
+                ))
+            }
+        })
+}
+
 #[derive(Debug, Serialize)]
 struct Record<K, V> {
     key: K,
@@ -253,15 +279,16 @@ fn generate<T>(
     inner_len: usize,
     outer_len: usize,
     dist: DataDistribution,
+    selectivity: Option<u32>,
 ) -> Result<(Vec<T>, Vec<T>)>
 where
-    T: Copy + Default + Send + num_traits::FromPrimitive + SampleUniform,
+    T: Copy + Default + Send + KeyAttribute + num_traits::FromPrimitive + SampleUniform,
 {
     let mut inner_rel = vec![T::default(); inner_len];
     let mut outer_rel = vec![T::default(); outer_len];
 
     let pk_timer = Instant::now();
-    UniformRelation::gen_primary_key_par(&mut inner_rel)?;
+    UniformRelation::gen_primary_key_par(&mut inner_rel, selectivity)?;
     let pk_time = Instant::now().duration_since(pk_timer).as_millis();
     println!("PK gen time: {}", pk_time as f64 / 1000.0);
 
@@ -278,7 +305,10 @@ where
     Ok((inner_rel, outer_rel))
 }
 
-fn generate_popular<T: Send>(data_set: ArgDataSet) -> Result<(Vec<T>, Vec<T>)>
+fn generate_popular<T: Send + KeyAttribute>(
+    data_set: ArgDataSet,
+    selectivity: Option<u32>,
+) -> Result<(Vec<T>, Vec<T>)>
 where
     T: Copy + Default + num_traits::FromPrimitive,
 {
@@ -288,12 +318,14 @@ where
         ArgDataSet::Blanas => (
             popular::Blanas::primary_key_len(),
             popular::Blanas::foreign_key_len(),
-            Box::new(|pk_rel, fk_rel| datagen::popular::Blanas::gen(pk_rel, fk_rel)),
+            Box::new(move |pk_rel, fk_rel| {
+                datagen::popular::Blanas::gen(pk_rel, fk_rel, selectivity)
+            }),
         ),
         ArgDataSet::Kim => (
             popular::Kim::primary_key_len(),
             popular::Kim::foreign_key_len(),
-            Box::new(|pk_rel, fk_rel| datagen::popular::Kim::gen(pk_rel, fk_rel)),
+            Box::new(move |pk_rel, fk_rel| datagen::popular::Kim::gen(pk_rel, fk_rel, selectivity)),
         ),
     };
 
