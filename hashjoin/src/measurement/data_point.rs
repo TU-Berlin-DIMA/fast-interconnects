@@ -49,6 +49,7 @@ pub struct DataPoint {
     pub probe_bytes: Option<usize>,
     pub data_distribution: Option<ArgDataDistribution>,
     pub zipf_exponent: Option<f64>,
+    pub join_selectivity: Option<f64>,
     pub warm_up: Option<bool>,
     pub build_ns: Option<f64>,
     pub probe_ns: Option<f64>,
@@ -136,6 +137,7 @@ impl DataPoint {
             } else {
                 None
             },
+            join_selectivity: Some(cmd.selectivity as f64 / 100.0),
             ..self.clone()
         };
 
