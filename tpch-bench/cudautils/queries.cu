@@ -75,11 +75,12 @@ extern "C" __global__ void tpch_q6_predication(
   // Parallel query computation
   long long private_revenue = 0;
   for (uint64_t i = global_idx; i < length; i += global_threads) {
-    if ((l_shipdate[i] >= 366 + 365 + 1) &
-        (l_shipdate[i] < 366 + 365 + 365 + 1) & (l_discount[i] >= 5) &
-        (l_discount[i] <= 7) & (l_quantity[i] < 24)) {
-      private_revenue += l_extendedprice[i] * l_discount[i];
-    }
+    int condition = (l_shipdate[i] >= 366 + 365 + 1) &
+                    (l_shipdate[i] < 366 + 365 + 365 + 1) &
+                    (l_discount[i] >= 5) & (l_discount[i] <= 7) &
+                    (l_quantity[i] < 24);
+    condition = ((!condition) << 31) >> 31;
+    private_revenue += condition & (l_extendedprice[i] * l_discount[i]);
   }
 
   // Reduce result, with work-around because CUDA doesn't support atomicAdd for

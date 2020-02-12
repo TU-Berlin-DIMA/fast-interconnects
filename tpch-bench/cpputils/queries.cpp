@@ -28,10 +28,11 @@ extern "C" void tpch_q6_predication(uint64_t length, int32_t *l_shipdate,
                                     int64_t *revenue) {
   *revenue = 0;
   for (uint64_t i = 0; i < length; ++i) {
-    if ((l_shipdate[i] >= 366 + 365 + 1) &
-        (l_shipdate[i] < 366 + 365 + 365 + 1) & (l_discount[i] >= 5) &
-        (l_discount[i] <= 7) & (l_quantity[i] < 24)) {
-      *revenue += l_extendedprice[i] * l_discount[i];
-    }
+    int condition = (l_shipdate[i] >= 366 + 365 + 1) &
+                    (l_shipdate[i] < 366 + 365 + 365 + 1) &
+                    (l_discount[i] >= 5) & (l_discount[i] <= 7) &
+                    (l_quantity[i] < 24);
+    condition = ((!condition) << 31) >> 31;
+    *revenue += condition & (l_extendedprice[i] * l_discount[i]);
   }
 }
