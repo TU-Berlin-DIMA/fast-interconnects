@@ -16,6 +16,7 @@ pub enum DeviceId {
 pub enum BareMemType {
     System,
     Numa,
+    NumaPinned,
     Pinned,
     Unified,
     Device,
@@ -32,6 +33,7 @@ impl From<&allocator::MemType> for MemTypeDescription {
         let (bare_mem_type, location) = match mem_type {
             allocator::MemType::SysMem => (BareMemType::System, None),
             allocator::MemType::NumaMem(loc) => (BareMemType::Numa, Some(*loc)),
+            allocator::MemType::NumaPinnedMem(loc) => (BareMemType::NumaPinned, Some(*loc)),
             allocator::MemType::DistributedNumaMem(_node_ratios) => unimplemented!(),
             allocator::MemType::CudaPinnedMem => (BareMemType::Pinned, None),
             allocator::MemType::CudaUniMem => (BareMemType::Unified, None),
