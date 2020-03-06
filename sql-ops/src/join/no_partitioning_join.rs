@@ -770,7 +770,7 @@ mod tests {
                 let mut outer_rel_key = alloc_fn(ROWS);
                 let mut outer_rel_pay = alloc_fn(ROWS);
 
-                UniformRelation::gen_primary_key(&mut inner_rel_key)?;
+                UniformRelation::gen_primary_key(&mut inner_rel_key, None)?;
                 UniformRelation::gen_foreign_key_from_primary_key(
                     &mut outer_rel_key,
                     &inner_rel_key,
@@ -847,7 +847,7 @@ mod tests {
                 let mut outer_rel_key = alloc_fn(ROWS);
                 let mut outer_rel_pay = alloc_fn(ROWS);
 
-                UniformRelation::gen_primary_key(&mut inner_rel_key)?;
+                UniformRelation::gen_primary_key(&mut inner_rel_key, None)?;
                 UniformRelation::gen_foreign_key_from_primary_key(
                     &mut outer_rel_key,
                     &inner_rel_key,

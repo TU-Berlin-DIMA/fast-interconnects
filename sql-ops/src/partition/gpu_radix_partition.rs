@@ -422,7 +422,7 @@ mod tests {
         let mut data_key: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
         let mut data_pay: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
 
-        UniformRelation::gen_primary_key(&mut data_key)?;
+        UniformRelation::gen_primary_key(&mut data_key, None)?;
         UniformRelation::gen_attr(&mut data_pay, PAYLOAD_RANGE)?;
 
         let mut original_tuples: HashMap<_, _> = data_key
