@@ -370,8 +370,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     gpu_radix_partition_benchmark::<i64, _>(
         "gpu_radix_partition",
-        "chunked_sswwc",
-        GpuRadixPartitionAlgorithm::ChunkedSSWWC,
+        "chunked_laswwc",
+        GpuRadixPartitionAlgorithm::ChunkedLASWWC,
         &options.radix_bits,
         &input_data,
         &output_mem_type,

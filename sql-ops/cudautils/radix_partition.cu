@@ -128,7 +128,7 @@ __device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
 }
 
 template <typename K, typename V>
-__device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args) {
+__device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args) {
   extern __shared__ uint32_t shared_mem[];
 
   const uint32_t fanout = 1U << args.radix_bits;
@@ -301,14 +301,14 @@ extern "C" __launch_bounds__(1024, 2) __global__
 
 // Exports the partitioning function for 8-byte key/value tuples.
 extern "C" __launch_bounds__(1024, 1) __global__
-    void gpu_chunked_sswwc_radix_partition_int32_int32(
+    void gpu_chunked_laswwc_radix_partition_int32_int32(
         RadixPartitionArgs *args) {
-  gpu_chunked_sswwc_radix_partition<int32_t, int32_t>(*args);
+  gpu_chunked_laswwc_radix_partition<int32_t, int32_t>(*args);
 }
 
 // Exports the partitioning function for 16-byte key/value tuples.
 extern "C" __launch_bounds__(1024, 1) __global__
-    void gpu_chunked_sswwc_radix_partition_int64_int64(
+    void gpu_chunked_laswwc_radix_partition_int64_int64(
         RadixPartitionArgs *args) {
-  gpu_chunked_sswwc_radix_partition<int64_t, int64_t>(*args);
+  gpu_chunked_laswwc_radix_partition<int64_t, int64_t>(*args);
 }
