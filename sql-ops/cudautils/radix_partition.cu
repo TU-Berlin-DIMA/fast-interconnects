@@ -189,14 +189,13 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args) {
 
   // 3. Partition
 
-  // FIXME Handle case: data_length % TUPLES_PER_THREAD != 0
-
   // Reuse space from prefix sum for storing cache offsets
   uint32_t *const cache_offsets = prefix_tmp;
-  data_length = (data_length / (blockDim.x * TUPLES_PER_THREAD)) * (blockDim.x * TUPLES_PER_THREAD);
-  for (size_t i = threadIdx.x; i < data_length;
-       i += blockDim.x * TUPLES_PER_THREAD) {
+  size_t loop_length = (data_length / (blockDim.x * TUPLES_PER_THREAD)) *
+                       (blockDim.x * TUPLES_PER_THREAD);
 
+  for (size_t i = threadIdx.x; i < loop_length;
+       i += blockDim.x * TUPLES_PER_THREAD) {
     // Load tuples
     Tuple<K, V> tuple[TUPLES_PER_THREAD];
 #pragma unroll
@@ -273,6 +272,18 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args) {
       auto p_index = key_to_partition(key, mask, 0);
       atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1);
     }
+  }
+
+  // Handle case when data_length % (TUPLES_PER_THREAD * blockDim) != 0
+  for (size_t i = loop_length + threadIdx.x; i < data_length; i += blockDim.x) {
+    Tuple<K, V> tuple;
+    tuple.key = join_attr_data[i];
+    tuple.value = payload_attr_data[i];
+
+    auto p_index = key_to_partition(tuple.key, mask, 0);
+    auto offset =
+        atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
+    partitioned_relation[offset] = tuple;
   }
 }
 
