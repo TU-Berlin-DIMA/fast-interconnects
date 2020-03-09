@@ -15,6 +15,12 @@
 #define TUPLES_PER_THREAD 4U
 #endif
 
+// Defines the software write-combine buffer size; usually this should be passed
+// via the build script.
+#ifndef SSWWC_BUFFER_SIZE
+#define SSWWC_BUFFER_SIZE 32
+#endif
+
 #include <cassert>
 #include <cstdint>
 
@@ -49,6 +55,22 @@ struct Tuple {
   K key;
   V value;
 };
+
+// A set of buffers used for software write-combinining.
+//
+// Supports two views of its data. The purpose is to align each buffer to the
+// cache-line size. This requires periodic overwriting of `meta.slot` when a
+// buffer becomes full. After emptying the buffer, the slot's value must be
+// restored.
+template <typename T, uint32_t size>
+struct WriteCombineBuffer {
+  T data[size / sizeof(T)];
+
+  // Computes the number of tuples contained in a buffer.
+  __device__ static constexpr uint32_t tuples_per_buffer() {
+    return size / sizeof(T);
+  }
+} __attribute__((packed));
 
 // Computes the partition ID of a given key.
 template <typename T, typename B>
@@ -287,6 +309,168 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args) {
   }
 }
 
+template <typename K, typename V>
+__device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args) {
+  extern __shared__ uint32_t shared_mem[];
+
+  const uint32_t fanout = 1U << args.radix_bits;
+  const uint64_t mask = static_cast<uint64_t>(fanout - 1);
+  const int lane_id = threadIdx.x % warpSize;
+  const int warp_id = threadIdx.x / warpSize;
+  const int num_warps = blockDim.x / warpSize;
+  constexpr uint32_t warp_mask = 0xFFFFFFFFu;
+  const uint32_t tuples_per_buffer =
+      WriteCombineBuffer<Tuple<K, V>, SSWWC_BUFFER_SIZE>::tuples_per_buffer();
+
+  // Calculate the data_length per block
+  size_t data_length = (args.data_length + gridDim.x - 1U) / gridDim.x;
+  size_t data_offset = data_length * blockIdx.x;
+  if (blockIdx.x + 1U == gridDim.x) {
+    data_length = args.data_length - data_offset;
+  }
+
+  auto join_attr_data =
+      static_cast<const K *>(args.join_attr_data) + data_offset;
+  auto payload_attr_data =
+      static_cast<const V *>(args.payload_attr_data) + data_offset;
+  auto partitioned_relation =
+      static_cast<Tuple<K, V> *>(args.partitioned_relation) + data_offset;
+
+  auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
+
+  uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
+  uint32_t *const prefix_tmp = &tmp_partition_offsets[fanout];
+  uint32_t *const slots = prefix_tmp;  // alias to reuse space
+  WriteCombineBuffer<Tuple<K, V>, SSWWC_BUFFER_SIZE> *const buffers =
+      reinterpret_cast<WriteCombineBuffer<Tuple<K, V>, SSWWC_BUFFER_SIZE> *>(
+          &slots[fanout]);
+
+  // Ensure counters are all zeroed.
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    tmp_partition_offsets[i] = 0;
+  }
+
+  __syncthreads();
+
+  // 1. Compute local histograms per partition for thread block.
+  for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
+    auto key = join_attr_data[i];
+    auto p_index = key_to_partition(key, mask, 0);
+    atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1ULL);
+  }
+
+  __syncthreads();
+
+  // 2. Compute offsets with exclusive prefix sum for thread block.
+  block_exclusive_prefix_sum(tmp_partition_offsets, fanout, args.padding_length,
+                             prefix_tmp);
+
+  __syncthreads();
+
+  // Add data offset onto partitions offsets and write out to global memory.
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    uint64_t offset = tmp_partition_offsets[i] + data_offset;
+    args.partition_offsets[blockIdx.x * fanout + i] = offset;
+  }
+
+  // Zero slots
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    slots[i] = 0;
+  }
+
+  __syncthreads();
+
+  // 3. Partition
+
+  // All threads in warp must participate in each loop iteration
+  size_t loop_length = data_length & (warpSize - 1);
+  for (size_t i = threadIdx.x; i < loop_length; i += blockDim.x) {
+    Tuple<K, V> tuple;
+    tuple.key = join_attr_data[i];
+    tuple.value = payload_attr_data[i];
+
+    uint32_t p_index = key_to_partition(tuple.key, mask, 0);
+    uint32_t pos = 0;
+    bool valid_pos = false;
+    do {
+      // Fetch a position if don't have a valid position yet
+      //
+      // Note: optimize with warpSum and then one atomicAdd per warp per
+      // partition
+      //
+      // Note: optimize by first reading if (pos > tuples_per_buffer
+      // - 1) before atomicAdd like in a TTAS lock
+      if (valid_pos == false) {
+        pos = atomicAdd((unsigned int *)&slots[p_index], 1U);
+        valid_pos = (pos < tuples_per_buffer) ? true : false;
+      }
+
+      // Must flush the buffer
+      // Cases:
+      //   1. one or more threads in a warp has a full buffer
+      //     a) in same partition -> handled by atomicAdd and retry
+      //     b) in different partitions -> handled by ballot and loop
+      //   2. one or more threads in block but other warp has a full buffer in
+      //   same partition -> handled by atomicAdd and retry
+      uint32_t ballot = 0;
+      int condition = (pos == tuples_per_buffer);
+      while (ballot = __ballot_sync(warp_mask, condition)) {
+        int leader_id = __ffs(ballot) - 1;
+        uint32_t current_index = __shfl_sync(warp_mask, p_index, leader_id);
+        uint32_t dst = tmp_partition_offsets[current_index];
+
+        // Memcpy from cached buffer to memory
+        for (uint32_t i = lane_id; i < tuples_per_buffer; i += warpSize) {
+          partitioned_relation[dst + i] = buffers[p_index].data[i];
+        }
+
+        if (lane_id == leader_id) {
+          // Update offsets
+          tmp_partition_offsets[current_index] += tuples_per_buffer;
+          __threadfence_block();
+          slots[current_index] = 0;
+
+          // Set leader's condition flag to false, because partition is flushed
+          condition = 0;
+        }
+      }
+    } while (__any_sync(warp_mask, pos >= tuples_per_buffer));
+
+    buffers[p_index].data[pos] = tuple;
+  }
+
+  // Wait until all warps are done
+  __syncthreads();
+
+  // Flush buffers
+  for (uint32_t p_index = warp_id; p_index < fanout; p_index += num_warps) {
+    uint32_t dst = 0;
+    if (lane_id == 0) {
+      dst = atomicAdd((unsigned int *)&tmp_partition_offsets[p_index],
+                      slots[p_index]);
+    }
+    dst = __shfl_sync(warp_mask, dst, 0);
+
+    for (uint32_t i = lane_id; i < slots[p_index]; i += warpSize) {
+      partitioned_relation[dst + i] = buffers[p_index].data[i];
+    }
+  }
+
+  // __syncthreads() not necessary due to atomicAdd() space reservation in flush
+
+  // Handle case when data_length % warpSize != 0
+  for (size_t i = loop_length + threadIdx.x; i < data_length; i += blockDim.x) {
+    Tuple<K, V> tuple;
+    tuple.key = join_attr_data[i];
+    tuple.value = payload_attr_data[i];
+
+    auto p_index = key_to_partition(tuple.key, mask, 0);
+    auto offset =
+        atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
+    partitioned_relation[offset] = tuple;
+  }
+}
+
 // Exports the partitioning function for 8-byte key/value tuples.
 extern "C" __launch_bounds__(1024, 2) __global__
     void gpu_chunked_radix_partition_int32_int32(RadixPartitionArgs *args) {
@@ -311,4 +495,18 @@ extern "C" __launch_bounds__(1024, 1) __global__
     void gpu_chunked_laswwc_radix_partition_int64_int64(
         RadixPartitionArgs *args) {
   gpu_chunked_laswwc_radix_partition<int64_t, int64_t>(*args);
+}
+
+// Exports the partitioning function for 8-byte key/value tuples.
+extern "C" __launch_bounds__(1024, 1) __global__
+    void gpu_chunked_sswwc_radix_partition_int32_int32(
+        RadixPartitionArgs *args) {
+  gpu_chunked_sswwc_radix_partition<int32_t, int32_t>(*args);
+}
+
+// Exports the partitioning function for 16-byte key/value tuples.
+extern "C" __launch_bounds__(1024, 1) __global__
+    void gpu_chunked_sswwc_radix_partition_int64_int64(
+        RadixPartitionArgs *args) {
+  gpu_chunked_sswwc_radix_partition<int64_t, int64_t>(*args);
 }
