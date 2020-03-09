@@ -8,7 +8,7 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-use datagen::relation::UniformRelation;
+use datagen::relation::{KeyAttribute, UniformRelation};
 use num_rational::Ratio;
 use num_traits::cast::FromPrimitive;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
@@ -280,7 +280,7 @@ where
 
 fn alloc_and_gen<T>(tuples: usize, mem_type: MemType) -> Result<(Mem<T>, Mem<T>), Box<dyn Error>>
 where
-    T: Clone + Default + Send + DeviceCopy + FromPrimitive,
+    T: Clone + Default + Send + DeviceCopy + FromPrimitive + KeyAttribute,
 {
     const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
 
@@ -291,7 +291,7 @@ where
     let mut host_data_key = host_alloc(tuples);
     let mut host_data_pay = host_alloc(tuples);
 
-    UniformRelation::gen_primary_key_par(host_data_key.as_mut_slice()).unwrap();
+    UniformRelation::gen_primary_key_par(host_data_key.as_mut_slice(), None).unwrap();
     UniformRelation::gen_attr_par(host_data_pay.as_mut_slice(), PAYLOAD_RANGE).unwrap();
 
     let dev_data = if let MemType::CudaDevMem = mem_type {
