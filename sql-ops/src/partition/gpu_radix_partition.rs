@@ -350,7 +350,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             }
                         },
                         RadixPartitionState::ChunkedSSWWC => {
-                            let tuples_per_thread = 1;
+                            let tuples_per_thread = 4;
                             let shared_mem_bytes =
                                 (2 * tuples_per_thread * block_size.x * mem::size_of::<$Type>() as u32)
                                 + (fanout_u32 * mem::size_of::<u32>() as u32)
@@ -637,7 +637,7 @@ mod tests {
             (32 << 20) / mem::size_of::<i32>(),
             GpuRadixPartitionAlgorithm::ChunkedSSWWC,
             2,
-            GridSize::from(64),
+            GridSize::from(1),
             BlockSize::from(128),
         )
     }
@@ -648,7 +648,7 @@ mod tests {
             (32 << 20) / mem::size_of::<i32>(),
             GpuRadixPartitionAlgorithm::ChunkedSSWWC,
             10,
-            GridSize::from(64),
+            GridSize::from(1),
             BlockSize::from(128),
         )
     }
@@ -660,7 +660,7 @@ mod tests {
             1..=(32 << 20),
             GpuRadixPartitionAlgorithm::ChunkedSSWWC,
             2,
-            GridSize::from(64),
+            GridSize::from(1),
             BlockSize::from(128),
         )
     }
@@ -672,7 +672,7 @@ mod tests {
             1..=(32 << 20),
             GpuRadixPartitionAlgorithm::ChunkedSSWWC,
             10,
-            GridSize::from(64),
+            GridSize::from(1),
             BlockSize::from(128),
         )
     }
@@ -683,7 +683,7 @@ mod tests {
             (32 << 20) / mem::size_of::<i32>(),
             GpuRadixPartitionAlgorithm::ChunkedSSWWC,
             12,
-            GridSize::from(64),
+            GridSize::from(1),
             BlockSize::from(128),
         )
     }
@@ -695,7 +695,7 @@ mod tests {
             1..=(32 << 20),
             GpuRadixPartitionAlgorithm::ChunkedSSWWC,
             12,
-            GridSize::from(64),
+            GridSize::from(1),
             BlockSize::from(128),
         )
     }
