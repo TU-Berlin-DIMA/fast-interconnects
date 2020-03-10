@@ -368,10 +368,24 @@ fn main() -> Result<(), Box<dyn Error>> {
     //     &mut csv_writer,
     // )?;
 
+    // gpu_radix_partition_benchmark::<i64, _>(
+    //     "gpu_radix_partition",
+    //     "chunked_laswwc",
+    //     GpuRadixPartitionAlgorithm::ChunkedLASWWC,
+    //     &options.radix_bits,
+    //     &input_data,
+    //     &output_mem_type,
+    //     // &papi,
+    //     &options.papi_preset,
+    //     options.repeat,
+    //     &template,
+    //     &mut csv_writer,
+    // )?;
+
     gpu_radix_partition_benchmark::<i64, _>(
         "gpu_radix_partition",
-        "chunked_laswwc",
-        GpuRadixPartitionAlgorithm::ChunkedLASWWC,
+        "chunked_sswwc",
+        GpuRadixPartitionAlgorithm::ChunkedSSWWC,
         &options.radix_bits,
         &input_data,
         &output_mem_type,

@@ -383,7 +383,7 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args) {
   // 3. Partition
 
   // All threads in warp must participate in each loop iteration
-  size_t loop_length = data_length & (warpSize - 1);
+  size_t loop_length = (data_length / warpSize) * warpSize;
   for (size_t i = threadIdx.x; i < loop_length; i += blockDim.x) {
     Tuple<K, V> tuple;
     tuple.key = join_attr_data[i];
@@ -391,7 +391,7 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args) {
 
     uint32_t p_index = key_to_partition(tuple.key, mask, 0);
     uint32_t pos = 0;
-    bool valid_pos = false;
+    bool done = false;
     do {
       // Fetch a position if don't have a valid position yet
       //
@@ -400,9 +400,13 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args) {
       //
       // Note: optimize by first reading if (pos > tuples_per_buffer
       // - 1) before atomicAdd like in a TTAS lock
-      if (valid_pos == false) {
+      if (not done) {
         pos = atomicAdd((unsigned int *)&slots[p_index], 1U);
-        valid_pos = (pos < tuples_per_buffer) ? true : false;
+
+        if (pos < tuples_per_buffer) {
+          buffers[p_index].data[pos] = tuple;
+          done = true;
+        }
       }
 
       // Must flush the buffer
@@ -411,32 +415,34 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args) {
       //     a) in same partition -> handled by atomicAdd and retry
       //     b) in different partitions -> handled by ballot and loop
       //   2. one or more threads in block but other warp has a full buffer in
-      //   same partition -> handled by atomicAdd and retry
+      //        same partition -> handled by atomicAdd and retry
       uint32_t ballot = 0;
-      int condition = (pos == tuples_per_buffer);
-      while (ballot = __ballot_sync(warp_mask, condition)) {
+      int is_candidate = (pos == tuples_per_buffer);
+      while (ballot = __ballot_sync(warp_mask, is_candidate)) {
         int leader_id = __ffs(ballot) - 1;
         uint32_t current_index = __shfl_sync(warp_mask, p_index, leader_id);
         uint32_t dst = tmp_partition_offsets[current_index];
 
         // Memcpy from cached buffer to memory
         for (uint32_t i = lane_id; i < tuples_per_buffer; i += warpSize) {
-          partitioned_relation[dst + i] = buffers[p_index].data[i];
+          partitioned_relation[dst + i] = buffers[current_index].data[i];
         }
 
         if (lane_id == leader_id) {
           // Update offsets
           tmp_partition_offsets[current_index] += tuples_per_buffer;
           __threadfence_block();
-          slots[current_index] = 0;
 
-          // Set leader's condition flag to false, because partition is flushed
-          condition = 0;
+          // Normal write is not visible to other threads
+          //   Use atomic function instead of:
+          //   slots[current_index] = 0;
+          atomicExch(&slots[current_index], 0);
+
+          // Not a leader candidate anymore, because partition is flushed
+          is_candidate = 0;
         }
       }
-    } while (__any_sync(warp_mask, pos >= tuples_per_buffer));
-
-    buffers[p_index].data[pos] = tuple;
+    } while (__any_sync(warp_mask, not done));
   }
 
   // Wait until all warps are done
