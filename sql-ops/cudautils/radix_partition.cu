@@ -415,7 +415,8 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
         }
 
         if (lane_id == leader_id) {
-          // Update offsets
+          // Update offsets; this update must be seen by all threads in our block
+          // before setting slot index to zero
           tmp_partition_offsets[current_index] += tuples_per_buffer;
           __threadfence_block();
 
@@ -443,7 +444,8 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
     }
     dst = __shfl_sync(warp_mask, dst, 0);
 
-    for (uint32_t i = lane_id; i < slots[p_index]; i += warpSize) {
+    uint32_t len = slots[p_index];
+    for (uint32_t i = lane_id; i < len; i += warpSize) {
       partitioned_relation[dst + i] =
           buffers[write_combine_slot(tuples_per_buffer, p_index, i)];
     }
