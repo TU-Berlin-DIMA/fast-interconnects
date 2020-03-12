@@ -15,12 +15,6 @@
 #define TUPLES_PER_THREAD 4U
 #endif
 
-// Defines the software write-combine buffer size; usually this should be passed
-// via the build script.
-#ifndef SSWWC_BUFFER_SIZE
-#define SSWWC_BUFFER_SIZE 32
-#endif
-
 #include <cassert>
 #include <cstdint>
 
@@ -56,21 +50,10 @@ struct Tuple {
   V value;
 };
 
-// A set of buffers used for software write-combinining.
-//
-// Supports two views of its data. The purpose is to align each buffer to the
-// cache-line size. This requires periodic overwriting of `meta.slot` when a
-// buffer becomes full. After emptying the buffer, the slot's value must be
-// restored.
-template <typename T, uint32_t size>
-struct WriteCombineBuffer {
-  T data[size / sizeof(T)];
-
-  // Computes the number of tuples contained in a buffer.
-  __device__ static constexpr uint32_t tuples_per_buffer() {
-    return size / sizeof(T);
-  }
-} __attribute__((packed));
+__device__ __forceinline__ uint32_t write_combine_slot(
+    uint32_t tuples_per_buffer, uint32_t p_index, uint32_t slot) {
+  return tuples_per_buffer * p_index + slot;
+}
 
 // Computes the partition ID of a given key.
 template <typename T, typename B>
@@ -310,7 +293,8 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args) {
 }
 
 template <typename K, typename V>
-__device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args) {
+__device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
+                                                  uint32_t shared_mem_bytes) {
   extern __shared__ uint32_t shared_mem[];
 
   const uint32_t fanout = 1U << args.radix_bits;
@@ -319,8 +303,6 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args) {
   const int warp_id = threadIdx.x / warpSize;
   const int num_warps = blockDim.x / warpSize;
   constexpr uint32_t warp_mask = 0xFFFFFFFFu;
-  const uint32_t tuples_per_buffer =
-      WriteCombineBuffer<Tuple<K, V>, SSWWC_BUFFER_SIZE>::tuples_per_buffer();
 
   // Calculate the data_length per block
   size_t data_length = (args.data_length + gridDim.x - 1U) / gridDim.x;
@@ -338,12 +320,15 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args) {
 
   auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
 
+  const uint32_t sswwc_buffer_bytes =
+      shared_mem_bytes - 2U * fanout * sizeof(uint32_t);
+  const uint32_t tuples_per_buffer =
+      sswwc_buffer_bytes / sizeof(Tuple<K, V>) / fanout;
+
   uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
   uint32_t *const prefix_tmp = &tmp_partition_offsets[fanout];
   uint32_t *const slots = prefix_tmp;  // alias to reuse space
-  WriteCombineBuffer<Tuple<K, V>, SSWWC_BUFFER_SIZE> *const buffers =
-      reinterpret_cast<WriteCombineBuffer<Tuple<K, V>, SSWWC_BUFFER_SIZE> *>(
-          &slots[fanout]);
+  Tuple<K, V> *const buffers = reinterpret_cast<Tuple<K, V> *>(&slots[fanout]);
 
   // Ensure counters are all zeroed.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
@@ -404,7 +389,7 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args) {
         pos = atomicAdd((unsigned int *)&slots[p_index], 1U);
 
         if (pos < tuples_per_buffer) {
-          buffers[p_index].data[pos] = tuple;
+          buffers[write_combine_slot(tuples_per_buffer, p_index, pos)] = tuple;
           done = true;
         }
       }
@@ -425,7 +410,8 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args) {
 
         // Memcpy from cached buffer to memory
         for (uint32_t i = lane_id; i < tuples_per_buffer; i += warpSize) {
-          partitioned_relation[dst + i] = buffers[current_index].data[i];
+          partitioned_relation[dst + i] =
+              buffers[write_combine_slot(tuples_per_buffer, current_index, i)];
         }
 
         if (lane_id == leader_id) {
@@ -458,7 +444,8 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args) {
     dst = __shfl_sync(warp_mask, dst, 0);
 
     for (uint32_t i = lane_id; i < slots[p_index]; i += warpSize) {
-      partitioned_relation[dst + i] = buffers[p_index].data[i];
+      partitioned_relation[dst + i] =
+          buffers[write_combine_slot(tuples_per_buffer, p_index, i)];
     }
   }
 
@@ -506,13 +493,13 @@ extern "C" __launch_bounds__(1024, 1) __global__
 // Exports the partitioning function for 8-byte key/value tuples.
 extern "C" __launch_bounds__(1024, 1) __global__
     void gpu_chunked_sswwc_radix_partition_int32_int32(
-        RadixPartitionArgs *args) {
-  gpu_chunked_sswwc_radix_partition<int32_t, int32_t>(*args);
+        RadixPartitionArgs *args, uint32_t shared_mem_bytes) {
+  gpu_chunked_sswwc_radix_partition<int32_t, int32_t>(*args, shared_mem_bytes);
 }
 
 // Exports the partitioning function for 16-byte key/value tuples.
 extern "C" __launch_bounds__(1024, 1) __global__
     void gpu_chunked_sswwc_radix_partition_int64_int64(
-        RadixPartitionArgs *args) {
-  gpu_chunked_sswwc_radix_partition<int64_t, int64_t>(*args);
+        RadixPartitionArgs *args, uint32_t shared_mem_bytes) {
+  gpu_chunked_sswwc_radix_partition<int64_t, int64_t>(*args, shared_mem_bytes);
 }

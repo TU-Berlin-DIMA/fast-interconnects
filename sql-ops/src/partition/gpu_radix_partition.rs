@@ -389,19 +389,13 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             }
                         },
                         RadixPartitionState::ChunkedSSWWC => {
-                            let bytes_per_buffer = 32;
-                            let shared_mem_bytes =
-                                (fanout_u32 * mem::size_of::<u32>() as u32)
-                                + (std::cmp::max(
-                                        (block_size.x + (block_size.x >> rp.log2_num_banks))
-                                          * mem::size_of::<u32>() as u32,
-                                        fanout_u32 * mem::size_of::<u32>() as u32
-                                          + fanout_u32 * bytes_per_buffer
-                                        )
-                                  );
+                            let sswwc_buffer_len =
+                                (max_shared_mem_bytes - (
+                                    2 * fanout_u32 * mem::size_of::<u32>() as u32
+                                )) / (2 * mem::size_of::<$Type>() as u32);
 
                             assert!(
-                                shared_mem_bytes <= max_shared_mem_bytes,
+                                fanout_u32 < sswwc_buffer_len,
                                 "Failed to allocate enough shared memory"
                                 );
 
@@ -416,10 +410,11 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                     function<<<
                                     grid_size,
                                     block_size,
-                                    shared_mem_bytes,
+                                    max_shared_mem_bytes,
                                     stream
                                     >>>(
-                                        device_args.as_device_ptr()
+                                        device_args.as_device_ptr(),
+                                        max_shared_mem_bytes
                                        ))?;
                             }
                         }
