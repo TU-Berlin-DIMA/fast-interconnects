@@ -4,12 +4,13 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019 Clemens Lutz, German Research Center for Artificial
+ * Copyright (c) 2019-2020 Clemens Lutz, German Research Center for Artificial
  * Intelligence
  * Author: Clemens Lutz, DFKI GmbH <clemens.lutz@dfki.de>
  */
 
 #include <prefix_scan.h>
+#include <ptx_memory.h>
 
 #ifndef TUPLES_PER_THREAD
 #define TUPLES_PER_THREAD 4U
@@ -292,7 +293,7 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args) {
   }
 }
 
-template <typename K, typename V>
+template <typename K, typename V, bool non_temporal>
 __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
                                                   uint32_t shared_mem_bytes) {
   extern __shared__ uint32_t shared_mem[];
@@ -371,8 +372,13 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
   size_t loop_length = (data_length / warpSize) * warpSize;
   for (size_t i = threadIdx.x; i < loop_length; i += blockDim.x) {
     Tuple<K, V> tuple;
-    tuple.key = join_attr_data[i];
-    tuple.value = payload_attr_data[i];
+    if (non_temporal) {
+      tuple.key = ptx_load_cache_streaming(&join_attr_data[i]);
+      tuple.value = ptx_load_cache_streaming(&payload_attr_data[i]);
+    } else {
+      tuple.key = join_attr_data[i];
+      tuple.value = payload_attr_data[i];
+    }
 
     uint32_t p_index = key_to_partition(tuple.key, mask, 0);
     uint32_t pos = 0;
@@ -410,8 +416,19 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
 
         // Memcpy from cached buffer to memory
         for (uint32_t i = lane_id; i < tuples_per_buffer; i += warpSize) {
-          partitioned_relation[dst + i] =
-              buffers[write_combine_slot(tuples_per_buffer, current_index, i)];
+          if (non_temporal) {
+            ptx_store_cache_streaming(
+                &partitioned_relation[dst + i].key,
+                buffers[write_combine_slot(tuples_per_buffer, current_index, i)]
+                    .key);
+            ptx_store_cache_streaming(
+                &partitioned_relation[dst + i].value,
+                buffers[write_combine_slot(tuples_per_buffer, current_index, i)]
+                    .value);
+          } else {
+            partitioned_relation[dst + i] = buffers[write_combine_slot(
+                tuples_per_buffer, current_index, i)];
+          }
         }
 
         if (lane_id == leader_id) {
@@ -493,12 +510,26 @@ extern "C" __launch_bounds__(1024, 1) __global__
 extern "C" __launch_bounds__(1024, 1) __global__
     void gpu_chunked_sswwc_radix_partition_int32_int32(
         RadixPartitionArgs *args, uint32_t shared_mem_bytes) {
-  gpu_chunked_sswwc_radix_partition<int32_t, int32_t>(*args, shared_mem_bytes);
+  gpu_chunked_sswwc_radix_partition<int, int, false>(*args, shared_mem_bytes);
 }
 
 // Exports the partitioning function for 16-byte key/value tuples.
 extern "C" __launch_bounds__(1024, 1) __global__
     void gpu_chunked_sswwc_radix_partition_int64_int64(
         RadixPartitionArgs *args, uint32_t shared_mem_bytes) {
-  gpu_chunked_sswwc_radix_partition<int64_t, int64_t>(*args, shared_mem_bytes);
+  gpu_chunked_sswwc_radix_partition<long long, long long, false>(*args, shared_mem_bytes);
+}
+
+// Exports the partitioning function for 8-byte key/value tuples.
+extern "C" __launch_bounds__(1024, 1) __global__
+    void gpu_chunked_sswwc_non_temporal_radix_partition_int32_int32(
+        RadixPartitionArgs *args, uint32_t shared_mem_bytes) {
+  gpu_chunked_sswwc_radix_partition<int, int, true>(*args, shared_mem_bytes);
+}
+
+// Exports the partitioning function for 16-byte key/value tuples.
+extern "C" __launch_bounds__(1024, 1) __global__
+    void gpu_chunked_sswwc_non_temporal_radix_partition_int64_int64(
+        RadixPartitionArgs *args, uint32_t shared_mem_bytes) {
+  gpu_chunked_sswwc_radix_partition<long long, long long, true>(*args, shared_mem_bytes);
 }
