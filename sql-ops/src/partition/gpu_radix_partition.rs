@@ -23,7 +23,7 @@ use rustacuda::context::CurrentContext;
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::launch;
-use rustacuda::memory::{DeviceBox, DeviceCopy};
+use rustacuda::memory::{DeviceBox, DeviceBuffer, DeviceCopy};
 use rustacuda::module::Module;
 use rustacuda::stream::Stream;
 use std::convert::TryInto;
@@ -47,6 +47,8 @@ struct RadixPartitionArgs<T> {
 
     // State
     tmp_partition_offsets: LaunchableMutPtr<u32>,
+    device_memory_buffers: LaunchableMutPtr<i8>,
+    device_memory_buffer_bytes: u64,
 
     // Outputs
     partition_offsets: LaunchableMutPtr<u64>,
@@ -200,6 +202,9 @@ pub enum GpuRadixPartitionAlgorithm {
     /// Chunked radix partitioning with shared software write combining and non-temporal
     /// loads/stores.
     ChunkedSSWWCNT,
+
+    /// Chunked radix partitioning with hierarchical shared software write combining.
+    ChunkedHSSWWC,
 }
 
 #[derive(Debug)]
@@ -207,6 +212,7 @@ enum RadixPartitionState {
     Chunked,
     ChunkedLASWWC,
     ChunkedSSWWC(bool),
+    ChunkedHSSWWC,
 }
 
 #[derive(Debug)]
@@ -238,6 +244,7 @@ impl GpuRadixPartitioner {
             GpuRadixPartitionAlgorithm::ChunkedLASWWC => RadixPartitionState::ChunkedLASWWC,
             GpuRadixPartitionAlgorithm::ChunkedSSWWC => RadixPartitionState::ChunkedSSWWC(false),
             GpuRadixPartitionAlgorithm::ChunkedSSWWCNT => RadixPartitionState::ChunkedSSWWC(true),
+            GpuRadixPartitionAlgorithm::ChunkedHSSWWC => RadixPartitionState::ChunkedHSSWWC,
         };
 
         let module_path = CString::new(env!("CUDAUTILS_PATH")).map_err(|_| {
@@ -300,7 +307,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 ))?;
                     }
                     match rp.state {
-                        RadixPartitionState::Chunked | RadixPartitionState::ChunkedLASWWC | RadixPartitionState::ChunkedSSWWC(_) => {
+                        RadixPartitionState::Chunked | RadixPartitionState::ChunkedLASWWC | RadixPartitionState::ChunkedSSWWC(_) | RadixPartitionState::ChunkedHSSWWC => {
                             if partitioned_relation.chunks() != rp.grid_size.x {
                                 Err(ErrorKind::InvalidArgument(
                                         "PartitionedRelation has mismatching number of chunks".to_string(),
@@ -317,20 +324,22 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             LaunchableMutPtr::null_mut(),
                         RadixPartitionState::ChunkedSSWWC(_) =>
                             LaunchableMutPtr::null_mut(),
+                        RadixPartitionState::ChunkedHSSWWC =>
+                            LaunchableMutPtr::null_mut(),
                     };
 
-                    let args = RadixPartitionArgs {
+                    let mut args = RadixPartitionArgs {
                         partition_attr_data: partition_attr.as_launchable_ptr(),
                         payload_attr_data: payload_attr.as_launchable_ptr(),
                         data_len,
                         padding_len: partitioned_relation.padding_len(),
                         radix_bits: rp.radix_bits,
                         tmp_partition_offsets,
+                        device_memory_buffers: LaunchableMutPtr::null_mut(),
+                        device_memory_buffer_bytes: 0,
                         partition_offsets: partitioned_relation.offsets.as_launchable_mut_ptr(),
                         partitioned_relation: partitioned_relation.relation.as_launchable_mut_ptr(),
                     };
-
-                    let mut device_args = DeviceBox::new(&args)?;
 
                     let module = &rp.module;
                     let grid_size = rp.grid_size.clone();
@@ -350,6 +359,8 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 shared_mem_bytes <= max_shared_mem_bytes,
                                 "Failed to allocate enough shared memory"
                                 );
+
+                            let mut device_args = DeviceBox::new(&args)?;
 
                             unsafe {
                                 launch!(
@@ -385,6 +396,8 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             let mut function = module.get_function(&name)?;
                             function.set_max_dynamic_shared_size_bytes(max_shared_mem_bytes)?;
 
+                            let mut device_args = DeviceBox::new(&args)?;
+
                             unsafe {
                                 launch!(
                                     function<<<
@@ -418,6 +431,53 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             };
                             let mut function = module.get_function(&name)?;
                             function.set_max_dynamic_shared_size_bytes(max_shared_mem_bytes)?;
+
+                            let mut device_args = DeviceBox::new(&args)?;
+
+                            unsafe {
+                                launch!(
+                                    function<<<
+                                    grid_size,
+                                    block_size,
+                                    max_shared_mem_bytes,
+                                    stream
+                                    >>>(
+                                        device_args.as_device_ptr(),
+                                        max_shared_mem_bytes
+                                       ))?;
+                            }
+                        },
+                        RadixPartitionState::ChunkedHSSWWC => {
+                            let dmem_buffer_bytes: u64 = 16 * 1024 * 1024;
+                            let global_dmem_buffer_bytes = dmem_buffer_bytes * grid_size.x as u64;
+                            let sswwc_buffer_bytes = max_shared_mem_bytes - (
+                                    2 * fanout_u32 * mem::size_of::<u32>() as u32
+                                );
+                            let sswwc_buffer_len =
+                                sswwc_buffer_bytes / (2 * mem::size_of::<$Type>() as u32);
+
+                            let tuples_per_buffer = sswwc_buffer_len.next_power_of_two() / 2 / fanout_u32;
+                            let tuples_per_dmem_buffer = dmem_buffer_bytes / (fanout as u64) / (2 * mem::size_of::<$Type>() as u64);
+
+                            assert!(
+                                tuples_per_buffer >= 1,
+                                "Failed to allocate enough shared memory"
+                                );
+                            assert!(
+                                tuples_per_dmem_buffer % (tuples_per_buffer as u64) == 0,
+                                "Invalid device memory buffer size! Device memory buffer must be a multiple of shared memory buffer."
+                                );
+
+                            let name = std::ffi::CString::new(
+                                stringify!([<gpu_chunked_hsswwc_radix_partition_ $Suffix _ $Suffix>])
+                                ).unwrap();
+                            let mut function = module.get_function(&name)?;
+                            function.set_max_dynamic_shared_size_bytes(max_shared_mem_bytes)?;
+
+                            let mut dmem_buffer = Mem::CudaDevMem(unsafe { DeviceBuffer::uninitialized(global_dmem_buffer_bytes as usize)? });
+                            args.device_memory_buffers = dmem_buffer.as_launchable_mut_ptr();
+                            args.device_memory_buffer_bytes = dmem_buffer_bytes;
+                            let mut device_args = DeviceBox::new(&args)?;
 
                             unsafe {
                                 launch!(
@@ -893,6 +953,75 @@ mod tests {
         gpu_tuple_loss_or_duplicates_i32(
             (32 << 20) / mem::size_of::<i32>(),
             GpuRadixPartitionAlgorithm::ChunkedSSWWCNT,
+            10,
+            GridSize::from(1),
+            BlockSize::from(128),
+        )
+    }
+
+    #[test]
+    fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_i32_2_bits() -> Result<(), Box<dyn Error>> {
+        gpu_tuple_loss_or_duplicates_i32(
+            (32 << 20) / mem::size_of::<i32>(),
+            GpuRadixPartitionAlgorithm::ChunkedHSSWWC,
+            2,
+            GridSize::from(1),
+            BlockSize::from(128),
+        )
+    }
+
+    #[test]
+    fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_i32_10_bits() -> Result<(), Box<dyn Error>> {
+        gpu_tuple_loss_or_duplicates_i32(
+            (32 << 20) / mem::size_of::<i32>(),
+            GpuRadixPartitionAlgorithm::ChunkedHSSWWC,
+            10,
+            GridSize::from(1),
+            BlockSize::from(128),
+        )
+    }
+
+    #[test]
+    fn gpu_verify_partitions_chunked_hsswwc_i32_2_bits() -> Result<(), Box<dyn Error>> {
+        gpu_verify_partitions_i32(
+            (32 << 20) / mem::size_of::<i32>(),
+            1..=(32 << 20),
+            GpuRadixPartitionAlgorithm::ChunkedHSSWWC,
+            2,
+            GridSize::from(1),
+            BlockSize::from(128),
+        )
+    }
+
+    #[test]
+    fn gpu_verify_partitions_chunked_hsswwc_i32_10_bits() -> Result<(), Box<dyn Error>> {
+        gpu_verify_partitions_i32(
+            (32 << 20) / mem::size_of::<i32>(),
+            1..=(32 << 20),
+            GpuRadixPartitionAlgorithm::ChunkedHSSWWC,
+            10,
+            GridSize::from(1),
+            BlockSize::from(128),
+        )
+    }
+
+    #[test]
+    fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_non_power_two() -> Result<(), Box<dyn Error>> {
+        gpu_tuple_loss_or_duplicates_i32(
+            10_usize.pow(6),
+            GpuRadixPartitionAlgorithm::ChunkedHSSWWC,
+            10,
+            GridSize::from(1),
+            BlockSize::from(128),
+        )
+    }
+
+    #[test]
+    fn gpu_verify_partitions_chunked_hsswwc_non_power_two() -> Result<(), Box<dyn Error>> {
+        gpu_verify_partitions_i32(
+            10_usize.pow(6),
+            1..=(32 << 20),
+            GpuRadixPartitionAlgorithm::ChunkedHSSWWC,
             10,
             GridSize::from(1),
             BlockSize::from(128),
