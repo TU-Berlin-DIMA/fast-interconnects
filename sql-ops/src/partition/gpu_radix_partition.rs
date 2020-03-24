@@ -417,7 +417,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 )) / (2 * mem::size_of::<$Type>() as u32);
 
                             assert!(
-                                fanout_u32 < sswwc_buffer_len,
+                                fanout_u32 <= sswwc_buffer_len,
                                 "Failed to allocate enough shared memory"
                                 );
 
