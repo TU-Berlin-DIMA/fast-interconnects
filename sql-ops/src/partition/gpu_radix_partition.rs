@@ -375,7 +375,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             }
                         },
                         RadixPartitionState::ChunkedLASWWC => {
-                            let tuples_per_thread = 4;
+                            let tuples_per_thread = 5;
                             let shared_mem_bytes =
                                 (2 * tuples_per_thread * block_size.x * mem::size_of::<$Type>() as u32)
                                 + (fanout_u32 * mem::size_of::<u32>() as u32)

@@ -13,7 +13,7 @@
 #include <ptx_memory.h>
 
 #ifndef TUPLES_PER_THREAD
-#define TUPLES_PER_THREAD 4U
+#define TUPLES_PER_THREAD 5U
 #endif
 
 #define __UINT_MAX__ static_cast<unsigned int>(__INT_MAX__ * 2U + 1U)
