@@ -14,7 +14,7 @@ use rustacuda::context::CurrentContext;
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::launch;
-use rustacuda::memory::CopyDestination;
+use rustacuda::memory::{CopyDestination, DeviceCopy};
 use rustacuda::prelude::*;
 use std::error::Error;
 use std::ffi::CString;
@@ -81,6 +81,93 @@ where
     Ok(())
 }
 
+#[derive(Default)]
+struct ScanState {
+    status: u64,
+    aggregate: u64,
+    prefix: u64,
+    __padding: u64,
+}
+
+unsafe impl DeviceCopy for ScanState {}
+
+fn device_prefix_sum<G, B>(
+    data_len: usize,
+    grid_size: G,
+    block_size: B,
+) -> Result<(), Box<dyn Error>>
+where
+    G: Into<GridSize>,
+    B: Into<BlockSize>,
+{
+    let _context = rustacuda::quick_init()?;
+    let module_path = CString::new(env!("CUDAUTILS_PATH"))?;
+    let module = Module::load_from_file(&module_path)?;
+    let warp_size = CurrentContext::get_device()?.get_attribute(DeviceAttribute::WarpSize)? as u32;
+    let gs: GridSize = grid_size.into();
+    let bs: BlockSize = block_size.into();
+
+    let data: Vec<u64> = (0..data_len)
+        .into_iter()
+        .scan(thread_rng(), |rng, _| Some(rng.gen()))
+        .collect();
+    let mut dev_data = DeviceBuffer::from_slice(&data)?;
+
+    let num_warps = gs.x * bs.x / warp_size;
+    let state: Vec<ScanState> = (0..(num_warps + warp_size))
+        .into_iter()
+        .map(|i| {
+            if i < warp_size {
+                ScanState {
+                    status: 2,
+                    aggregate: 0,
+                    prefix: 0,
+                    __padding: 0,
+                }
+            } else {
+                ScanState::default()
+            }
+        })
+        .collect();
+    let mut dev_state = DeviceBuffer::from_slice(&state)?;
+
+    let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
+    let data_len_u32 = data_len as u32;
+
+    unsafe {
+        launch!(module.host_device_exclusive_prefix_sum_uint64<<<gs, bs, 0, stream>>>(
+            dev_data.as_device_ptr(),
+            data_len_u32,
+            0_u32,
+            dev_state.as_device_ptr()
+        ))?;
+    }
+
+    stream.synchronize()?;
+
+    let mut result = vec![0; data_len];
+    dev_data.copy_to(&mut result)?;
+
+    let prefix_sum: Vec<_> = data
+        .iter()
+        .scan(0, |sum, &item| {
+            let old_sum = *sum;
+            *sum += item;
+            Some(old_sum)
+        })
+        .collect();
+
+    prefix_sum
+        .iter()
+        .cloned()
+        .zip(result.iter().cloned())
+        .for_each(|(check, res)| {
+            assert_eq!(check, res);
+        });
+
+    Ok(())
+}
+
 #[test]
 fn block_prefix_sum_block_size() -> Result<(), Box<dyn Error>> {
     block_prefix_sum(1024_usize, 1_u32, 1024_u32)
@@ -94,4 +181,29 @@ fn block_prefix_sum_block_size_divisor() -> Result<(), Box<dyn Error>> {
 #[test]
 fn block_prefix_sum_block_size_multiple() -> Result<(), Box<dyn Error>> {
     block_prefix_sum(2048_usize, 1_u32, 1024_u32)
+}
+
+#[test]
+fn device_prefix_sum_single_warp() -> Result<(), Box<dyn Error>> {
+    device_prefix_sum(1024_usize, 1_u32, 32_u32)
+}
+
+#[test]
+fn device_prefix_sum_two_warps() -> Result<(), Box<dyn Error>> {
+    device_prefix_sum(1024_usize, 1_u32, 64_u32)
+}
+
+#[test]
+fn device_prefix_sum_two_blocks() -> Result<(), Box<dyn Error>> {
+    device_prefix_sum(2_usize * 64, 2_u32, 64_u32)
+}
+
+#[test]
+fn device_prefix_sum_three_blocks() -> Result<(), Box<dyn Error>> {
+    device_prefix_sum(3_usize * 1024, 3_u32, 1024_u32)
+}
+
+#[test]
+fn device_prefix_sum_hundred_blocks() -> Result<(), Box<dyn Error>> {
+    device_prefix_sum(100_usize * 1024, 100_u32, 1024_u32)
 }

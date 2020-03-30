@@ -41,6 +41,20 @@
 
 #include <cstdint>
 
+#include "ptx_memory.h"
+
+#define SCAN_STATUS_INVALID 0
+#define SCAN_STATUS_AGGREGATE_AVAIL 1
+#define SCAN_STATUS_PREFIX_AVAIL 2
+
+template <typename T>
+struct ScanState {
+  T status;
+  T aggregate;
+  T prefix;
+  T __padding;
+};
+
 // Block-wise exclusive prefix sum
 template <typename T>
 __device__ void block_exclusive_prefix_sum(T *const data, SIZE_T size,
@@ -198,6 +212,125 @@ __noinline__  // Reduce GPU register usage
   }
 }
 
+// GPU-wide prefix sum using the Merrill-Garland decoupled lookback algorithm
+//
+// FIXME: Replace "multiple items per thread" strategy with iteration strategy.
+//        In each iteration, process one item per thread. Then reduce
+//        state_index by one, because last position must retain
+//        SCAN_STATUS_PREFIX_AVAIL value. Then reinitialize warp-local state,
+//        and continue processing the next batch.  This change wil transform
+//        the current two-pass strategy into a single-pass strategy.
+template <typename T>
+__device__ void device_exclusive_prefix_sum(T *const data, SIZE_T size,
+                                            SIZE_T padding,
+                                            ScanState<T> *const state) {
+  unsigned int lane_id = threadIdx.x % warpSize;
+  // determine a warp_id within a block
+  unsigned int global_id = blockDim.x * blockIdx.x + threadIdx.x;
+  unsigned int warp_id = global_id / warpSize;
+  unsigned int state_index = warp_id + warpSize;
+  SIZE_T thread_items =
+      (blockDim.x * blockIdx.x + threadIdx.x < size)
+          ? (size + blockDim.x * gridDim.x - 1) / (blockDim.x * gridDim.x)
+          : 0;
+
+  T thread_total = 0;
+  for (SIZE_T i = 0; i < thread_items; ++i) {
+    thread_total += data[global_id * thread_items + i];
+  }
+
+  // Now accumulate in log steps up the chain
+  // compute sums, with another thread's value who is
+  // distance delta away (i).  Note
+  // those threads where the thread 'i' away would have
+  // been out of bounds of the warp are unaffected.  This
+  // creates the scan sum.
+  T warp_sum = thread_total;
+  unsigned int mask = 0xffffffffU;
+#pragma unroll
+  for (unsigned int i = 1; i <= warpSize; i *= 2) {
+    T n = __shfl_up_sync(mask, warp_sum, i, warpSize);
+
+    if (lane_id >= i) warp_sum += n;
+  }
+
+  // value now holds the scan value for the individual thread
+
+  // write the sum of the warp to dmem
+  if (lane_id == warpSize - 1) {
+    ptx_store_cache_global(&(state[state_index].aggregate), warp_sum);
+    __threadfence();
+    ptx_store_cache_global(&(state[state_index].status),
+                           static_cast<T>(SCAN_STATUS_AGGREGATE_AVAIL));
+  }
+
+  // initialized to: [32 x PREFIX_AVAIL = 0]
+  // if any has invalid, wait in loop
+  // if any has prefix_avail, exit loop
+  // else all must have aggergate avail, thus continue to next predecessor
+  unsigned int predecessor = state_index - lane_id - 1U;
+  T start_value = 0;
+  unsigned int prefix_ballot = 0U;
+  T status = SCAN_STATUS_INVALID;
+  do {
+    status = ptx_load_cache_global(&(state[predecessor].status));
+    __threadfence();
+
+    if (__any_sync(mask, status == SCAN_STATUS_INVALID)) {
+      continue;
+    }
+
+    T aggregate = ptx_load_cache_global(&(state[predecessor].aggregate));
+    T prefix = ptx_load_cache_global(&(state[predecessor].prefix));
+
+    if ((prefix_ballot =
+             __ballot_sync(mask, status == SCAN_STATUS_PREFIX_AVAIL)) > 0) {
+      // Only one lane should add the prefix. Note that the order of lanes
+      // is reversed due to the predecessor initialization above, i.e., lane_0
+      // has predecessor + 1 of lane_1.
+      unsigned int first_lane_with_prefix = __ffs(prefix_ballot) - 1;
+      if (lane_id < first_lane_with_prefix) {
+        start_value += aggregate;
+      } else if (lane_id == first_lane_with_prefix) {
+        start_value += prefix;
+      }
+
+      break;
+    } else {
+      start_value += aggregate;
+      predecessor -= warpSize;
+    }
+  } while (true);
+
+  // reduce the aggregates to a total sum
+  // use XOR mode to perform butterfly reduction
+#pragma unroll
+  for (unsigned int i = warpSize / 2; i >= 1; i /= 2) {
+    start_value += __shfl_xor_sync(mask, start_value, i, warpSize);
+  }
+
+  // write the final inclusive prefix of the warp to dmem
+  if (lane_id == warpSize - 1) {
+    ptx_store_cache_global(&(state[state_index].prefix),
+                           warp_sum + start_value);
+    __threadfence();
+    ptx_store_cache_global(&(state[state_index].status),
+                           static_cast<T>(SCAN_STATUS_PREFIX_AVAIL));
+  }
+
+  // convert inclusive prefix scan into exclusive prefix scan inside warp
+  warp_sum = __shfl_up_sync(mask, warp_sum, 1, warpSize);
+  if (lane_id == 0) warp_sum = 0;
+
+  // write out result
+  T thread_sum = warp_sum + start_value;
+  for (SIZE_T i = 0; i < thread_items; ++i) {
+    T value = data[global_id * thread_items + i];
+    data[global_id * thread_items + i] = thread_sum + (global_id + 1) * padding;
+    thread_sum += value;
+  }
+}
+
 // Compute shared memory size as number of elements
 template <typename T>
 __device__ uint32_t block_exclusive_prefix_sum_size() {
@@ -212,6 +345,13 @@ extern "C" __global__ void host_block_exclusive_prefix_sum_uint64(
   uint64_t *block_data = &data[block_size * blockIdx.x];
   block_exclusive_prefix_sum(block_data, block_size, padding,
                              shared_mem_prefix_sum);
+}
+
+// Export `device_exlusive_prefix_sum` to host (for unit testing)
+extern "C" __global__ void host_device_exclusive_prefix_sum_uint64(
+    unsigned long long *const data, SIZE_T size, SIZE_T padding,
+    ScanState<unsigned long long> *const state) {
+  device_exclusive_prefix_sum(data, size, padding, state);
 }
 
 #endif /* PREFIX_SCAN_H */

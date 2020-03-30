@@ -21,6 +21,14 @@ template <typename T>
 __device__ __forceinline__ T ptx_load_cache_global(const T *addr);
 
 template <>
+__device__ __forceinline__ unsigned int ptx_load_cache_global<>(
+    const unsigned int *addr) {
+  unsigned int return_value;
+  asm volatile("ld.global.cg.u32 %0, [%1];" : "=r"(return_value) : "l"(addr));
+  return return_value;
+}
+
+template <>
 __device__ __forceinline__ int ptx_load_cache_global<>(const int *addr) {
   int return_value;
   asm volatile("ld.global.cg.s32 %0, [%1];" : "=r"(return_value) : "l"(addr));
@@ -32,6 +40,14 @@ __device__ __forceinline__ long long ptx_load_cache_global<>(
     const long long *addr) {
   long long return_value;
   asm volatile("ld.global.cg.s64 %0, [%1];" : "=l"(return_value) : "l"(addr));
+  return return_value;
+}
+
+template <>
+__device__ __forceinline__ unsigned long long ptx_load_cache_global<>(
+    const unsigned long long *addr) {
+  unsigned long long return_value;
+  asm volatile("ld.global.cg.u64 %0, [%1];" : "=l"(return_value) : "l"(addr));
   return return_value;
 }
 
@@ -95,9 +111,21 @@ __device__ __forceinline__ void ptx_store_cache_global<>(const int *addr,
 }
 
 template <>
+__device__ __forceinline__ void ptx_store_cache_global<>(
+    const unsigned int *addr, unsigned int value) {
+  asm volatile("st.global.cg.u32 [%0], %1;" : : "l"(addr), "r"(value));
+}
+
+template <>
 __device__ __forceinline__ void ptx_store_cache_global<>(const long long *addr,
                                                          long long value) {
   asm volatile("st.global.cg.s64 [%0], %1;" : : "l"(addr), "l"(value));
+}
+
+template <>
+__device__ __forceinline__ void ptx_store_cache_global<>(
+    const unsigned long long *addr, unsigned long long value) {
+  asm volatile("st.global.cg.u64 [%0], %1;" : : "l"(addr), "l"(value));
 }
 
 /*
