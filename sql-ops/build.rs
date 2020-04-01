@@ -44,7 +44,13 @@ fn main() {
         "--output-directory",
         &out_dir,
     ];
-    let nvcc_link_args = vec!["--device-link", "-fatbin", "--output-file", &cuda_lib_file];
+    let nvcc_link_args = vec![
+        "-rdc=true",
+        "--device-link",
+        "-fatbin",
+        "--output-file",
+        &cuda_lib_file,
+    ];
 
     // For gencodes, see: http://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/
     let gpu_archs = vec![

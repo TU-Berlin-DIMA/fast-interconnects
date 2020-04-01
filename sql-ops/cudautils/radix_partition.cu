@@ -18,10 +18,13 @@
 
 #define __UINT_MAX__ static_cast<unsigned int>(__INT_MAX__ * 2U + 1U)
 
+#include <cooperative_groups.h>
+
 #include <cassert>
 #include <cstdint>
 
 using namespace std;
+using namespace cooperative_groups;
 
 // Returns the log2 of the next-lower power of two
 __device__ int log2_floor_power_of_two(int x) { return 32 - __clz(x) - 1; }
@@ -42,6 +45,7 @@ struct RadixPartitionArgs {
   uint32_t const radix_bits;
 
   // State
+  ScanState<uint32_t> *const prefix_scan_state;
   uint32_t *const __restrict__ tmp_partition_offsets;
   char *const __restrict__ device_memory_buffers;
   uint64_t const device_memory_buffer_bytes;
@@ -1411,6 +1415,100 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
   }
 }
 
+// Contiguous radix partitioning.
+//
+// See the Rust module for details.
+template <typename K, typename V>
+__device__ void gpu_contiguous_radix_partition(RadixPartitionArgs &args) {
+  extern __shared__ uint32_t shared_mem[];
+
+  grid_group grid = this_grid();
+  const uint32_t fanout = 1U << args.radix_bits;
+  // const K mask = static_cast<K>(fanout - 1);
+  const uint64_t mask = static_cast<uint64_t>(fanout - 1U);
+
+  // Calculate the data_length per block
+  size_t data_length = (args.data_length + gridDim.x - 1U) / gridDim.x;
+  size_t data_offset = data_length * blockIdx.x;
+  if (blockIdx.x + 1U == gridDim.x) {
+    data_length = args.data_length - data_offset;
+  }
+
+  auto join_attr_data =
+      static_cast<const K *>(args.join_attr_data) + data_offset;
+  auto payload_attr_data =
+      static_cast<const V *>(args.payload_attr_data) + data_offset;
+  auto partitioned_relation =
+      static_cast<Tuple<K, V> *>(args.partitioned_relation) + data_offset;
+
+  uint32_t *const tmp_partition_offsets = shared_mem;
+  uint32_t *const prefix_tmp = &shared_mem[fanout];
+
+  // Ensure counters are all zeroed.
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    tmp_partition_offsets[i] = 0;
+  }
+
+  __syncthreads();
+
+  // Compute local histograms per partition for thread block.
+  for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
+    auto key = join_attr_data[i];
+    auto p_index = key_to_partition(key, mask, 0);
+    atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
+  }
+
+  __syncthreads();
+
+  // Copy local histograms to device memory.
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    args.tmp_partition_offsets[gridDim.x * i + blockIdx.x] =
+        tmp_partition_offsets[i];
+  }
+
+  // Initialize prefix sum state before synchronizing the grid.
+  device_exclusive_prefix_sum_initialize(args.prefix_scan_state);
+
+  grid.sync();
+
+  // Compute offsets with exclusive prefix sum for thread block.
+  device_exclusive_prefix_sum(args.tmp_partition_offsets,
+                              fanout * gridDim.x * blockDim.x,
+                              args.padding_length, args.prefix_scan_state);
+
+  grid.sync();
+
+  // Copy device-wide offsets to shared memory.
+  // FIXME: check if we can reuse partitions_offsets instead of
+  // tmp_partition_offsets
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    tmp_partition_offsets[i] =
+        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
+  }
+
+  __syncthreads();
+
+  // Write partitions offsets to global memory. As there exists only one chunk
+  // only the first block must perform the write.
+  if (blockIdx.x == 0) {
+    for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+      args.partition_offsets[i] = tmp_partition_offsets[i];
+    }
+  }
+
+  // Partition
+  for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
+    Tuple<K, V> tuple;
+    tuple.key = join_attr_data[i];
+    tuple.value = payload_attr_data[i];
+
+    auto p_index = key_to_partition(tuple.key, mask, 0);
+    auto offset =
+        atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
+    partitioned_relation[offset] = tuple;
+  }
+}
+
 // Exports the partitioning function for 8-byte key/value tuples.
 extern "C" __launch_bounds__(1024, 2) __global__
     void gpu_chunked_radix_partition_int32_int32(RadixPartitionArgs *args) {
@@ -1525,4 +1623,16 @@ extern "C" __launch_bounds__(1024, 1) __global__
         RadixPartitionArgs *args, uint32_t shared_mem_bytes) {
   gpu_chunked_hsswwc_radix_partition_v3<long long, long long>(*args,
                                                               shared_mem_bytes);
+}
+
+// Exports the partitioning function for 8-byte key/value tuples.
+extern "C" __launch_bounds__(1024, 2) __global__
+    void gpu_contiguous_radix_partition_int32_int32(RadixPartitionArgs *args) {
+  gpu_contiguous_radix_partition<int32_t, int32_t>(*args);
+}
+
+// Exports the partitioning function for 16-byte key/value tuples.
+extern "C" __launch_bounds__(1024, 2) __global__
+    void gpu_contiguous_radix_partition_int64_int64(RadixPartitionArgs *args) {
+  gpu_contiguous_radix_partition<int64_t, int64_t>(*args);
 }

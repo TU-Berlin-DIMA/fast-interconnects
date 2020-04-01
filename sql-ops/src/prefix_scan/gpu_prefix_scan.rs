@@ -23,10 +23,10 @@ use rustacuda::memory::DeviceCopy;
 
 #[repr(C)]
 #[allow(unused)]
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct GpuPrefixScanState<T>
 where
-    T: DeviceCopy + Default + Sized,
+    T: Clone + DeviceCopy + Default + Sized,
 {
     status: T,
     aggregate: T,
@@ -34,7 +34,7 @@ where
     __padding: T,
 }
 
-unsafe impl<T: DeviceCopy + Default> DeviceCopy for GpuPrefixScanState<T> {}
+unsafe impl<T: Clone + DeviceCopy + Default> DeviceCopy for GpuPrefixScanState<T> {}
 
 pub struct GpuPrefixSum;
 
