@@ -4,11 +4,10 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019-2020, Clemens Lutz <lutzcle@cml.li>
+ * Copyright 2020 Clemens Lutz, German Research Center for Artificial Intelligence
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-pub mod error;
-pub mod join;
-pub mod partition;
-pub mod prefix_scan;
+mod gpu_prefix_scan;
+
+pub use gpu_prefix_scan::{GpuPrefixScanState, GpuPrefixSum};

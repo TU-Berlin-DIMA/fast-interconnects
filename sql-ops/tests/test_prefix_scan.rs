@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019 Clemens Lutz, German Research Center for Artificial
+ * Copyright (c) 2019-2020 Clemens Lutz, German Research Center for Artificial
  * Intelligence
  * Author: Clemens Lutz, DFKI GmbH <clemens.lutz@dfki.de>
  */
@@ -14,8 +14,9 @@ use rustacuda::context::CurrentContext;
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::launch;
-use rustacuda::memory::{CopyDestination, DeviceCopy};
+use rustacuda::memory::CopyDestination;
 use rustacuda::prelude::*;
+use sql_ops::prefix_scan::{GpuPrefixScanState, GpuPrefixSum};
 use std::error::Error;
 use std::ffi::CString;
 use std::mem::size_of;
@@ -81,16 +82,6 @@ where
     Ok(())
 }
 
-#[derive(Default)]
-struct ScanState {
-    status: u64,
-    aggregate: u64,
-    prefix: u64,
-    __padding: u64,
-}
-
-unsafe impl DeviceCopy for ScanState {}
-
 fn device_prefix_sum<G, B>(
     data_len: usize,
     grid_size: G,
@@ -103,7 +94,6 @@ where
     let _context = rustacuda::quick_init()?;
     let module_path = CString::new(env!("CUDAUTILS_PATH"))?;
     let module = Module::load_from_file(&module_path)?;
-    let warp_size = CurrentContext::get_device()?.get_attribute(DeviceAttribute::WarpSize)? as u32;
     let gs: GridSize = grid_size.into();
     let bs: BlockSize = block_size.into();
 
@@ -113,29 +103,22 @@ where
         .collect();
     let mut dev_data = DeviceBuffer::from_slice(&data)?;
 
-    let num_warps = gs.x * bs.x / warp_size;
-    let state: Vec<ScanState> = (0..(num_warps + warp_size))
-        .into_iter()
-        .map(|i| {
-            if i < warp_size {
-                ScanState {
-                    status: 2,
-                    aggregate: 0,
-                    prefix: 0,
-                    __padding: 0,
-                }
-            } else {
-                ScanState::default()
-            }
-        })
-        .collect();
-    let mut dev_state = DeviceBuffer::from_slice(&state)?;
-
+    let state_len = GpuPrefixSum::state_len(gs.clone(), bs.clone())?;
     let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
     let data_len_u32 = data_len as u32;
+    let mut dev_state: DeviceBuffer<GpuPrefixScanState<u64>> =
+        unsafe { DeviceBuffer::uninitialized(state_len)? };
 
     unsafe {
-        launch!(module.host_device_exclusive_prefix_sum_uint64<<<gs, bs, 0, stream>>>(
+        launch!(module.host_device_exclusive_prefix_sum_initialize_uint64<<<gs.clone(), bs.clone(), 0, stream>>>(
+            dev_state.as_device_ptr()
+        ))?;
+
+        // Race-condition occurs without sync and also with stream.synchronize().
+        // Synchronizing on the context seems to solve the problem.
+        CurrentContext::synchronize()?;
+
+        launch!(module.host_device_exclusive_prefix_sum_uint64<<<gs.clone(), bs.clone(), 0, stream>>>(
             dev_data.as_device_ptr(),
             data_len_u32,
             0_u32,
@@ -206,4 +189,9 @@ fn device_prefix_sum_three_blocks() -> Result<(), Box<dyn Error>> {
 #[test]
 fn device_prefix_sum_hundred_blocks() -> Result<(), Box<dyn Error>> {
     device_prefix_sum(100_usize * 1024, 100_u32, 1024_u32)
+}
+
+#[test]
+fn device_prefix_sum_multiple_items_per_thread() -> Result<(), Box<dyn Error>> {
+    device_prefix_sum(100_usize * 1024, 2_u32, 1024_u32)
 }

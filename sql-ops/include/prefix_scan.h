@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2019 NVIDIA CORPORATION. All rights reserved.
- * Copyright (c) 2019 Clemens Lutz, German Research Center for Artificial
+ * Copyright (c) 2019-2020 Clemens Lutz, German Research Center for Artificial
  * Intelligence
  *
  * Redistribution and use in source and binary forms, with or without
@@ -212,7 +212,26 @@ __noinline__  // Reduce GPU register usage
   }
 }
 
-// GPU-wide prefix sum using the Merrill-Garland decoupled lookback algorithm
+// Initializes the ScanState of the GPU-wide exclusive prefix sum
+template <typename T>
+__device__ void device_exclusive_prefix_sum_initialize(
+    ScanState<T> *const state) {
+  unsigned int global_id = blockDim.x * blockIdx.x + threadIdx.x;
+  unsigned int global_size = gridDim.x * blockDim.x;
+  unsigned int num_warps = global_size / warpSize;
+  unsigned int state_len = num_warps + warpSize;
+
+  for (unsigned int i = global_id; i < state_len; i += global_size) {
+    state[i].status = (i < warpSize) ? static_cast<T>(SCAN_STATUS_PREFIX_AVAIL)
+                                     : static_cast<T>(SCAN_STATUS_INVALID);
+    state[i].aggregate = {0};
+    state[i].prefix = {0};
+    state[i].__padding = {0};
+  }
+}
+
+// GPU-wide exclusive prefix sum using the Merrill-Garland decoupled lookback
+// algorithm
 //
 // FIXME: Replace "multiple items per thread" strategy with iteration strategy.
 //        In each iteration, process one item per thread. Then reduce
@@ -345,6 +364,12 @@ extern "C" __global__ void host_block_exclusive_prefix_sum_uint64(
   uint64_t *block_data = &data[block_size * blockIdx.x];
   block_exclusive_prefix_sum(block_data, block_size, padding,
                              shared_mem_prefix_sum);
+}
+
+// Export `device_exlusive_prefix_sum_initialize` to host (for unit testing)
+extern "C" __global__ void host_device_exclusive_prefix_sum_initialize_uint64(
+    ScanState<unsigned long long> *const state) {
+  device_exclusive_prefix_sum_initialize(state);
 }
 
 // Export `device_exlusive_prefix_sum` to host (for unit testing)
