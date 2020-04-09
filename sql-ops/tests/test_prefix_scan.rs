@@ -13,9 +13,9 @@ use rand::{thread_rng, Rng};
 use rustacuda::context::CurrentContext;
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
-use rustacuda::launch;
 use rustacuda::memory::CopyDestination;
 use rustacuda::prelude::*;
+use rustacuda::{launch, launch_cooperative};
 use sql_ops::prefix_scan::{GpuPrefixScanState, GpuPrefixSum};
 use std::error::Error;
 use std::ffi::CString;
@@ -110,13 +110,9 @@ where
         unsafe { DeviceBuffer::uninitialized(state_len)? };
 
     unsafe {
-        launch!(module.host_device_exclusive_prefix_sum_initialize_uint64<<<gs.clone(), bs.clone(), 0, stream>>>(
+        launch_cooperative!(module.host_device_exclusive_prefix_sum_initialize_uint64<<<gs.clone(), bs.clone(), 0, stream>>>(
             dev_state.as_device_ptr()
         ))?;
-
-        // Race-condition occurs without sync and also with stream.synchronize().
-        // Synchronizing on the context seems to solve the problem.
-        CurrentContext::synchronize()?;
 
         launch!(module.host_device_exclusive_prefix_sum_uint64<<<gs.clone(), bs.clone(), 0, stream>>>(
             dev_data.as_device_ptr(),

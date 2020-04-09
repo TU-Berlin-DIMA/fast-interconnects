@@ -23,10 +23,10 @@ use numa_gpu::runtime::memory::{LaunchableMutPtr, LaunchablePtr, LaunchableSlice
 use rustacuda::context::CurrentContext;
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
-use rustacuda::launch;
 use rustacuda::memory::{DeviceBox, DeviceBuffer, DeviceCopy};
 use rustacuda::module::Module;
 use rustacuda::stream::Stream;
+use rustacuda::{launch, launch_cooperative};
 use std::convert::TryInto;
 use std::ffi::CString;
 use std::mem;
@@ -688,7 +688,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             let mut device_args = DeviceBox::new(&args)?;
 
                             unsafe {
-                                launch!(
+                                launch_cooperative!(
                                     module.[<gpu_contiguous_radix_partition_ $Suffix _ $Suffix>]<<<
                                     grid_size,
                                     block_size,

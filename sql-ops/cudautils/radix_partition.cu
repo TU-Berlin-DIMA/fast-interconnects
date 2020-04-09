@@ -18,13 +18,17 @@
 
 #define __UINT_MAX__ static_cast<unsigned int>(__INT_MAX__ * 2U + 1U)
 
+// Grid synchronization is only supported on Pascal and higher, and will not
+// compile on Maxwell or lower.
+#if __CUDA_ARCH__ >= 600
 #include <cooperative_groups.h>
+namespace cg = cooperative_groups;
+#endif
 
 #include <cassert>
 #include <cstdint>
 
 using namespace std;
-using namespace cooperative_groups;
 
 // Returns the log2 of the next-lower power of two
 __device__ int log2_floor_power_of_two(int x) { return 32 - __clz(x) - 1; }
@@ -1422,7 +1426,9 @@ template <typename K, typename V>
 __device__ void gpu_contiguous_radix_partition(RadixPartitionArgs &args) {
   extern __shared__ uint32_t shared_mem[];
 
-  grid_group grid = this_grid();
+#if __CUDA_ARCH__ >= 600
+  cg::grid_group grid = cg::this_grid();
+#endif
   const uint32_t fanout = 1U << args.radix_bits;
   // const K mask = static_cast<K>(fanout - 1);
   const uint64_t mask = static_cast<uint64_t>(fanout - 1U);
@@ -1439,7 +1445,7 @@ __device__ void gpu_contiguous_radix_partition(RadixPartitionArgs &args) {
   auto payload_attr_data =
       static_cast<const V *>(args.payload_attr_data) + data_offset;
   auto partitioned_relation =
-      static_cast<Tuple<K, V> *>(args.partitioned_relation) + data_offset;
+      static_cast<Tuple<K, V> *>(args.partitioned_relation);
 
   uint32_t *const tmp_partition_offsets = shared_mem;
   uint32_t *const prefix_tmp = &shared_mem[fanout];
@@ -1469,14 +1475,22 @@ __device__ void gpu_contiguous_radix_partition(RadixPartitionArgs &args) {
   // Initialize prefix sum state before synchronizing the grid.
   device_exclusive_prefix_sum_initialize(args.prefix_scan_state);
 
+#if __CUDA_ARCH__ >= 600
   grid.sync();
+#else
+  __syncthreads();
+#endif
 
   // Compute offsets with exclusive prefix sum for thread block.
   device_exclusive_prefix_sum(args.tmp_partition_offsets,
                               fanout * gridDim.x * blockDim.x,
                               args.padding_length, args.prefix_scan_state);
 
+#if __CUDA_ARCH__ >= 600
   grid.sync();
+#else
+  __syncthreads();
+#endif
 
   // Copy device-wide offsets to shared memory.
   // FIXME: check if we can reuse partitions_offsets instead of

@@ -37,6 +37,7 @@ fn main() {
     let num_banks_arg = format!("-DLOG2_NUM_BANKS={}", log2_num_banks);
     let nvcc_build_args = vec![
         num_banks_arg.as_str(),
+        "-rdc=true",
         "-ccbin",
         "/usr/bin/g++-7",
         "--device-c",
@@ -44,13 +45,7 @@ fn main() {
         "--output-directory",
         &out_dir,
     ];
-    let nvcc_link_args = vec![
-        "-rdc=true",
-        "--device-link",
-        "-fatbin",
-        "--output-file",
-        &cuda_lib_file,
-    ];
+    let nvcc_link_args = vec!["--device-link", "-fatbin", "--output-file", &cuda_lib_file];
 
     // For gencodes, see: http://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/
     let gpu_archs = vec![

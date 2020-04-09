@@ -43,6 +43,12 @@
 
 #include "ptx_memory.h"
 
+// Grid synchronization is only supported on Pascal and higher, and will not
+// compile on Maxwell or lower.
+#if __CUDA_ARCH__ >= 600
+#include <cooperative_groups.h>
+#endif
+
 #define SCAN_STATUS_INVALID 0
 #define SCAN_STATUS_AGGREGATE_AVAIL 1
 #define SCAN_STATUS_PREFIX_AVAIL 2
@@ -370,6 +376,13 @@ extern "C" __global__ void host_block_exclusive_prefix_sum_uint64(
 extern "C" __global__ void host_device_exclusive_prefix_sum_initialize_uint64(
     ScanState<unsigned long long> *const state) {
   device_exclusive_prefix_sum_initialize(state);
+
+  // Device-wide synchronization to avoid race-condition between the
+  // initialization and the prefix sum.
+#if __CUDA_ARCH__ >= 600
+  cooperative_groups::grid_group grid = cooperative_groups::this_grid();
+  grid.sync();
+#endif
 }
 
 // Export `device_exlusive_prefix_sum` to host (for unit testing)
