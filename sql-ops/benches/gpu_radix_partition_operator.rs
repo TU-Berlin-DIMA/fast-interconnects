@@ -14,8 +14,8 @@ use num_traits::cast::FromPrimitive;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::memory::Mem;
 use numa_gpu::runtime::numa::NodeRatio;
-use papi::event_set::{EventSetBuilder, Sample};
-use papi::Papi;
+use papi::event_set::{Sample};
+
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
@@ -177,7 +177,7 @@ fn gpu_radix_partition_benchmark<T, W>(
     input_data: &(Mem<T>, Mem<T>),
     output_mem_type: &MemType,
     // papi: &Papi,
-    papi_preset: &str,
+    _papi_preset: &str,
     repeat: u32,
     template: &DataPoint,
     csv_writer: &mut csv::Writer<W>,
@@ -230,7 +230,7 @@ where
                 // let ready_event_set = EventSetBuilder::new(&papi)?
                 //     .use_preset(papi_preset)?
                 //     .build()?;
-                let mut sample = Sample::default();
+                let sample = Sample::default();
                 // ready_event_set.init_sample(&mut sample)?;
 
                 // let running_event_set = ready_event_set.start()?;
@@ -308,7 +308,7 @@ where
 
 fn main() -> Result<(), Box<dyn Error>> {
     let options = Options::from_args();
-    let papi_config = papi::Config::parse_file(&options.papi_config)?;
+    let _papi_config = papi::Config::parse_file(&options.papi_config)?;
     // let papi = Papi::init_with_config(papi_config)?;
 
     let _context = rustacuda::quick_init()?;

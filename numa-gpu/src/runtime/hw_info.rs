@@ -45,7 +45,7 @@ impl ProcessorCache {
 }
 
 impl fmt::Display for ProcessorCache {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "L1 cache size: {}\nL2 cache size: {}\nL3 cache size: {}\npage size: {}",

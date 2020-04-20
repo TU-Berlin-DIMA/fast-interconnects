@@ -143,7 +143,7 @@ impl Page {
 
     /// Returns a Minipage containing a reference to data
     ///
-    pub fn minipage(&self, attr: u32) -> Minipage {
+    pub fn minipage(&self, attr: u32) -> Minipage<'_> {
         let header = &self.header.h;
 
         assert!(attr < header.attrs);
@@ -202,7 +202,7 @@ impl<'a> ::std::ops::Index<usize> for VariableMinipage<'a> {
 }
 
 impl<'p> PageBuilder<'p> {
-    pub fn new(mem: &mut [u8]) -> PageBuilder {
+    pub fn new(mem: &mut [u8]) -> PageBuilder<'_> {
         PageBuilder {
             mem,
             attrs: Vec::new(),

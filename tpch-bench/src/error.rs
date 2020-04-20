@@ -62,7 +62,7 @@ impl std::error::Error for Error {
 }
 
 impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.kind, f)
     }
 }
@@ -74,7 +74,7 @@ impl From<ErrorKind> for Error {
 }
 
 impl std::fmt::Display for ErrorKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ErrorKind::CsvError(ref e) => e.fmt(f),
             ErrorKind::CudaError(ref e) => e.fmt(f),

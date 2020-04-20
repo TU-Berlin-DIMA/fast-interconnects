@@ -8,10 +8,10 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-extern crate assert_approx_eq;
-extern crate error_chain;
-extern crate numa_gpu;
-extern crate rustacuda;
+
+
+
+
 
 use assert_approx_eq::assert_approx_eq;
 

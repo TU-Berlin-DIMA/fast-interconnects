@@ -155,16 +155,16 @@ pub trait CudaHashJoinable: DeviceCopy + NullKey {
     /// Implements `CudaHashJoin::build` for the implementing type.
     fn build_impl(
         hj: &CudaHashJoin<Self>,
-        join_attr: LaunchableSlice<Self>,
-        payload_attr: LaunchableSlice<Self>,
+        join_attr: LaunchableSlice<'_, Self>,
+        payload_attr: LaunchableSlice<'_, Self>,
         stream: &Stream,
     ) -> Result<()>;
 
     /// Implements `CudaHashJoin::probe_sum` for the implementing type.
     fn probe_sum_impl(
         hj: &CudaHashJoin<Self>,
-        join_attr: LaunchableSlice<Self>,
-        payload_attr: LaunchableSlice<Self>,
+        join_attr: LaunchableSlice<'_, Self>,
+        payload_attr: LaunchableSlice<'_, Self>,
         result_set: &Mem<u64>,
         stream: &Stream,
     ) -> Result<()>;
@@ -252,8 +252,8 @@ where
     /// Build a hash table on the GPU.
     pub fn build(
         &self,
-        join_attr: LaunchableSlice<T>,
-        payload_attr: LaunchableSlice<T>,
+        join_attr: LaunchableSlice<'_, T>,
+        payload_attr: LaunchableSlice<'_, T>,
         stream: &Stream,
     ) -> Result<()> {
         T::build_impl(self, join_attr, payload_attr, stream)
@@ -267,8 +267,8 @@ where
     /// ```
     pub fn probe_sum(
         &self,
-        join_attr: LaunchableSlice<T>,
-        payload_attr: LaunchableSlice<T>,
+        join_attr: LaunchableSlice<'_, T>,
+        payload_attr: LaunchableSlice<'_, T>,
         result_set: &Mem<u64>,
         stream: &Stream,
     ) -> Result<()> {
@@ -310,8 +310,8 @@ macro_rules! impl_cuda_hash_join_for_type {
             paste::item!{
                 fn build_impl(
                     hj: &CudaHashJoin<$Type>,
-                    join_attr: LaunchableSlice<$Type>,
-                    payload_attr: LaunchableSlice<$Type>,
+                    join_attr: LaunchableSlice<'_, $Type>,
+                    payload_attr: LaunchableSlice<'_, $Type>,
                     stream: &Stream,
                     ) -> Result<()> {
 
@@ -362,8 +362,8 @@ macro_rules! impl_cuda_hash_join_for_type {
             paste::item!{
                 fn probe_sum_impl(
                     hj: &CudaHashJoin<$Type>,
-                    join_attr: LaunchableSlice<$Type>,
-                    payload_attr: LaunchableSlice<$Type>,
+                    join_attr: LaunchableSlice<'_, $Type>,
+                    payload_attr: LaunchableSlice<'_, $Type>,
                     result_set: &Mem<u64>,
                     stream: &Stream,
                     ) -> Result<()> {
@@ -718,7 +718,7 @@ impl<T> ::std::fmt::Display for HashTable<T>
 where
     T: DeviceCopy + ::std::fmt::Display + NullKey,
 {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
         if let CudaDevMem(_) = self.mem {
             write!(f, "[Cannot print device memory]")?;
         } else {

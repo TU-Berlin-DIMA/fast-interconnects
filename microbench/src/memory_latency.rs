@@ -192,7 +192,7 @@ impl<'h, 'd, 'c> Measurement<'h, 'd, 'c> {
         prepare: P,
         run: R,
         repeat: u32,
-    ) -> Vec<DataPoint>
+    ) -> Vec<DataPoint<'_, '_, '_>>
     where
         P: Fn(&mut S, &mut Mem<u32>, &MeasurementParameters),
         R: Fn(
@@ -215,7 +215,7 @@ impl<'h, 'd, 'c> Measurement<'h, 'd, 'c> {
             })
             .flat_map(|(i, (range, stride))| {
                 let iterations = (range / stride) as u32;
-                let mut data_points: Vec<DataPoint> = Vec::with_capacity(repeat as usize + 1);
+                let mut data_points: Vec<DataPoint<'_, '_, '_>> = Vec::with_capacity(repeat as usize + 1);
                 let mut warm_up = true;
 
                 let mp = MeasurementParameters {

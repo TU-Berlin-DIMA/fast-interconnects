@@ -116,7 +116,7 @@ impl NumaMemcopy {
         let repeat = 100;
         let hostname = hostname::get_hostname().expect("Couldn't get hostname");
 
-        let mut measurements: Vec<DataPoint> = Vec::new();
+        let mut measurements: Vec<DataPoint<'_>> = Vec::new();
         let mut warm_up = true;
 
         for _ in 0..repeat {

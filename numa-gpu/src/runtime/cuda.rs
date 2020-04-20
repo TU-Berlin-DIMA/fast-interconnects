@@ -671,7 +671,7 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
     pub fn fold<F>(&mut self, f: F) -> Result<CudaTransferStrategyMeasurement>
     where
         // FIXME: should be using a mutable LaunchableSlice type
-        F: Fn((LaunchableSlice<R>, LaunchableSlice<S>), &Stream) -> Result<()> + Send + Sync,
+        F: Fn((LaunchableSlice<'_, R>, LaunchableSlice<'_, S>), &Stream) -> Result<()> + Send + Sync,
     {
         match self.strategy {
             CudaTransferStrategy::LazyPinnedCopy | CudaTransferStrategy::PageableCopy => {
@@ -690,7 +690,7 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
     pub fn fold_par<F>(&mut self, f: F) -> Result<CudaTransferStrategyMeasurement>
     where
         // FIXME: should be using a mutable LaunchableSlice type
-        F: Fn((LaunchableSlice<R>, LaunchableSlice<S>), &Stream) -> Result<()> + Send + Sync,
+        F: Fn((LaunchableSlice<'_, R>, LaunchableSlice<'_, S>), &Stream) -> Result<()> + Send + Sync,
     {
         let num_partitions = self.strategy_impls.len();
         let data_fst = &mut self.data.0;
@@ -715,7 +715,7 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
                     |((partition_fst, partition_snd), (strategy_fst, strategy_snd))| {
                         let pf = af.clone();
                         let unowned_context = CurrentContext::get_current()?;
-                        let handle: ScopedJoinHandle<Result<_>> = scope.spawn(move |_| {
+                        let handle: ScopedJoinHandle<'_, Result<_>> = scope.spawn(move |_| {
                             CurrentContext::set_current(&unowned_context)?;
                             let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
                             let times = partition_fst
@@ -826,7 +826,7 @@ impl<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> CudaIterator2<'a, R, S> {
     /// `stream.synchronize()`.
     pub fn fold_async<F>(&mut self, mut f: F) -> Result<CudaTransferStrategyMeasurement>
     where
-        F: FnMut((LaunchableSlice<R>, LaunchableSlice<S>), &Stream) -> Result<()>,
+        F: FnMut((LaunchableSlice<'_, R>, LaunchableSlice<'_, S>), &Stream) -> Result<()>,
     {
         let chunk_len = self.chunk_len;
         let fst = &mut self.data.0;
@@ -953,7 +953,7 @@ impl<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> CudaUnifiedIterator2<'a, R,
     /// memory.
     pub fn fold<F>(&mut self, mut f: F) -> Result<CudaTransferStrategyMeasurement>
     where
-        F: FnMut((LaunchableSlice<R>, LaunchableSlice<S>), &Stream) -> Result<()>,
+        F: FnMut((LaunchableSlice<'_, R>, LaunchableSlice<'_, S>), &Stream) -> Result<()>,
     {
         let data_len = self.data.0.len();
         let chunk_len = self.chunk_len;

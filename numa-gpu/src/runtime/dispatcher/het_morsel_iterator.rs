@@ -58,7 +58,7 @@ impl<'a, R, S> HetMorselIterator2<'a, R, S> {
         R: Copy + DeviceCopy + Send + Sync,
         S: Copy + DeviceCopy + Send + Sync,
         CpuF: Fn((&[R], &[S])) -> Result<()> + Send + Sync,
-        GpuF: Fn((LaunchableSlice<R>, LaunchableSlice<S>), &Stream) -> Result<()> + Send + Sync,
+        GpuF: Fn((LaunchableSlice<'_, R>, LaunchableSlice<'_, S>), &Stream) -> Result<()> + Send + Sync,
     {
         let cpu_morsel_len =
             self.executor.morsel_spec.cpu_morsel_bytes / (size_of::<R>() + size_of::<S>());
@@ -114,7 +114,7 @@ impl<'a, R, S> HetMorselIterator2<'a, R, S> {
 
     fn gpu_worker<F>(dispatcher: &MorselDispatcher, data: (&[R], &[S]), f: Arc<F>) -> Result<()>
     where
-        F: Fn((LaunchableSlice<R>, LaunchableSlice<S>), &Stream) -> Result<()>,
+        F: Fn((LaunchableSlice<'_, R>, LaunchableSlice<'_, S>), &Stream) -> Result<()>,
     {
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
 

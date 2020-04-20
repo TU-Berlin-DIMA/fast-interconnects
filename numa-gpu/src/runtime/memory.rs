@@ -88,7 +88,7 @@ impl<T: DeviceCopy> Mem<T> {
         }
     }
 
-    pub fn as_launchable_slice(&self) -> LaunchableSlice<T> {
+    pub fn as_launchable_slice(&self) -> LaunchableSlice<'_, T> {
         // Note: This is implementation is a short-cut. The proper way is
         // implemented in as_launchable_mut_ptr(). The reason we don't do the
         // proper way here is because RUSTACuda doesn't have a *const T
@@ -238,7 +238,7 @@ impl<T: DeviceCopy> DerefMem<T> {
         }
     }
 
-    pub fn as_launchable_slice(&self) -> LaunchableSlice<T> {
+    pub fn as_launchable_slice(&self) -> LaunchableSlice<'_, T> {
         // Note: This is implementation is a short-cut. The proper way is
         // implemented in as_launchable_mut_ptr(). The reason we don't do the
         // proper way here is because RUSTACuda doesn't have a *const T
@@ -321,7 +321,7 @@ pub trait LaunchableMem {
     fn as_launchable_ptr(&self) -> LaunchablePtr<Self::Item>;
 
     /// Returns a launchable slice to the entire memory range.
-    fn as_launchable_slice(&self) -> LaunchableSlice<Self::Item>;
+    fn as_launchable_slice(&self) -> LaunchableSlice<'_, Self::Item>;
 }
 
 /// Directly derefencing a main-memory slice on the GPU requires that the GPU
@@ -337,7 +337,7 @@ impl<'a, T> LaunchableMem for [T] {
         LaunchablePtr(self.as_ptr())
     }
 
-    fn as_launchable_slice(&self) -> LaunchableSlice<T> {
+    fn as_launchable_slice(&self) -> LaunchableSlice<'_, T> {
         LaunchableSlice(self)
     }
 }
@@ -349,7 +349,7 @@ impl<'a, T> LaunchableMem for DeviceBuffer<T> {
         LaunchablePtr(self.as_ptr())
     }
 
-    fn as_launchable_slice(&self) -> LaunchableSlice<T> {
+    fn as_launchable_slice(&self) -> LaunchableSlice<'_, T> {
         unsafe { LaunchableSlice(std::slice::from_raw_parts(self.as_ptr(), self.len())) }
     }
 }
@@ -361,7 +361,7 @@ impl<'a, T> LaunchableMem for DeviceSlice<T> {
         LaunchablePtr(self.as_ptr())
     }
 
-    fn as_launchable_slice(&self) -> LaunchableSlice<T> {
+    fn as_launchable_slice(&self) -> LaunchableSlice<'_, T> {
         unsafe { LaunchableSlice(std::slice::from_raw_parts(self.as_ptr(), self.len())) }
     }
 }
@@ -373,7 +373,7 @@ impl<'a, T: DeviceCopy> LaunchableMem for UnifiedBuffer<T> {
         LaunchablePtr(self.as_ptr())
     }
 
-    fn as_launchable_slice(&self) -> LaunchableSlice<T> {
+    fn as_launchable_slice(&self) -> LaunchableSlice<'_, T> {
         unsafe { LaunchableSlice(std::slice::from_raw_parts(self.as_ptr(), self.len())) }
     }
 }

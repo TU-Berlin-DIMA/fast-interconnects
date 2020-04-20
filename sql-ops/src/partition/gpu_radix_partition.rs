@@ -58,8 +58,8 @@ unsafe impl<T: DeviceCopy> DeviceCopy for RadixPartitionArgs<T> {}
 pub trait GpuRadixPartitionable: Sized + DeviceCopy {
     fn partition_impl(
         rp: &mut GpuRadixPartitioner,
-        partition_attr: LaunchableSlice<Self>,
-        payload_attr: LaunchableSlice<Self>,
+        partition_attr: LaunchableSlice<'_, Self>,
+        payload_attr: LaunchableSlice<'_, Self>,
         partitioned_relation: &mut PartitionedRelation<Tuple<Self, Self>>,
         stream: &Stream,
     ) -> Result<()>;
@@ -263,8 +263,8 @@ impl GpuRadixPartitioner {
     /// See the module-level documentation for details on the algorithm.
     pub fn partition<T: DeviceCopy + GpuRadixPartitionable>(
         &mut self,
-        partition_attr: LaunchableSlice<T>,
-        payload_attr: LaunchableSlice<T>,
+        partition_attr: LaunchableSlice<'_, T>,
+        payload_attr: LaunchableSlice<'_, T>,
         partitioned_relation: &mut PartitionedRelation<Tuple<T, T>>,
         stream: &Stream,
     ) -> Result<()> {
@@ -284,8 +284,8 @@ macro_rules! impl_gpu_radix_partition_for_type {
             paste::item! {
                 fn partition_impl(
                     rp: &mut GpuRadixPartitioner,
-                    partition_attr: LaunchableSlice<$Type>,
-                    payload_attr: LaunchableSlice<$Type>,
+                    partition_attr: LaunchableSlice<'_, $Type>,
+                    payload_attr: LaunchableSlice<'_, $Type>,
                     partitioned_relation: &mut PartitionedRelation<Tuple<$Type, $Type>>,
                     stream: &Stream,
                     ) -> Result<()> {
