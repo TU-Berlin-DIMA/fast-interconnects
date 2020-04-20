@@ -14,7 +14,7 @@ use num_traits::cast::FromPrimitive;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::memory::Mem;
 use numa_gpu::runtime::numa::NodeRatio;
-use papi::event_set::{Sample};
+use papi::event_set::Sample;
 
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
 use rustacuda::device::DeviceAttribute;

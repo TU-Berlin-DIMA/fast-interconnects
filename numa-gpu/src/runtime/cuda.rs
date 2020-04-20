@@ -671,7 +671,9 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
     pub fn fold<F>(&mut self, f: F) -> Result<CudaTransferStrategyMeasurement>
     where
         // FIXME: should be using a mutable LaunchableSlice type
-        F: Fn((LaunchableSlice<'_, R>, LaunchableSlice<'_, S>), &Stream) -> Result<()> + Send + Sync,
+        F: Fn((LaunchableSlice<'_, R>, LaunchableSlice<'_, S>), &Stream) -> Result<()>
+            + Send
+            + Sync,
     {
         match self.strategy {
             CudaTransferStrategy::LazyPinnedCopy | CudaTransferStrategy::PageableCopy => {
@@ -690,7 +692,9 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
     pub fn fold_par<F>(&mut self, f: F) -> Result<CudaTransferStrategyMeasurement>
     where
         // FIXME: should be using a mutable LaunchableSlice type
-        F: Fn((LaunchableSlice<'_, R>, LaunchableSlice<'_, S>), &Stream) -> Result<()> + Send + Sync,
+        F: Fn((LaunchableSlice<'_, R>, LaunchableSlice<'_, S>), &Stream) -> Result<()>
+            + Send
+            + Sync,
     {
         let num_partitions = self.strategy_impls.len();
         let data_fst = &mut self.data.0;

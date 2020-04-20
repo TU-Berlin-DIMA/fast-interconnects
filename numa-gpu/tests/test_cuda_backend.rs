@@ -8,11 +8,6 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-
-
-
-
-
 use assert_approx_eq::assert_approx_eq;
 
 use numa_gpu::runtime::cuda::{

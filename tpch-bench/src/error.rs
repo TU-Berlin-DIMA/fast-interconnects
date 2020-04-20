@@ -41,25 +41,7 @@ impl Error {
     }
 }
 
-impl std::error::Error for Error {
-    fn description(&self) -> &str {
-        match self.kind {
-            ErrorKind::CsvError(ref e) => e.description(),
-            ErrorKind::CudaError(ref e) => e.description(),
-            ErrorKind::IntegerOverflow(ref s) => s.as_str(),
-            ErrorKind::InvalidArgument(ref s) => s.as_str(),
-            ErrorKind::IoError(ref e) => e.description(),
-            ErrorKind::NulCharError(ref s) => s.as_str(),
-            ErrorKind::NumaGpuError(ref e) => e.description(),
-            ErrorKind::Msg(ref s) => s.as_str(),
-            ErrorKind::RuntimeError(ref s) => s.as_str(),
-        }
-    }
-
-    fn cause(&self) -> Option<&dyn std::error::Error> {
-        None
-    }
-}
+impl std::error::Error for Error {}
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
