@@ -94,11 +94,24 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
     /// necessary padding and metadata.
     pub fn new(
         len: usize,
+        algorithm: GpuRadixPartitionAlgorithm,
         radix_bits: u32,
-        chunks: u32,
+        grid_size: &GridSize,
         partition_alloc_fn: MemAllocFn<T>,
         offsets_alloc_fn: MemAllocFn<u64>,
     ) -> Self {
+        let chunks: u32 = match algorithm {
+            GpuRadixPartitionAlgorithm::Chunked
+            | GpuRadixPartitionAlgorithm::ChunkedLASWWC
+            | GpuRadixPartitionAlgorithm::ChunkedSSWWC
+            | GpuRadixPartitionAlgorithm::ChunkedSSWWCNT
+            | GpuRadixPartitionAlgorithm::ChunkedSSWWCv2
+            | GpuRadixPartitionAlgorithm::ChunkedHSSWWC
+            | GpuRadixPartitionAlgorithm::ChunkedHSSWWCv2
+            | GpuRadixPartitionAlgorithm::ChunkedHSSWWCv3 => grid_size.x,
+            GpuRadixPartitionAlgorithm::Contiguous => 1,
+        };
+
         let padding_len = 0;
         let num_partitions = fanout(radix_bits);
         let relation_len = len + (num_partitions * chunks as usize) * padding_len;
@@ -269,8 +282,8 @@ impl GpuRadixPartitioner {
         algorithm: GpuRadixPartitionAlgorithm,
         radix_bits: u32,
         _alloc_fn: MemAllocFn<u64>,
-        grid_size: GridSize,
-        block_size: BlockSize,
+        grid_size: &GridSize,
+        block_size: &BlockSize,
     ) -> Result<Self> {
         let num_partitions = fanout(radix_bits);
         let log2_num_banks = env!("LOG2_NUM_BANKS")
@@ -308,8 +321,8 @@ impl GpuRadixPartitioner {
             log2_num_banks,
             state,
             module,
-            grid_size,
-            block_size,
+            grid_size: grid_size.clone(),
+            block_size: block_size.clone(),
         })
     }
 
@@ -748,22 +761,11 @@ mod tests {
             .zip(data_pay.iter().cloned().zip(std::iter::repeat(0)))
             .collect();
 
-        let num_chunks = match algorithm {
-            GpuRadixPartitionAlgorithm::Chunked
-            | GpuRadixPartitionAlgorithm::ChunkedLASWWC
-            | GpuRadixPartitionAlgorithm::ChunkedSSWWC
-            | GpuRadixPartitionAlgorithm::ChunkedSSWWCNT
-            | GpuRadixPartitionAlgorithm::ChunkedSSWWCv2
-            | GpuRadixPartitionAlgorithm::ChunkedHSSWWC
-            | GpuRadixPartitionAlgorithm::ChunkedHSSWWCv2
-            | GpuRadixPartitionAlgorithm::ChunkedHSSWWCv3 => grid_size.x,
-            GpuRadixPartitionAlgorithm::Contiguous => 1,
-        };
-
         let mut partitioned_relation = PartitionedRelation::new(
             tuples,
+            algorithm,
             radix_bits,
-            num_chunks,
+            &grid_size,
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
         );
@@ -772,8 +774,8 @@ mod tests {
             algorithm,
             radix_bits,
             Allocator::mem_alloc_fn::<u64>(MemType::CudaUniMem),
-            grid_size,
-            block_size,
+            &grid_size,
+            &block_size,
         )?;
 
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
@@ -848,8 +850,9 @@ mod tests {
 
         let mut partitioned_relation = PartitionedRelation::new(
             tuples,
+            algorithm,
             radix_bits,
-            grid_size.x,
+            &grid_size,
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
         );
@@ -858,8 +861,8 @@ mod tests {
             algorithm,
             radix_bits,
             Allocator::mem_alloc_fn::<u64>(MemType::CudaUniMem),
-            grid_size,
-            block_size,
+            &grid_size,
+            &block_size,
         )?;
 
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;

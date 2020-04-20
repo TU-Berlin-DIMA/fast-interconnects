@@ -263,14 +263,15 @@ where
                 algorithm,
                 radix_bits,
                 Allocator::mem_alloc_fn(MemType::CudaDevMem),
-                GridSize::from(grid_size.clone()),
-                BlockSize::from(block_size.clone()),
+                &grid_size,
+                &block_size,
             )?;
 
             let mut partitioned_relation = PartitionedRelation::new(
                 input_data.0.len(),
+                algorithm,
                 radix_bits,
-                grid_size.x,
+                &grid_size,
                 Allocator::mem_alloc_fn(output_mem_type.clone()),
                 Allocator::mem_alloc_fn(output_mem_type.clone()),
             );
