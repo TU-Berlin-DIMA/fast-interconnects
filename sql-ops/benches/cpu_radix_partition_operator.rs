@@ -129,7 +129,7 @@ where
     let mut data_pay =
         Allocator::alloc_deref_mem::<i64>(DerefMemType::NumaMem(rel_location), tuples);
 
-    UniformRelation::gen_primary_key_par(data_key.as_mut_slice()).unwrap();
+    UniformRelation::gen_primary_key_par(data_key.as_mut_slice(), None).unwrap();
     UniformRelation::gen_attr_par(data_pay.as_mut_slice(), PAYLOAD_RANGE).unwrap();
 
     let chunk_len = (tuples + threads - 1) / threads;
