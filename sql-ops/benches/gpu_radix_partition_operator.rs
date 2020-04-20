@@ -97,6 +97,10 @@ struct Options {
     #[structopt(long = "device-id", default_value = "0")]
     device_id: u16,
 
+    /// Execute with CUDA grid size (Default: #SMs)
+    #[structopt(long = "grid-size")]
+    grid_size: Option<u32>,
+
     /// Memory type with which to allocate input relation
     #[structopt(
         long = "input-mem-type",
@@ -176,6 +180,7 @@ fn gpu_radix_partition_benchmark<T, W>(
     radix_bits_list: &[u32],
     input_data: &(Mem<T>, Mem<T>),
     output_mem_type: &MemType,
+    grid_size_hint: &Option<GridSize>,
     // papi: &Papi,
     _papi_preset: &str,
     repeat: u32,
@@ -195,7 +200,10 @@ where
     let warp_overcommit_factor = 32;
     let grid_overcommit_factor = 1;
     let block_size = BlockSize::x(warp_size * warp_overcommit_factor);
-    let grid_size = GridSize::x(multiprocessors * grid_overcommit_factor);
+    let grid_size = grid_size_hint
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| GridSize::x(multiprocessors * grid_overcommit_factor));
 
     let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
 
@@ -340,6 +348,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     .into();
 
+    let grid_size_hint = options.grid_size.map(GridSize::from);
+
     let input_data = alloc_and_gen(options.tuples, input_mem_type)?;
 
     let template = DataPoint {
@@ -361,6 +371,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     //     &options.radix_bits,
     //     &input_data,
     //     &output_mem_type,
+    //     &grid_size_hint,
     //     &papi,
     //     &options.papi_preset,
     //     options.repeat,
@@ -375,6 +386,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     //     &options.radix_bits,
     //     &input_data,
     //     &output_mem_type,
+    //     &grid_size_hint,
     //     // &papi,
     //     &options.papi_preset,
     //     options.repeat,
@@ -389,6 +401,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &options.radix_bits,
         &input_data,
         &output_mem_type,
+        &grid_size_hint,
         // &papi,
         &options.papi_preset,
         options.repeat,
