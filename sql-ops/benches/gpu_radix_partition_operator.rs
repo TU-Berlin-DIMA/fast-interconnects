@@ -75,12 +75,53 @@ impl From<ArgMemTypeHelper> for MemType {
     }
 }
 
+arg_enum! {
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+    pub enum ArgRadixPartitionAlgorithm {
+        Chunked,
+        ChunkedLASWWC,
+        ChunkedSSWWC,
+        ChunkedSSWWCNT,
+        ChunkedSSWWCv2,
+        ChunkedHSSWWC,
+        ChunkedHSSWWCv2,
+        ChunkedHSSWWCv3,
+        Contiguous,
+    }
+}
+
+impl Into<GpuRadixPartitionAlgorithm> for ArgRadixPartitionAlgorithm {
+    fn into(self) -> GpuRadixPartitionAlgorithm {
+        match self {
+            Self::Chunked => GpuRadixPartitionAlgorithm::Chunked,
+            Self::ChunkedLASWWC => GpuRadixPartitionAlgorithm::ChunkedLASWWC,
+            Self::ChunkedSSWWC => GpuRadixPartitionAlgorithm::ChunkedSSWWC,
+            Self::ChunkedSSWWCNT => GpuRadixPartitionAlgorithm::ChunkedSSWWCNT,
+            Self::ChunkedSSWWCv2 => GpuRadixPartitionAlgorithm::ChunkedSSWWCv2,
+            Self::ChunkedHSSWWC => GpuRadixPartitionAlgorithm::ChunkedHSSWWC,
+            Self::ChunkedHSSWWCv2 => GpuRadixPartitionAlgorithm::ChunkedHSSWWCv2,
+            Self::ChunkedHSSWWCv3 => GpuRadixPartitionAlgorithm::ChunkedHSSWWCv3,
+            Self::Contiguous => GpuRadixPartitionAlgorithm::Contiguous,
+        }
+    }
+}
+
 #[derive(Debug, StructOpt)]
 #[structopt(
     name = "GPU Radix Partition Benchmark",
     about = "A benchmark of the GPU radix partition operator using PAPI."
 )]
 struct Options {
+    /// Select the algorithms to run
+    #[structopt(
+        long,
+        default_value = "Chunked",
+        possible_values = &ArgRadixPartitionAlgorithm::variants(),
+        case_insensitive = true,
+        require_delimiter = true
+    )]
+    algorithms: Vec<ArgRadixPartitionAlgorithm>,
+
     /// No effect (passed by Cargo to run only benchmarks instead of unit tests)
     #[structopt(long)]
     bench: bool,
@@ -364,50 +405,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         ..DataPoint::default()
     };
 
-    // gpu_radix_partition_benchmark::<i64, _>(
-    //     "gpu_radix_partition",
-    //     "chunked",
-    //     GpuRadixPartitionAlgorithm::Chunked,
-    //     &options.radix_bits,
-    //     &input_data,
-    //     &output_mem_type,
-    //     &grid_size_hint,
-    //     &papi,
-    //     &options.papi_preset,
-    //     options.repeat,
-    //     &template,
-    //     &mut csv_writer,
-    // )?;
-
-    // gpu_radix_partition_benchmark::<i64, _>(
-    //     "gpu_radix_partition",
-    //     "chunked_laswwc",
-    //     GpuRadixPartitionAlgorithm::ChunkedLASWWC,
-    //     &options.radix_bits,
-    //     &input_data,
-    //     &output_mem_type,
-    //     &grid_size_hint,
-    //     // &papi,
-    //     &options.papi_preset,
-    //     options.repeat,
-    //     &template,
-    //     &mut csv_writer,
-    // )?;
-
-    gpu_radix_partition_benchmark::<i64, _>(
-        "gpu_radix_partition",
-        "chunked_sswwc",
-        GpuRadixPartitionAlgorithm::ChunkedSSWWC,
-        &options.radix_bits,
-        &input_data,
-        &output_mem_type,
-        &grid_size_hint,
-        // &papi,
-        &options.papi_preset,
-        options.repeat,
-        &template,
-        &mut csv_writer,
-    )?;
+    for algorithm in options.algorithms {
+        gpu_radix_partition_benchmark::<i64, _>(
+            "gpu_radix_partition",
+            &algorithm.to_string(),
+            algorithm.into(),
+            &options.radix_bits,
+            &input_data,
+            &output_mem_type,
+            &grid_size_hint,
+            // &papi,
+            &options.papi_preset,
+            options.repeat,
+            &template,
+            &mut csv_writer,
+        )?;
+    }
 
     Ok(())
 }

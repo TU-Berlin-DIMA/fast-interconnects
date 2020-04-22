@@ -27,7 +27,25 @@ use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
+use structopt::clap::arg_enum;
 use structopt::StructOpt;
+
+arg_enum! {
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+    pub enum ArgRadixPartitionAlgorithm {
+        Chunked,
+        ChunkedSwwc,
+    }
+}
+
+impl Into<CpuRadixPartitionAlgorithm> for ArgRadixPartitionAlgorithm {
+    fn into(self) -> CpuRadixPartitionAlgorithm {
+        match self {
+            Self::Chunked => CpuRadixPartitionAlgorithm::Chunked,
+            Self::ChunkedSwwc => CpuRadixPartitionAlgorithm::ChunkedSwwc,
+        }
+    }
+}
 
 #[derive(Debug, StructOpt)]
 #[structopt(
@@ -35,6 +53,16 @@ use structopt::StructOpt;
     about = "A benchmark of the CPU radix partition operator using PAPI."
 )]
 struct Options {
+    /// Select the algorithms to run
+    #[structopt(
+        long,
+        default_value = "Chunked",
+        possible_values = &ArgRadixPartitionAlgorithm::variants(),
+        case_insensitive = true,
+        require_delimiter = true
+    )]
+    algorithms: Vec<ArgRadixPartitionAlgorithm>,
+
     /// No effect (passed by Cargo to run only benchmarks instead of unit tests)
     #[structopt(long)]
     bench: bool,
@@ -270,35 +298,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     let csv_file = std::fs::File::create(&options.csv)?;
     let mut csv_writer = csv::Writer::from_writer(csv_file);
 
-    cpu_radix_partition_benchmark::<i64, _>(
-        "cpu_radix_partition",
-        "chunked",
-        CpuRadixPartitionAlgorithm::Chunked,
-        options.tuples,
-        &options.radix_bits,
-        threads,
-        &cpu_affinity,
-        options.rel_location,
-        &papi,
-        &options.papi_preset,
-        options.repeat,
-        &mut csv_writer,
-    )?;
-
-    cpu_radix_partition_benchmark::<i64, _>(
-        "cpu_radix_partition",
-        "chunked_swwc",
-        CpuRadixPartitionAlgorithm::ChunkedSwwc,
-        options.tuples,
-        &options.radix_bits,
-        threads,
-        &cpu_affinity,
-        options.rel_location,
-        &papi,
-        &options.papi_preset,
-        options.repeat,
-        &mut csv_writer,
-    )?;
+    for algorithm in options.algorithms {
+        cpu_radix_partition_benchmark::<i64, _>(
+            "cpu_radix_partition",
+            &algorithm.to_string(),
+            algorithm.into(),
+            options.tuples,
+            &options.radix_bits,
+            threads,
+            &cpu_affinity,
+            options.rel_location,
+            &papi,
+            &options.papi_preset,
+            options.repeat,
+            &mut csv_writer,
+        )?;
+    }
 
     Ok(())
 }
