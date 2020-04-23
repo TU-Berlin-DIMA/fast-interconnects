@@ -86,6 +86,7 @@ arg_enum! {
         ChunkedHSSWWC,
         ChunkedHSSWWCv2,
         ChunkedHSSWWCv3,
+        ChunkedHSSWWCv4,
         Contiguous,
     }
 }
@@ -101,6 +102,7 @@ impl Into<GpuRadixPartitionAlgorithm> for ArgRadixPartitionAlgorithm {
             Self::ChunkedHSSWWC => GpuRadixPartitionAlgorithm::ChunkedHSSWWC,
             Self::ChunkedHSSWWCv2 => GpuRadixPartitionAlgorithm::ChunkedHSSWWCv2,
             Self::ChunkedHSSWWCv3 => GpuRadixPartitionAlgorithm::ChunkedHSSWWCv3,
+            Self::ChunkedHSSWWCv4 => GpuRadixPartitionAlgorithm::ChunkedHSSWWCv4,
             Self::Contiguous => GpuRadixPartitionAlgorithm::Contiguous,
         }
     }

@@ -108,7 +108,8 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
             | GpuRadixPartitionAlgorithm::ChunkedSSWWCv2
             | GpuRadixPartitionAlgorithm::ChunkedHSSWWC
             | GpuRadixPartitionAlgorithm::ChunkedHSSWWCv2
-            | GpuRadixPartitionAlgorithm::ChunkedHSSWWCv3 => grid_size.x,
+            | GpuRadixPartitionAlgorithm::ChunkedHSSWWCv3
+            | GpuRadixPartitionAlgorithm::ChunkedHSSWWCv4 => grid_size.x,
             GpuRadixPartitionAlgorithm::Contiguous => 1,
         };
 
@@ -247,6 +248,20 @@ pub enum GpuRadixPartitionAlgorithm {
     /// take a long time.
     ChunkedHSSWWCv3,
 
+    /// Chunked radix partitioning with hierarchical shared software write combining, version 4.
+    ///
+    /// Version 4 performs the buffer flush from dmem to memory asynchronously with
+    /// double-buffering.
+    ///
+    /// Double-buffering means that there are `fanout + #warps` dmem buffers. Thus each warp owns a
+    /// spare buffer. When the dmem buffer of a partition is
+    /// full, the warp that holds the lock exchanges the full dmem buffer for its empty spare
+    /// buffer, and releases the lock. Only then does the warp flush the dmem buffer to CPU memory.
+    ///
+    /// Double-buffering enables all warps to always make progress during the dmem flush, because
+    /// there is always a (partially-) empty dmem buffer available.
+    ChunkedHSSWWCv4,
+
     /// Contiguous radix partition.
     ///
     /// This is the "normal" parallel radix partition algorithm. Each resulting
@@ -263,6 +278,7 @@ enum RadixPartitionState {
     ChunkedHSSWWC,
     ChunkedHSSWWCv2,
     ChunkedHSSWWCv3,
+    ChunkedHSSWWCv4,
     Contiguous(Mem<GpuPrefixScanState<u32>>, Mem<u32>),
 }
 
@@ -302,6 +318,7 @@ impl GpuRadixPartitioner {
             GpuRadixPartitionAlgorithm::ChunkedHSSWWC => RadixPartitionState::ChunkedHSSWWC,
             GpuRadixPartitionAlgorithm::ChunkedHSSWWCv2 => RadixPartitionState::ChunkedHSSWWCv2,
             GpuRadixPartitionAlgorithm::ChunkedHSSWWCv3 => RadixPartitionState::ChunkedHSSWWCv3,
+            GpuRadixPartitionAlgorithm::ChunkedHSSWWCv4 => RadixPartitionState::ChunkedHSSWWCv4,
             GpuRadixPartitionAlgorithm::Contiguous => RadixPartitionState::Contiguous(
                 Allocator::alloc_mem(MemType::CudaDevMem, prefix_scan_state_len),
                 Allocator::alloc_mem(MemType::CudaDevMem, tmp_partition_offsets_len),
@@ -375,6 +392,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             | RadixPartitionState::ChunkedHSSWWC
                             | RadixPartitionState::ChunkedHSSWWCv2
                             | RadixPartitionState::ChunkedHSSWWCv3
+                            | RadixPartitionState::ChunkedHSSWWCv4
                             => if partitioned_relation.chunks() != rp.grid_size.x {
                                 Err(ErrorKind::InvalidArgument(
                                         "PartitionedRelation has mismatching number of chunks".to_string(),
@@ -397,6 +415,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             | RadixPartitionState::ChunkedHSSWWC
                             | RadixPartitionState::ChunkedHSSWWCv2
                             | RadixPartitionState::ChunkedHSSWWCv3
+                            | RadixPartitionState::ChunkedHSSWWCv4
                              => (LaunchableMutPtr::null_mut() ,LaunchableMutPtr::null_mut()),
                         RadixPartitionState::Contiguous(ref mut prefix_scan_state, ref mut offsets)
                             => (prefix_scan_state.as_launchable_mut_ptr(), offsets.as_launchable_mut_ptr()),
@@ -420,7 +439,8 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     let grid_size = rp.grid_size.clone();
                     let block_size = rp.block_size.clone();
                     let device = CurrentContext::get_device()?;
-                    let _warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
+                    let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
+                    let num_warps = block_size.x / warp_size;
                     let max_shared_mem_bytes =
                         device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
                     let fanout_u32 = fanout(rp.radix_bits) as u32;
@@ -670,6 +690,52 @@ macro_rules! impl_gpu_radix_partition_for_type {
 
                             let name = std::ffi::CString::new(
                                 stringify!([<gpu_chunked_hsswwc_radix_partition_v3_ $Suffix _ $Suffix>])
+                                ).unwrap();
+                            let mut function = module.get_function(&name)?;
+                            function.set_max_dynamic_shared_size_bytes(max_shared_mem_bytes)?;
+
+                            let mut dmem_buffer = Mem::CudaDevMem(unsafe { DeviceBuffer::uninitialized(global_dmem_buffer_bytes as usize)? });
+                            args.device_memory_buffers = dmem_buffer.as_launchable_mut_ptr();
+                            args.device_memory_buffer_bytes = dmem_buffer_bytes;
+                            let mut device_args = DeviceBox::new(&args)?;
+
+                            unsafe {
+                                launch!(
+                                    function<<<
+                                    grid_size,
+                                    block_size,
+                                    max_shared_mem_bytes,
+                                    stream
+                                    >>>(
+                                        device_args.as_device_ptr(),
+                                        max_shared_mem_bytes
+                                       ))?;
+                            }
+                        }
+                        RadixPartitionState::ChunkedHSSWWCv4 => {
+                            let dmem_buffer_bytes: u64 = 2 * 1024 * 1024;
+                            let global_dmem_buffer_bytes = dmem_buffer_bytes * grid_size.x as u64;
+                            let sswwc_buffer_bytes = max_shared_mem_bytes - (
+                                    2 * fanout_u32 * mem::size_of::<u32>() as u32
+                                    + fanout_u32 * mem::size_of::<u64>() as u32
+                                );
+                            let sswwc_buffer_len =
+                                sswwc_buffer_bytes / (2 * mem::size_of::<$Type>() as u32);
+
+                            let tuples_per_buffer = sswwc_buffer_len.next_power_of_two() / 2 / fanout_u32;
+                            let tuples_per_dmem_buffer = dmem_buffer_bytes / (fanout as u64 + num_warps as u64) / (2 * mem::size_of::<$Type>() as u64);
+
+                            assert!(
+                                tuples_per_buffer >= 1,
+                                "Failed to allocate enough shared memory"
+                                );
+                            assert!(
+                                tuples_per_dmem_buffer % (tuples_per_buffer as u64) == 0,
+                                "Invalid device memory buffer size! Device memory buffer must be a multiple of shared memory buffer."
+                                );
+
+                            let name = std::ffi::CString::new(
+                                stringify!([<gpu_chunked_hsswwc_radix_partition_v4_ $Suffix _ $Suffix>])
                                 ).unwrap();
                             let mut function = module.get_function(&name)?;
                             function.set_max_dynamic_shared_size_bytes(max_shared_mem_bytes)?;
@@ -1480,6 +1546,76 @@ mod tests {
             10_usize.pow(6),
             1..=(32 << 20),
             GpuRadixPartitionAlgorithm::ChunkedHSSWWCv3,
+            10,
+            GridSize::from(1),
+            BlockSize::from(128),
+        )
+    }
+
+    #[test]
+    fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v4_i32_2_bits() -> Result<(), Box<dyn Error>> {
+        gpu_tuple_loss_or_duplicates_i32(
+            (32 << 20) / mem::size_of::<i32>(),
+            GpuRadixPartitionAlgorithm::ChunkedHSSWWCv4,
+            2,
+            GridSize::from(1),
+            BlockSize::from(128),
+        )
+    }
+
+    #[test]
+    fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v4_i32_10_bits() -> Result<(), Box<dyn Error>> {
+        gpu_tuple_loss_or_duplicates_i32(
+            (32 << 20) / mem::size_of::<i32>(),
+            GpuRadixPartitionAlgorithm::ChunkedHSSWWCv4,
+            10,
+            GridSize::from(1),
+            BlockSize::from(128),
+        )
+    }
+
+    #[test]
+    fn gpu_verify_partitions_chunked_hsswwc_v4_i32_2_bits() -> Result<(), Box<dyn Error>> {
+        gpu_verify_partitions_i32(
+            (32 << 20) / mem::size_of::<i32>(),
+            1..=(32 << 20),
+            GpuRadixPartitionAlgorithm::ChunkedHSSWWCv4,
+            2,
+            GridSize::from(1),
+            BlockSize::from(128),
+        )
+    }
+
+    #[test]
+    fn gpu_verify_partitions_chunked_hsswwc_v4_i32_10_bits() -> Result<(), Box<dyn Error>> {
+        gpu_verify_partitions_i32(
+            (32 << 20) / mem::size_of::<i32>(),
+            1..=(32 << 20),
+            GpuRadixPartitionAlgorithm::ChunkedHSSWWCv4,
+            10,
+            GridSize::from(1),
+            BlockSize::from(128),
+        )
+    }
+
+    #[test]
+    fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v4_non_power_two() -> Result<(), Box<dyn Error>>
+    {
+        gpu_tuple_loss_or_duplicates_i32(
+            10_usize.pow(6),
+            GpuRadixPartitionAlgorithm::ChunkedHSSWWCv4,
+            10,
+            GridSize::from(1),
+            BlockSize::from(128),
+        )
+    }
+
+    #[test]
+    fn gpu_verify_partitions_chunked_hsswwc_v4_non_power_two() -> Result<(), Box<dyn Error>> {
+        gpu_verify_partitions_i32(
+            10_usize.pow(6),
+            1..=(32 << 20),
+            GpuRadixPartitionAlgorithm::ChunkedHSSWWCv4,
             10,
             GridSize::from(1),
             BlockSize::from(128),
