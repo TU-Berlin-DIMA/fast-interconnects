@@ -488,7 +488,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         RadixPartitionState::ChunkedSSWWC(non_temporal) => {
                             let sswwc_buffer_len =
                                 (max_shared_mem_bytes - (
-                                    2 * fanout_u32 * mem::size_of::<u32>() as u32
+                                    3 * fanout_u32 * mem::size_of::<u32>() as u32
                                 )) / (2 * mem::size_of::<$Type>() as u32);
 
                             assert!(
