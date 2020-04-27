@@ -721,7 +721,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
   auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
 
   const uint32_t sswwc_buffer_bytes =
-      shared_mem_bytes - fanout * sizeof(uint32_t);
+      shared_mem_bytes - fanout * sizeof(uint32_t) - fanout * sizeof(uint64_t);
   const uint32_t tuples_per_buffer =
       1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
                                     fanout);
@@ -957,7 +957,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
   auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
 
   const uint32_t sswwc_buffer_bytes =
-      shared_mem_bytes - fanout * sizeof(uint32_t);
+      shared_mem_bytes - fanout * sizeof(uint32_t) - fanout * sizeof(uint64_t);
   const uint32_t tuples_per_buffer =
       1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
                                     fanout);
@@ -1200,8 +1200,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
 
   auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
 
-  const uint32_t sswwc_buffer_bytes =
-      shared_mem_bytes - fanout * sizeof(uint32_t);
+  const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
+                                      2 * fanout * sizeof(uint32_t) -
+                                      fanout * sizeof(uint64_t);
   const uint32_t tuples_per_buffer =
       1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
                                     fanout);
