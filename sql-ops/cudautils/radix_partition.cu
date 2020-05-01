@@ -1518,8 +1518,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
 
   auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
 
-  const uint32_t sswwc_buffer_bytes =
-      shared_mem_bytes - fanout * sizeof(uint32_t);
+  const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
+                                      2 * fanout * sizeof(uint32_t) -
+                                      fanout * sizeof(uint64_t);
   const uint32_t tuples_per_buffer =
       1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
                                     fanout);
@@ -1641,19 +1642,12 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
           atomicExch(&slots[p_index], slot);
         }
 
-        // Look up the dmem_buffer for current_index in the map.
-        uint32_t current_dmem_buffer;
-        if (leader_id == lane_id) {
-          // Normal read is not atomic. Use an atomic operation instead of:
-          // current_dmem_buffer = dmem_buffer_map[current_index];
-          current_dmem_buffer = dmem_buffer_map[p_index];
-        }
-
         uint32_t dmem_slot = static_cast<unsigned int>(slot >> smem_slot_bits);
         dmem_slot = __shfl_sync(warp_mask, dmem_slot, leader_id);
         uint32_t current_index = __shfl_sync(warp_mask, p_index, leader_id);
-        current_dmem_buffer =
-            __shfl_sync(warp_mask, current_dmem_buffer, leader_id);
+
+        // Look up the dmem_buffer for current_index in the map.
+        uint32_t current_dmem_buffer = dmem_buffer_map[current_index];
 
         // Flush smem buffers to dmem buffers.
         for (uint32_t i = lane_id; i < tuples_per_buffer; i += warpSize) {
@@ -1672,24 +1666,21 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
 
         // Swap the dmem_buffer for an empty one if we need to flush it.
         // The swap must occur before the smem lock is released.
-        uint32_t flushable_dmem_buffer;
         uint32_t dst;
-        if (dmem_slot == slots_per_dmem_buffer) {
+        bool do_dmem_flush = (dmem_slot == slots_per_dmem_buffer);
+        if (do_dmem_flush) {
+          dmem_slot = 0;
           if (lane_id == 0) {
-            flushable_dmem_buffer = dmem_buffer_map[current_index];
             dmem_buffer_map[current_index] = spare_dmem_buffer;
-
             dst = tmp_partition_offsets[current_index];
             tmp_partition_offsets[current_index] += tuples_per_dmem_buffer;
           }
-          flushable_dmem_buffer =
-              __shfl_sync(warp_mask, flushable_dmem_buffer, 0);
-          dst = __shfl_sync(warp_mask, dst, 0);
-        }
 
-        // Ensure that smem flush and buffer swap occur before the smem lock is
-        // released.
-        __threadfence_block();
+          // Ensure that smem flush and buffer swap occur before the smem lock
+          // is released.
+          __syncwarp();
+          __threadfence_block();
+        }
 
         // Release the smem_lock.
         if (lane_id == leader_id) {
@@ -1703,19 +1694,19 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
         }
 
         // Flush dmem buffer to memory if necessary.
-        if (dmem_slot == slots_per_dmem_buffer) {
-          dmem_slot = 0;
+        if (do_dmem_flush) {
+          dst = __shfl_sync(warp_mask, dst, 0);
           for (uint32_t i = lane_id; i < tuples_per_dmem_buffer;
                i += warpSize) {
             Tuple<K, V> tmp;
-            tmp.load(dmem_buffers[write_combine_slot(
-                tuples_per_dmem_buffer, flushable_dmem_buffer, i)]);
+            tmp.load(dmem_buffers[write_combine_slot(tuples_per_dmem_buffer,
+                                                     current_dmem_buffer, i)]);
             tmp.store(partitioned_relation[dst + i]);
           }
 
           // Memorize the spare buffer for the future.
           if (lane_id == 0) {
-            spare_dmem_buffer = flushable_dmem_buffer;
+            spare_dmem_buffer = current_dmem_buffer;
           }
         }
       }
@@ -1738,8 +1729,10 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
                 << log2_tuples_per_buffer)) {
       uint32_t dst =
           atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
+      uint32_t current_dmem_buffer = dmem_buffer_map[p_index];
       Tuple<K, V> tmp;
-      tmp.load(dmem_buffers[i]);
+      tmp.load(dmem_buffers[write_combine_slot(tuples_per_dmem_buffer,
+                                               current_dmem_buffer, slot)]);
       tmp.store(partitioned_relation[dst]);
     }
   }
