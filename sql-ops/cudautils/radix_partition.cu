@@ -67,6 +67,28 @@ template <typename K, typename V>
 struct Tuple {
   K key;
   V value;
+
+  __device__ __forceinline__ void load(Tuple<int, int> &const src) {
+    int2 tmp = *reinterpret_cast<int2 *const>(&src);
+    this->key = tmp.x;
+    this->value = tmp.y;
+  }
+
+  __device__ __forceinline__ void load(Tuple<long long, long long> &const src) {
+    longlong2 tmp = *reinterpret_cast<longlong2 *const>(&src);
+    this->key = tmp.x;
+    this->value = tmp.y;
+  }
+
+  __device__ __forceinline__ void store(Tuple<int, int> &dst) {
+    int2 tmp = make_int2(this->key, this->value);
+    *reinterpret_cast<int2 *>(&dst) = tmp;
+  }
+
+  __device__ __forceinline__ void store(Tuple<long long, long long> &dst) {
+    longlong2 tmp = make_longlong2(this->key, this->value);
+    *reinterpret_cast<longlong2 *>(&dst) = tmp;
+  }
 };
 
 __device__ __forceinline__ uint32_t write_combine_slot(
@@ -147,7 +169,7 @@ __device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
     auto p_index = key_to_partition(tuple.key, mask, 0);
     auto offset =
         atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
-    partitioned_relation[offset] = tuple;
+    tuple.store(partitioned_relation[offset]);
   }
 }
 
@@ -283,7 +305,7 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args) {
       auto offset = cache_offsets[p_index] - (k + 1);
       offset += tmp_partition_offsets[p_index];
 
-      partitioned_relation[offset] = tuple;
+      tuple.store(partitioned_relation[offset]);
     }
 
     __syncthreads();
@@ -447,18 +469,16 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
 
         // Memcpy from cached buffer to memory
         for (uint32_t i = lane_id; i < tuples_per_buffer; i += warpSize) {
+          Tuple<K, V> tuple =
+              buffers[write_combine_slot(tuples_per_buffer, current_index, i)];
+
           if (non_temporal) {
-            ptx_store_cache_streaming(
-                &partitioned_relation[dst + i].key,
-                buffers[write_combine_slot(tuples_per_buffer, current_index, i)]
-                    .key);
-            ptx_store_cache_streaming(
-                &partitioned_relation[dst + i].value,
-                buffers[write_combine_slot(tuples_per_buffer, current_index, i)]
-                    .value);
+            ptx_store_cache_streaming(&partitioned_relation[dst + i].key,
+                                      tuple.key);
+            ptx_store_cache_streaming(&partitioned_relation[dst + i].value,
+                                      tuple.value);
           } else {
-            partitioned_relation[dst + i] = buffers[write_combine_slot(
-                tuples_per_buffer, current_index, i)];
+            tuple.store(partitioned_relation[dst + i]);
           }
         }
 
@@ -499,7 +519,8 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
     if (slot < slots[p_index]) {
       uint32_t dst =
           atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
-      partitioned_relation[dst] = buffers[i];
+      Tuple<K, V> tuple = buffers[i];
+      tuple.store(partitioned_relation[dst]);
     }
   }
 
@@ -639,8 +660,9 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
 
         // Memcpy from cached buffer to memory
         for (uint32_t i = lane_id; i < tuples_per_buffer; i += warpSize) {
-          partitioned_relation[dst + i] =
+          Tuple<K, V> tuple =
               buffers[write_combine_slot(tuples_per_buffer, current_index, i)];
+          tuple.store(partitioned_relation[dst + i]);
         }
 
         if (lane_id == leader_id) {
@@ -670,7 +692,8 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
     if (slot < slots[p_index]) {
       uint32_t dst =
           atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
-      partitioned_relation[dst] = buffers[i];
+      Tuple<K, V> tuple = buffers[i];
+      tuple.store(partitioned_relation[dst]);
     }
   }
 
@@ -828,10 +851,11 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
 
         // Flush smem buffers to dmem buffers.
         for (uint32_t i = lane_id; i < tuples_per_buffer; i += warpSize) {
-          dmem_buffers[write_combine_slot(
-              tuples_per_dmem_buffer, current_index,
-              write_combine_slot(tuples_per_buffer, dmem_slot, i))] =
+          Tuple<K, V> tmp =
               buffers[write_combine_slot(tuples_per_buffer, current_index, i)];
+          tmp.store(dmem_buffers[write_combine_slot(
+              tuples_per_dmem_buffer, current_index,
+              write_combine_slot(tuples_per_buffer, dmem_slot, i))]);
         }
 
         // Flush dmem buffer to memory.
@@ -845,8 +869,10 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
 
           for (uint32_t i = lane_id; i < tuples_per_dmem_buffer;
                i += warpSize) {
-            partitioned_relation[dst + i] = dmem_buffers[write_combine_slot(
-                tuples_per_dmem_buffer, current_index, i)];
+            Tuple<K, V> tmp;
+            tmp.load(dmem_buffers[write_combine_slot(tuples_per_dmem_buffer,
+                                                     current_index, i)]);
+            tmp.store(partitioned_relation[dst + i]);
           }
 
           if (lane_id == leader_id) {
@@ -891,7 +917,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
                 << log2_tuples_per_buffer)) {
       uint32_t dst =
           atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
-      partitioned_relation[dst] = dmem_buffers[i];
+      Tuple<K, V> tmp;
+      tmp.load(dmem_buffers[i]);
+      tmp.store(partitioned_relation[dst]);
     }
   }
 
@@ -1074,10 +1102,11 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
 
         // Flush smem buffers to dmem buffers.
         for (uint32_t i = lane_id; i < tuples_per_buffer; i += warpSize) {
-          dmem_buffers[write_combine_slot(
-              tuples_per_dmem_buffer, current_index,
-              write_combine_slot(tuples_per_buffer, dmem_slot, i))] =
+          Tuple<K, V> tmp =
               buffers[write_combine_slot(tuples_per_buffer, current_index, i)];
+          tmp.store(dmem_buffers[write_combine_slot(
+              tuples_per_dmem_buffer, current_index,
+              write_combine_slot(tuples_per_buffer, dmem_slot, i))]);
         }
 
         // Flush dmem buffer to memory.
@@ -1091,8 +1120,10 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
 
           for (uint32_t i = lane_id; i < tuples_per_dmem_buffer;
                i += warpSize) {
-            partitioned_relation[dst + i] = dmem_buffers[write_combine_slot(
-                tuples_per_dmem_buffer, current_index, i)];
+            Tuple<K, V> tmp;
+            tmp.load(dmem_buffers[write_combine_slot(tuples_per_dmem_buffer,
+                                                     current_index, i)]);
+            tmp.store(partitioned_relation[dst + i]);
           }
 
           if (lane_id == leader_id) {
@@ -1134,7 +1165,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
                 << log2_tuples_per_buffer)) {
       uint32_t dst =
           atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
-      partitioned_relation[dst] = dmem_buffers[i];
+      Tuple<K, V> tmp;
+      tmp.load(dmem_buffers[i]);
+      tmp.store(partitioned_relation[dst]);
     }
   }
 
@@ -1337,10 +1370,11 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
 
         // Flush smem buffers to dmem buffers.
         for (uint32_t i = lane_id; i < tuples_per_buffer; i += warpSize) {
-          dmem_buffers[write_combine_slot(
-              tuples_per_dmem_buffer, current_index,
-              write_combine_slot(tuples_per_buffer, dmem_slot, i))] =
+          Tuple<K, V> tmp =
               buffers[write_combine_slot(tuples_per_buffer, current_index, i)];
+          tmp.store(dmem_buffers[write_combine_slot(
+              tuples_per_dmem_buffer, current_index,
+              write_combine_slot(tuples_per_buffer, dmem_slot, i))]);
         }
 
         // Update the dmem slot.
@@ -1369,8 +1403,10 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
 
           for (uint32_t i = lane_id; i < tuples_per_dmem_buffer;
                i += warpSize) {
-            partitioned_relation[dst + i] = dmem_buffers[write_combine_slot(
-                tuples_per_dmem_buffer, current_index, i)];
+            Tuple<K, V> tmp;
+            tmp.load(dmem_buffers[write_combine_slot(tuples_per_dmem_buffer,
+                                                     current_index, i)]);
+            tmp.store(partitioned_relation[dst + i]);
           }
 
           // Ensure that flushed data are observed as occuring before the dmem
@@ -1415,7 +1451,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
                 << log2_tuples_per_buffer)) {
       uint32_t dst =
           atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
-      partitioned_relation[dst] = dmem_buffers[i];
+      Tuple<K, V> tmp;
+      tmp.load(dmem_buffers[i]);
+      tmp.store(partitioned_relation[dst]);
     }
   }
 
@@ -1619,10 +1657,11 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
 
         // Flush smem buffers to dmem buffers.
         for (uint32_t i = lane_id; i < tuples_per_buffer; i += warpSize) {
-          dmem_buffers[write_combine_slot(
-              tuples_per_dmem_buffer, current_dmem_buffer,
-              write_combine_slot(tuples_per_buffer, dmem_slot, i))] =
+          Tuple<K, V> tmp =
               buffers[write_combine_slot(tuples_per_buffer, current_index, i)];
+          tmp.store(dmem_buffers[write_combine_slot(
+              tuples_per_dmem_buffer, current_dmem_buffer,
+              write_combine_slot(tuples_per_buffer, dmem_slot, i))]);
         }
 
         // Update the dmem slot.
@@ -1668,8 +1707,10 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
           dmem_slot = 0;
           for (uint32_t i = lane_id; i < tuples_per_dmem_buffer;
                i += warpSize) {
-            partitioned_relation[dst + i] = dmem_buffers[write_combine_slot(
-                tuples_per_dmem_buffer, flushable_dmem_buffer, i)];
+            Tuple<K, V> tmp;
+            tmp.load(dmem_buffers[write_combine_slot(
+                tuples_per_dmem_buffer, flushable_dmem_buffer, i)]);
+            tmp.store(partitioned_relation[dst + i]);
           }
 
           // Memorize the spare buffer for the future.
@@ -1697,7 +1738,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
                 << log2_tuples_per_buffer)) {
       uint32_t dst =
           atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
-      partitioned_relation[dst] = dmem_buffers[i];
+      Tuple<K, V> tmp;
+      tmp.load(dmem_buffers[i]);
+      tmp.store(partitioned_relation[dst]);
     }
   }
 
@@ -1828,34 +1871,34 @@ __device__ void gpu_contiguous_radix_partition(RadixPartitionArgs &args) {
     auto p_index = key_to_partition(tuple.key, mask, 0);
     auto offset =
         atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
-    partitioned_relation[offset] = tuple;
+    tuple.store(partitioned_relation[offset]);
   }
 }
 
 // Exports the partitioning function for 8-byte key/value tuples.
 extern "C" __launch_bounds__(1024, 2) __global__
     void gpu_chunked_radix_partition_int32_int32(RadixPartitionArgs *args) {
-  gpu_chunked_radix_partition<int32_t, int32_t>(*args);
+  gpu_chunked_radix_partition<int, int>(*args);
 }
 
 // Exports the partitioning function for 16-byte key/value tuples.
 extern "C" __launch_bounds__(1024, 2) __global__
     void gpu_chunked_radix_partition_int64_int64(RadixPartitionArgs *args) {
-  gpu_chunked_radix_partition<int64_t, int64_t>(*args);
+  gpu_chunked_radix_partition<long long, long long>(*args);
 }
 
 // Exports the partitioning function for 8-byte key/value tuples.
 extern "C" __launch_bounds__(1024, 1) __global__
     void gpu_chunked_laswwc_radix_partition_int32_int32(
         RadixPartitionArgs *args) {
-  gpu_chunked_laswwc_radix_partition<int32_t, int32_t>(*args);
+  gpu_chunked_laswwc_radix_partition<int, int>(*args);
 }
 
 // Exports the partitioning function for 16-byte key/value tuples.
 extern "C" __launch_bounds__(1024, 1) __global__
     void gpu_chunked_laswwc_radix_partition_int64_int64(
         RadixPartitionArgs *args) {
-  gpu_chunked_laswwc_radix_partition<int64_t, int64_t>(*args);
+  gpu_chunked_laswwc_radix_partition<long long, long long>(*args);
 }
 
 // Exports the partitioning function for 8-byte key/value tuples.
@@ -1966,11 +2009,11 @@ extern "C" __launch_bounds__(1024, 1) __global__
 // Exports the partitioning function for 8-byte key/value tuples.
 extern "C" __launch_bounds__(1024, 2) __global__
     void gpu_contiguous_radix_partition_int32_int32(RadixPartitionArgs *args) {
-  gpu_contiguous_radix_partition<int32_t, int32_t>(*args);
+  gpu_contiguous_radix_partition<int, int>(*args);
 }
 
 // Exports the partitioning function for 16-byte key/value tuples.
 extern "C" __launch_bounds__(1024, 2) __global__
     void gpu_contiguous_radix_partition_int64_int64(RadixPartitionArgs *args) {
-  gpu_contiguous_radix_partition<int64_t, int64_t>(*args);
+  gpu_contiguous_radix_partition<long long, long long>(*args);
 }
