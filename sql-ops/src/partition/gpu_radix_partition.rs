@@ -716,7 +716,8 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             let dmem_buffer_bytes: u64 = 2 * 1024 * 1024;
                             let global_dmem_buffer_bytes = dmem_buffer_bytes * grid_size.x as u64;
                             let sswwc_buffer_bytes = max_shared_mem_bytes - (
-                                    3 * fanout_u32 * mem::size_of::<u32>() as u32
+                                    fanout_u32 * mem::size_of::<u16>() as u32
+                                    + 2 * fanout_u32 * mem::size_of::<u32>() as u32
                                     + fanout_u32 * mem::size_of::<u64>() as u32
                                 );
                             let sswwc_buffer_len =

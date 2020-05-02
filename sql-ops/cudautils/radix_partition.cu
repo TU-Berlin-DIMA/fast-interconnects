@@ -1601,7 +1601,8 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
 
   const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
-                                      3 * fanout * sizeof(uint32_t) -
+                                      fanout * sizeof(uint16_t) -
+                                      2 * fanout * sizeof(uint32_t) -
                                       fanout * sizeof(uint64_t);
   const uint32_t tuples_per_buffer =
       1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
@@ -1618,8 +1619,8 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   unsigned long long *const slots = reinterpret_cast<unsigned long long *>(
       prefix_tmp);  // alias to reuse space
   uint32_t *const signal_slots = reinterpret_cast<uint32_t *>(&slots[fanout]);
-  unsigned int *const dmem_buffer_map =
-      reinterpret_cast<unsigned int *>(&signal_slots[fanout]);
+  unsigned short int *const dmem_buffer_map =
+      reinterpret_cast<unsigned short int *>(&signal_slots[fanout]);
   Tuple<K, V> *const buffers =
       reinterpret_cast<Tuple<K, V> *>(&dmem_buffer_map[fanout]);
 
@@ -1749,7 +1750,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
         uint32_t current_index = __shfl_sync(warp_mask, p_index, leader_id);
 
         // Look up the dmem_buffer for current_index in the map.
-        uint32_t current_dmem_buffer = dmem_buffer_map[current_index];
+        unsigned short int current_dmem_buffer = dmem_buffer_map[current_index];
 
         // Flush smem buffers to dmem buffers.
         for (uint32_t i = lane_id; i < tuples_per_buffer; i += warpSize) {
@@ -1831,7 +1832,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
                 << log2_tuples_per_buffer)) {
       uint32_t dst =
           atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
-      uint32_t current_dmem_buffer = dmem_buffer_map[p_index];
+      unsigned short int current_dmem_buffer = dmem_buffer_map[p_index];
       Tuple<K, V> tmp;
       tmp.load(dmem_buffers[write_combine_slot(tuples_per_dmem_buffer,
                                                current_dmem_buffer, slot)]);
