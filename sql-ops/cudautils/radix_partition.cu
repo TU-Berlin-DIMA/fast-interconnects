@@ -455,16 +455,17 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
       int is_candidate = (pos == tuples_per_buffer);
       while (ballot = __ballot_sync(warp_mask, is_candidate)) {
         int leader_id = __ffs(ballot) - 1;
-        uint32_t current_index = __shfl_sync(warp_mask, p_index, leader_id);
 
         // Wait until all threads are done writing their tuples into the buffer.
+        // Then reset the signal slot to zero.
         if (leader_id == lane_id) {
-          while (atomicOr(&signal_slots[current_index], 0U) !=
-                 tuples_per_buffer)
+          while (atomicOr(&signal_slots[p_index], 0U) != tuples_per_buffer)
             ;
+          atomicExch(&signal_slots[p_index], 0U);
         }
         __syncwarp();
 
+        uint32_t current_index = __shfl_sync(warp_mask, p_index, leader_id);
         uint32_t dst = tmp_partition_offsets[current_index];
 
         // Memcpy from cached buffer to memory
@@ -487,12 +488,10 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
         __syncwarp();
 
         if (lane_id == leader_id) {
-          // Update offsets and reset signal_slots; these updates must be seen
+          // Update offsets; this update must be seen
           // by all threads in the thread block before setting slot index to
           // zero.
           tmp_partition_offsets[current_index] += tuples_per_buffer;
-          atomicExch(&signal_slots[current_index], 0U);
-
           __threadfence_block();
 
           // Normal write is not visible to other threads
@@ -571,14 +570,16 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
   auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
 
   const uint32_t sswwc_buffer_bytes =
-      shared_mem_bytes - 2U * fanout * sizeof(uint32_t);
+      shared_mem_bytes - 3U * fanout * sizeof(uint32_t);
   const uint32_t tuples_per_buffer =
       sswwc_buffer_bytes / sizeof(Tuple<K, V>) / fanout;
 
   uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
   uint32_t *const prefix_tmp = &tmp_partition_offsets[fanout];
   uint32_t *const slots = prefix_tmp;  // alias to reuse space
-  Tuple<K, V> *const buffers = reinterpret_cast<Tuple<K, V> *>(&slots[fanout]);
+  uint32_t *const signal_slots = &slots[fanout];
+  Tuple<K, V> *const buffers =
+      reinterpret_cast<Tuple<K, V> *>(&signal_slots[fanout]);
 
   // Ensure counters are all zeroed.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
@@ -611,6 +612,7 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
   // Zero slots
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
     slots[i] = 0;
+    signal_slots[i] = 0;
   }
 
   __syncthreads();
@@ -634,6 +636,12 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
 
         if (pos < tuples_per_buffer) {
           buffers[write_combine_slot(tuples_per_buffer, p_index, pos)] = tuple;
+
+          // Wait until tuple write is flushed.
+          __threadfence_block();
+
+          // Signal that we are done writing the tuple.
+          atomicAdd(&signal_slots[p_index], 1U);
           done = true;
         }
       }
@@ -654,6 +662,18 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
         if (is_candidate && leader_id != lane_id) {
           atomicExch(&slots[p_index], tuples_per_buffer);
         }
+
+        // Finish unlocking slots before entering busy-wait.
+        __syncwarp();
+
+        // Wait until all threads are done writing their tuples into the buffer.
+        // Then reset the signal slot to zero.
+        if (leader_id == lane_id) {
+          while (atomicOr(&signal_slots[p_index], 0U) != tuples_per_buffer)
+            ;
+          atomicExch(&signal_slots[p_index], 0U);
+        }
+        __syncwarp();
 
         uint32_t current_index = __shfl_sync(warp_mask, p_index, leader_id);
         uint32_t dst = tmp_partition_offsets[current_index];
@@ -743,8 +763,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
 
   auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
 
-  const uint32_t sswwc_buffer_bytes =
-      shared_mem_bytes - fanout * sizeof(uint32_t) - fanout * sizeof(uint64_t);
+  const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
+                                      2 * fanout * sizeof(uint32_t) -
+                                      fanout * sizeof(uint64_t);
   const uint32_t tuples_per_buffer =
       1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
                                     fanout);
@@ -758,7 +779,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
   uint32_t *const prefix_tmp = &tmp_partition_offsets[fanout];
   unsigned long long *const slots = reinterpret_cast<unsigned long long *>(
       prefix_tmp);  // alias to reuse space
-  Tuple<K, V> *const buffers = reinterpret_cast<Tuple<K, V> *>(&slots[fanout]);
+  uint32_t *const signal_slots = reinterpret_cast<uint32_t *>(&slots[fanout]);
+  Tuple<K, V> *const buffers =
+      reinterpret_cast<Tuple<K, V> *>(&signal_slots[fanout]);
 
   // Ensure counters are all zeroed.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
@@ -795,6 +818,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
   // Zero shared memory slots.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
     slots[i] = 0;
+    signal_slots[i] = 0;
   }
 
   __syncthreads();
@@ -830,6 +854,12 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
 
         if (pos < tuples_per_buffer) {
           buffers[write_combine_slot(tuples_per_buffer, p_index, pos)] = tuple;
+
+          // Wait until tuple write is flushed.
+          __threadfence_block();
+
+          // Signal that we are done writing the tuple.
+          atomicAdd(&signal_slots[p_index], 1U);
           done = true;
         }
       }
@@ -845,6 +875,16 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
       int is_candidate = (pos == tuples_per_buffer);
       while (ballot = __ballot_sync(warp_mask, is_candidate)) {
         int leader_id = __ffs(ballot) - 1;
+
+        // Wait until all threads are done writing their tuples into the buffer.
+        // Then reset the signal slot to zero.
+        if (leader_id == lane_id) {
+          while (atomicOr(&signal_slots[p_index], 0U) != tuples_per_buffer)
+            ;
+          atomicExch(&signal_slots[p_index], 0U);
+        }
+        __syncwarp();
+
         uint32_t dmem_slot = static_cast<unsigned int>(slot >> smem_slot_bits);
         dmem_slot = __shfl_sync(warp_mask, dmem_slot, leader_id);
         uint32_t current_index = __shfl_sync(warp_mask, p_index, leader_id);
@@ -984,8 +1024,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
 
   auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
 
-  const uint32_t sswwc_buffer_bytes =
-      shared_mem_bytes - fanout * sizeof(uint32_t) - fanout * sizeof(uint64_t);
+  const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
+                                      2 * fanout * sizeof(uint32_t) -
+                                      fanout * sizeof(uint64_t);
   const uint32_t tuples_per_buffer =
       1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
                                     fanout);
@@ -999,7 +1040,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
   uint32_t *const prefix_tmp = &tmp_partition_offsets[fanout];
   unsigned long long *const slots = reinterpret_cast<unsigned long long *>(
       prefix_tmp);  // alias to reuse space
-  Tuple<K, V> *const buffers = reinterpret_cast<Tuple<K, V> *>(&slots[fanout]);
+  uint32_t *const signal_slots = reinterpret_cast<uint32_t *>(&slots[fanout]);
+  Tuple<K, V> *const buffers =
+      reinterpret_cast<Tuple<K, V> *>(&signal_slots[fanout]);
 
   // Ensure counters are all zeroed.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
@@ -1036,6 +1079,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
   // Zero shared memory slots.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
     slots[i] = 0;
+    signal_slots[i] = 0;
   }
 
   __syncthreads();
@@ -1071,6 +1115,12 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
 
         if (pos < tuples_per_buffer) {
           buffers[write_combine_slot(tuples_per_buffer, p_index, pos)] = tuple;
+
+          // Wait until tuple write is flushed.
+          __threadfence_block();
+
+          // Signal that we are done writing the tuple.
+          atomicAdd(&signal_slots[p_index], 1U);
           done = true;
         }
       }
@@ -1095,6 +1145,18 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
         if (is_candidate && lane_id != leader_id) {
           atomicExch(&slots[p_index], slot);
         }
+
+        // Finish unlocking slots before entering busy-wait.
+        __syncwarp();
+
+        // Wait until all threads are done writing their tuples into the buffer.
+        // Then reset the signal slot to zero.
+        if (leader_id == lane_id) {
+          while (atomicOr(&signal_slots[p_index], 0U) != tuples_per_buffer)
+            ;
+          atomicExch(&signal_slots[p_index], 0U);
+        }
+        __syncwarp();
 
         uint32_t dmem_slot = static_cast<unsigned int>(slot >> smem_slot_bits);
         dmem_slot = __shfl_sync(warp_mask, dmem_slot, leader_id);
@@ -1234,7 +1296,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
   auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
 
   const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
-                                      2 * fanout * sizeof(uint32_t) -
+                                      3 * fanout * sizeof(uint32_t) -
                                       fanout * sizeof(uint64_t);
   const uint32_t tuples_per_buffer =
       1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
@@ -1249,8 +1311,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
   uint32_t *const prefix_tmp = &tmp_partition_offsets[fanout];
   unsigned long long *const slots = reinterpret_cast<unsigned long long *>(
       prefix_tmp);  // alias to reuse space
+  uint32_t *const signal_slots = reinterpret_cast<uint32_t *>(&slots[fanout]);
   unsigned int *const dmem_locks =
-      reinterpret_cast<unsigned int *>(&slots[fanout]);
+      reinterpret_cast<unsigned int *>(&signal_slots[fanout]);
   Tuple<K, V> *const buffers =
       reinterpret_cast<Tuple<K, V> *>(&dmem_locks[fanout]);
 
@@ -1289,6 +1352,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
   // Zero shared memory slots and initialize dmem locks.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
     slots[i] = 0;
+    signal_slots[i] = 0;
     dmem_locks[i] = 0;
   }
 
@@ -1325,6 +1389,12 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
 
         if (pos < tuples_per_buffer) {
           buffers[write_combine_slot(tuples_per_buffer, p_index, pos)] = tuple;
+
+          // Wait until tuple write is flushed.
+          __threadfence_block();
+
+          // Signal that we are done writing the tuple.
+          atomicAdd(&signal_slots[p_index], 1U);
           done = true;
         }
       }
@@ -1349,6 +1419,18 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
         if (is_candidate && lane_id != leader_id) {
           atomicExch(&slots[p_index], slot);
         }
+
+        // Finish unlocking slots before entering busy-wait.
+        __syncwarp();
+
+        // Wait until all threads are done writing their tuples into the buffer.
+        // Then reset the signal slot to zero.
+        if (leader_id == lane_id) {
+          while (atomicOr(&signal_slots[p_index], 0U) != tuples_per_buffer)
+            ;
+          atomicExch(&signal_slots[p_index], 0U);
+        }
+        __syncwarp();
 
         uint32_t dmem_slot = static_cast<unsigned int>(slot >> smem_slot_bits);
         dmem_slot = __shfl_sync(warp_mask, dmem_slot, leader_id);
@@ -1519,7 +1601,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
 
   const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
-                                      2 * fanout * sizeof(uint32_t) -
+                                      3 * fanout * sizeof(uint32_t) -
                                       fanout * sizeof(uint64_t);
   const uint32_t tuples_per_buffer =
       1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
@@ -1535,8 +1617,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   uint32_t *const prefix_tmp = &tmp_partition_offsets[fanout];
   unsigned long long *const slots = reinterpret_cast<unsigned long long *>(
       prefix_tmp);  // alias to reuse space
+  uint32_t *const signal_slots = reinterpret_cast<uint32_t *>(&slots[fanout]);
   unsigned int *const dmem_buffer_map =
-      reinterpret_cast<unsigned int *>(&slots[fanout]);
+      reinterpret_cast<unsigned int *>(&signal_slots[fanout]);
   Tuple<K, V> *const buffers =
       reinterpret_cast<Tuple<K, V> *>(&dmem_buffer_map[fanout]);
 
@@ -1575,6 +1658,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   // Zero shared memory slots and initialize dmem buffer map.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
     slots[i] = 0;
+    signal_slots[i] = 0;
     dmem_buffer_map[i] = i;
   }
 
@@ -1617,6 +1701,12 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
 
         if (pos < tuples_per_buffer) {
           buffers[write_combine_slot(tuples_per_buffer, p_index, pos)] = tuple;
+
+          // Wait until tuple write is flushed.
+          __threadfence_block();
+
+          // Signal that we are done writing the tuple.
+          atomicAdd(&signal_slots[p_index], 1U);
           done = true;
         }
       }
@@ -1641,6 +1731,18 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
         if (is_candidate && lane_id != leader_id) {
           atomicExch(&slots[p_index], slot);
         }
+
+        // Finish unlocking slots before entering busy-wait.
+        __syncwarp();
+
+        // Wait until all threads are done writing their tuples into the buffer.
+        // Then reset the signal slot to zero.
+        if (leader_id == lane_id) {
+          while (atomicOr(&signal_slots[p_index], 0U) != tuples_per_buffer)
+            ;
+          atomicExch(&signal_slots[p_index], 0U);
+        }
+        __syncwarp();
 
         uint32_t dmem_slot = static_cast<unsigned int>(slot >> smem_slot_bits);
         dmem_slot = __shfl_sync(warp_mask, dmem_slot, leader_id);
