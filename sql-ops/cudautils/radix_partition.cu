@@ -320,6 +320,8 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args) {
     }
   }
 
+  __syncthreads();
+
   // Handle case when data_length % (TUPLES_PER_THREAD * blockDim) != 0
   for (size_t i = loop_length + threadIdx.x; i < data_length; i += blockDim.x) {
     Tuple<K, V> tuple;
