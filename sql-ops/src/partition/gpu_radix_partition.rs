@@ -439,8 +439,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     let grid_size = rp.grid_size.clone();
                     let block_size = rp.block_size.clone();
                     let device = CurrentContext::get_device()?;
-                    let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
-                    let num_warps = block_size.x / warp_size;
+                    let _warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
                     let max_shared_mem_bytes =
                         device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
                     let fanout_u32 = fanout(rp.radix_bits) as u32;
@@ -470,21 +469,6 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             }
                         },
                         RadixPartitionState::ChunkedLASWWC => {
-                            let tuples_per_thread = 5;
-                            let shared_mem_bytes =
-                                (2 * tuples_per_thread * block_size.x * mem::size_of::<$Type>() as u32)
-                                + (fanout_u32 * mem::size_of::<u32>() as u32)
-                                + (std::cmp::max(
-                                        block_size.x + (block_size.x >> rp.log2_num_banks),
-                                        fanout_u32
-                                        ) * mem::size_of::<u32>() as u32
-                                  );
-
-                            assert!(
-                                shared_mem_bytes <= max_shared_mem_bytes,
-                                "Failed to allocate enough shared memory"
-                                );
-
                             let name = std::ffi::CString::new(
                                 stringify!([<gpu_chunked_laswwc_radix_partition_ $Suffix _ $Suffix>])
                                 ).unwrap();
@@ -498,24 +482,15 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                     function<<<
                                     grid_size,
                                     block_size,
-                                    shared_mem_bytes,
+                                    max_shared_mem_bytes,
                                     stream
                                     >>>(
-                                        device_args.as_device_ptr()
+                                        device_args.as_device_ptr(),
+                                        max_shared_mem_bytes
                                        ))?;
                             }
                         },
                         RadixPartitionState::ChunkedSSWWC(non_temporal) => {
-                            let sswwc_buffer_len =
-                                (max_shared_mem_bytes - (
-                                    3 * fanout_u32 * mem::size_of::<u32>() as u32
-                                )) / (2 * mem::size_of::<$Type>() as u32);
-
-                            assert!(
-                                fanout_u32 <= sswwc_buffer_len,
-                                "Failed to allocate enough shared memory"
-                                );
-
                             let name = match non_temporal {
                               false => std::ffi::CString::new(
                                     stringify!([<gpu_chunked_sswwc_radix_partition_ $Suffix _ $Suffix>])
@@ -543,16 +518,6 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             }
                         },
                         RadixPartitionState::ChunkedSSWWCv2 => {
-                            let sswwc_buffer_len =
-                                (max_shared_mem_bytes - (
-                                    3 * fanout_u32 * mem::size_of::<u32>() as u32
-                                )) / (2 * mem::size_of::<$Type>() as u32);
-
-                            assert!(
-                                fanout_u32 <= sswwc_buffer_len,
-                                "Failed to allocate enough shared memory"
-                                );
-
                             let name = std::ffi::CString::new(
                                 stringify!([<gpu_chunked_sswwc_radix_partition_v2_ $Suffix _ $Suffix>])
                                 ).unwrap();
@@ -577,24 +542,6 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         RadixPartitionState::ChunkedHSSWWC => {
                             let dmem_buffer_bytes: u64 = 2 * 1024 * 1024;
                             let global_dmem_buffer_bytes = dmem_buffer_bytes * grid_size.x as u64;
-                            let sswwc_buffer_bytes = max_shared_mem_bytes - (
-                                    2 * fanout_u32 * mem::size_of::<u32>() as u32
-                                    + fanout_u32 * mem::size_of::<u64>() as u32
-                                );
-                            let sswwc_buffer_len =
-                                sswwc_buffer_bytes / (2 * mem::size_of::<$Type>() as u32);
-
-                            let tuples_per_buffer = sswwc_buffer_len.next_power_of_two() / 2 / fanout_u32;
-                            let tuples_per_dmem_buffer = dmem_buffer_bytes / (fanout as u64) / (2 * mem::size_of::<$Type>() as u64);
-
-                            assert!(
-                                tuples_per_buffer >= 1,
-                                "Failed to allocate enough shared memory"
-                                );
-                            assert!(
-                                tuples_per_dmem_buffer % (tuples_per_buffer as u64) == 0,
-                                "Invalid device memory buffer size! Device memory buffer must be a multiple of shared memory buffer."
-                                );
 
                             let name = std::ffi::CString::new(
                                 stringify!([<gpu_chunked_hsswwc_radix_partition_ $Suffix _ $Suffix>])
@@ -623,24 +570,6 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         RadixPartitionState::ChunkedHSSWWCv2 => {
                             let dmem_buffer_bytes: u64 = 2 * 1024 * 1024;
                             let global_dmem_buffer_bytes = dmem_buffer_bytes * grid_size.x as u64;
-                            let sswwc_buffer_bytes = max_shared_mem_bytes - (
-                                    2 * fanout_u32 * mem::size_of::<u32>() as u32
-                                    + fanout_u32 * mem::size_of::<u64>() as u32
-                                );
-                            let sswwc_buffer_len =
-                                sswwc_buffer_bytes / (2 * mem::size_of::<$Type>() as u32);
-
-                            let tuples_per_buffer = sswwc_buffer_len.next_power_of_two() / 2 / fanout_u32;
-                            let tuples_per_dmem_buffer = dmem_buffer_bytes / (fanout as u64) / (2 * mem::size_of::<$Type>() as u64);
-
-                            assert!(
-                                tuples_per_buffer >= 1,
-                                "Failed to allocate enough shared memory"
-                                );
-                            assert!(
-                                tuples_per_dmem_buffer % (tuples_per_buffer as u64) == 0,
-                                "Invalid device memory buffer size! Device memory buffer must be a multiple of shared memory buffer."
-                                );
 
                             let name = std::ffi::CString::new(
                                 stringify!([<gpu_chunked_hsswwc_radix_partition_v2_ $Suffix _ $Suffix>])
@@ -669,24 +598,6 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         RadixPartitionState::ChunkedHSSWWCv3 => {
                             let dmem_buffer_bytes: u64 = 2 * 1024 * 1024;
                             let global_dmem_buffer_bytes = dmem_buffer_bytes * grid_size.x as u64;
-                            let sswwc_buffer_bytes = max_shared_mem_bytes - (
-                                    3 * fanout_u32 * mem::size_of::<u32>() as u32
-                                    + fanout_u32 * mem::size_of::<u64>() as u32
-                                );
-                            let sswwc_buffer_len =
-                                sswwc_buffer_bytes / (2 * mem::size_of::<$Type>() as u32);
-
-                            let tuples_per_buffer = sswwc_buffer_len.next_power_of_two() / 2 / fanout_u32;
-                            let tuples_per_dmem_buffer = dmem_buffer_bytes / (fanout as u64) / (2 * mem::size_of::<$Type>() as u64);
-
-                            assert!(
-                                tuples_per_buffer >= 1,
-                                "Failed to allocate enough shared memory"
-                                );
-                            assert!(
-                                tuples_per_dmem_buffer % (tuples_per_buffer as u64) == 0,
-                                "Invalid device memory buffer size! Device memory buffer must be a multiple of shared memory buffer."
-                                );
 
                             let name = std::ffi::CString::new(
                                 stringify!([<gpu_chunked_hsswwc_radix_partition_v3_ $Suffix _ $Suffix>])
@@ -715,25 +626,6 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         RadixPartitionState::ChunkedHSSWWCv4 => {
                             let dmem_buffer_bytes: u64 = 2 * 1024 * 1024;
                             let global_dmem_buffer_bytes = dmem_buffer_bytes * grid_size.x as u64;
-                            let sswwc_buffer_bytes = max_shared_mem_bytes - (
-                                    fanout_u32 * mem::size_of::<u16>() as u32
-                                    + 2 * fanout_u32 * mem::size_of::<u32>() as u32
-                                    + fanout_u32 * mem::size_of::<u64>() as u32
-                                );
-                            let sswwc_buffer_len =
-                                sswwc_buffer_bytes / (2 * mem::size_of::<$Type>() as u32);
-
-                            let tuples_per_buffer = sswwc_buffer_len.next_power_of_two() / 2 / fanout_u32;
-                            let tuples_per_dmem_buffer = dmem_buffer_bytes / (fanout as u64 + num_warps as u64) / (2 * mem::size_of::<$Type>() as u64);
-
-                            assert!(
-                                tuples_per_buffer >= 1,
-                                "Failed to allocate enough shared memory"
-                                );
-                            assert!(
-                                tuples_per_dmem_buffer % (tuples_per_buffer as u64) == 0,
-                                "Invalid device memory buffer size! Device memory buffer must be a multiple of shared memory buffer."
-                                );
 
                             let name = std::ffi::CString::new(
                                 stringify!([<gpu_chunked_hsswwc_radix_partition_v4_ $Suffix _ $Suffix>])

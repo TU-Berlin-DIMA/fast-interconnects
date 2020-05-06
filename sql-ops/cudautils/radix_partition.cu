@@ -174,7 +174,8 @@ __device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
 }
 
 template <typename K, typename V>
-__device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args) {
+__device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
+                                                   uint32_t shared_mem_bytes) {
   extern __shared__ uint32_t shared_mem[];
 
   const uint32_t fanout = 1U << args.radix_bits;
@@ -195,6 +196,12 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args) {
       static_cast<Tuple<K, V> *>(args.partitioned_relation) + data_offset;
 
   auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
+
+  const uint32_t laswwc_bytes =
+      blockDim.x * TUPLES_PER_THREAD * (sizeof(K) + sizeof(V)) +
+      fanout * sizeof(uint32_t) +
+      max(prefix_tmp_size, fanout) * sizeof(uint32_t);
+  assert(laswwc_bytes <= shared_mem_bytes);
 
   K *const cached_keys = (K *)shared_mem;
   V *const cached_vals = (V *)&cached_keys[blockDim.x * TUPLES_PER_THREAD];
@@ -367,6 +374,7 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
       shared_mem_bytes - 3U * fanout * sizeof(uint32_t);
   const uint32_t tuples_per_buffer =
       sswwc_buffer_bytes / sizeof(Tuple<K, V>) / fanout;
+  assert(tuples_per_buffer > 0);
 
   uint32_t *const tmp_partition_offsets =
       reinterpret_cast<uint32_t *>(shared_mem);
@@ -575,6 +583,7 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
       shared_mem_bytes - 3U * fanout * sizeof(uint32_t);
   const uint32_t tuples_per_buffer =
       sswwc_buffer_bytes / sizeof(Tuple<K, V>) / fanout;
+  assert(tuples_per_buffer > 0);
 
   uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
   uint32_t *const prefix_tmp = &tmp_partition_offsets[fanout];
@@ -776,6 +785,8 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
                                     sizeof(Tuple<K, V>) / fanout);
   const uint32_t slots_per_dmem_buffer =
       tuples_per_dmem_buffer / tuples_per_buffer;
+  assert(tuples_per_buffer > 0);
+  assert(tuples_per_dmem_buffer % tuples_per_buffer == 0);
 
   uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
   uint32_t *const prefix_tmp = &tmp_partition_offsets[fanout];
@@ -1037,6 +1048,8 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
                                     sizeof(Tuple<K, V>) / fanout);
   const uint32_t slots_per_dmem_buffer =
       tuples_per_dmem_buffer / tuples_per_buffer;
+  assert(tuples_per_buffer > 0);
+  assert(tuples_per_dmem_buffer % tuples_per_buffer == 0);
 
   uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
   uint32_t *const prefix_tmp = &tmp_partition_offsets[fanout];
@@ -1308,6 +1321,8 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
                                     sizeof(Tuple<K, V>) / fanout);
   const uint32_t slots_per_dmem_buffer =
       tuples_per_dmem_buffer / tuples_per_buffer;
+  assert(tuples_per_buffer > 0);
+  assert(tuples_per_dmem_buffer % tuples_per_buffer == 0);
 
   uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
   uint32_t *const prefix_tmp = &tmp_partition_offsets[fanout];
@@ -1602,10 +1617,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
 
   auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
 
-  const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
-                                      fanout * sizeof(uint16_t) -
-                                      2 * fanout * sizeof(uint32_t) -
-                                      fanout * sizeof(uint64_t);
+  const uint32_t sswwc_buffer_bytes =
+      shared_mem_bytes - fanout * sizeof(uint16_t) -
+      2 * fanout * sizeof(uint32_t) - fanout * sizeof(uint64_t);
   const uint32_t tuples_per_buffer =
       1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
                                     fanout);
@@ -1614,6 +1628,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
                                     sizeof(Tuple<K, V>) / (fanout + num_warps));
   const uint32_t slots_per_dmem_buffer =
       tuples_per_dmem_buffer / tuples_per_buffer;
+  assert(tuples_per_buffer > 0);
   assert(tuples_per_dmem_buffer % tuples_per_buffer == 0);
 
   uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
@@ -1988,15 +2003,16 @@ extern "C" __launch_bounds__(1024, 2) __global__
 // Exports the partitioning function for 8-byte key/value tuples.
 extern "C" __launch_bounds__(1024, 1) __global__
     void gpu_chunked_laswwc_radix_partition_int32_int32(
-        RadixPartitionArgs *args) {
-  gpu_chunked_laswwc_radix_partition<int, int>(*args);
+        RadixPartitionArgs *args, uint32_t shared_mem_bytes) {
+  gpu_chunked_laswwc_radix_partition<int, int>(*args, shared_mem_bytes);
 }
 
 // Exports the partitioning function for 16-byte key/value tuples.
 extern "C" __launch_bounds__(1024, 1) __global__
     void gpu_chunked_laswwc_radix_partition_int64_int64(
-        RadixPartitionArgs *args) {
-  gpu_chunked_laswwc_radix_partition<long long, long long>(*args);
+        RadixPartitionArgs *args, uint32_t shared_mem_bytes) {
+  gpu_chunked_laswwc_radix_partition<long long, long long>(*args,
+                                                           shared_mem_bytes);
 }
 
 // Exports the partitioning function for 8-byte key/value tuples.
