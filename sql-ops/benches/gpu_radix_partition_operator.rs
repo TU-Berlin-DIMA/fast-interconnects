@@ -144,6 +144,10 @@ struct Options {
     #[structopt(long = "grid-size")]
     grid_size: Option<u32>,
 
+    /// Device memory buffer size for HSSWWC variants (in KiB)
+    #[structopt(long = "dmem-buffer-size", default_value = "2048")]
+    dmem_buffer_size: usize,
+
     /// Memory type with which to allocate input relation
     #[structopt(
         long = "input-mem-type",
@@ -196,6 +200,7 @@ struct DataPoint {
     pub threads: Option<usize>,
     pub grid_size: Option<u32>,
     pub block_size: Option<u32>,
+    pub dmem_buffer_bytes: Option<usize>,
     pub input_mem_type: Option<ArgMemType>,
     pub output_mem_type: Option<ArgMemType>,
     pub input_location: Option<u16>,
@@ -224,6 +229,7 @@ fn gpu_radix_partition_benchmark<T, W>(
     input_data: &(Mem<T>, Mem<T>),
     output_mem_type: &MemType,
     grid_size_hint: &Option<GridSize>,
+    dmem_buffer_bytes: usize,
     // papi: &Papi,
     _papi_preset: &str,
     repeat: u32,
@@ -253,6 +259,7 @@ where
     let template = DataPoint {
         group: bench_group.to_string(),
         function: bench_function.to_string(),
+        dmem_buffer_bytes: Some(dmem_buffer_bytes),
         tuple_bytes: Some(2 * mem::size_of::<T>()),
         tuples: Some(input_data.0.len()),
         ..template.clone()
@@ -267,6 +274,7 @@ where
                 Allocator::mem_alloc_fn(MemType::CudaDevMem),
                 &grid_size,
                 &block_size,
+                dmem_buffer_bytes,
             )?;
 
             let mut partitioned_relation = PartitionedRelation::new(
@@ -417,6 +425,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             &input_data,
             &output_mem_type,
             &grid_size_hint,
+            options.dmem_buffer_size * 1024,
             // &papi,
             &options.papi_preset,
             options.repeat,

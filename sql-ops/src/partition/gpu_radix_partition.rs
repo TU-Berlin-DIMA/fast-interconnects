@@ -290,6 +290,7 @@ pub struct GpuRadixPartitioner {
     module: Module,
     grid_size: GridSize,
     block_size: BlockSize,
+    dmem_buffer_bytes: usize,
 }
 
 impl GpuRadixPartitioner {
@@ -300,6 +301,7 @@ impl GpuRadixPartitioner {
         _alloc_fn: MemAllocFn<u64>,
         grid_size: &GridSize,
         block_size: &BlockSize,
+        dmem_buffer_bytes: usize,
     ) -> Result<Self> {
         let num_partitions = fanout(radix_bits);
         let log2_num_banks = env!("LOG2_NUM_BANKS")
@@ -340,6 +342,7 @@ impl GpuRadixPartitioner {
             module,
             grid_size: grid_size.clone(),
             block_size: block_size.clone(),
+            dmem_buffer_bytes,
         })
     }
 
@@ -540,7 +543,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             }
                         },
                         RadixPartitionState::ChunkedHSSWWC => {
-                            let dmem_buffer_bytes: u64 = 2 * 1024 * 1024;
+                            let dmem_buffer_bytes: u64 = rp.dmem_buffer_bytes as u64;
                             let global_dmem_buffer_bytes = dmem_buffer_bytes * grid_size.x as u64;
 
                             let name = std::ffi::CString::new(
@@ -568,7 +571,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             }
                         },
                         RadixPartitionState::ChunkedHSSWWCv2 => {
-                            let dmem_buffer_bytes: u64 = 2 * 1024 * 1024;
+                            let dmem_buffer_bytes: u64 = rp.dmem_buffer_bytes as u64;
                             let global_dmem_buffer_bytes = dmem_buffer_bytes * grid_size.x as u64;
 
                             let name = std::ffi::CString::new(
@@ -596,7 +599,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             }
                         },
                         RadixPartitionState::ChunkedHSSWWCv3 => {
-                            let dmem_buffer_bytes: u64 = 2 * 1024 * 1024;
+                            let dmem_buffer_bytes: u64 = rp.dmem_buffer_bytes as u64;
                             let global_dmem_buffer_bytes = dmem_buffer_bytes * grid_size.x as u64;
 
                             let name = std::ffi::CString::new(
@@ -624,7 +627,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             }
                         }
                         RadixPartitionState::ChunkedHSSWWCv4 => {
-                            let dmem_buffer_bytes: u64 = 2 * 1024 * 1024;
+                            let dmem_buffer_bytes: u64 = rp.dmem_buffer_bytes as u64;
                             let global_dmem_buffer_bytes = dmem_buffer_bytes * grid_size.x as u64;
 
                             let name = std::ffi::CString::new(
@@ -709,6 +712,7 @@ mod tests {
         block_size: BlockSize,
     ) -> Result<(), Box<dyn Error>> {
         const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
+        const DMEM_BUFFER_BYTES: usize = 2 * 1024 * 1024;
         let _context = rustacuda::quick_init()?;
 
         let mut data_key: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
@@ -738,6 +742,7 @@ mod tests {
             Allocator::mem_alloc_fn::<u64>(MemType::CudaUniMem),
             &grid_size,
             &block_size,
+            DMEM_BUFFER_BYTES,
         )?;
 
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
@@ -801,6 +806,7 @@ mod tests {
         block_size: BlockSize,
     ) -> Result<(), Box<dyn Error>> {
         const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
+        const DMEM_BUFFER_BYTES: usize = 2 * 1024 * 1024;
 
         let _context = rustacuda::quick_init()?;
 
@@ -825,6 +831,7 @@ mod tests {
             Allocator::mem_alloc_fn::<u64>(MemType::CudaUniMem),
             &grid_size,
             &block_size,
+            DMEM_BUFFER_BYTES,
         )?;
 
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
