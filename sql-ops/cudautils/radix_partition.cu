@@ -102,15 +102,12 @@ __device__ uint32_t key_to_partition(T key, uint64_t mask, B bits) {
   return static_cast<uint32_t>((static_cast<uint64_t>(key) & mask) >> bits);
 }
 
-// Chunked radix partitioning.
-//
-// See the Rust module for details.
-template <typename K, typename V>
-__device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
+// Chunked histogram and offset computation
+template <typename K>
+__device__ void gpu_chunked_histogram(RadixPartitionArgs &args) {
   extern __shared__ uint32_t shared_mem[];
 
   const uint32_t fanout = 1U << args.radix_bits;
-  // const K mask = static_cast<K>(fanout - 1);
   const uint64_t mask = static_cast<uint64_t>(fanout - 1U);
 
   // Calculate the data_length per block
@@ -121,11 +118,7 @@ __device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
   }
 
   auto join_attr_data =
-      static_cast<const K *>(args.join_attr_data) + data_offset;
-  auto payload_attr_data =
-      static_cast<const V *>(args.payload_attr_data) + data_offset;
-  auto partitioned_relation =
-      static_cast<Tuple<K, V> *>(args.partitioned_relation) + data_offset;
+      reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
 
   uint32_t *const tmp_partition_offsets = shared_mem;
   uint32_t *const prefix_tmp = &shared_mem[fanout];
@@ -152,15 +145,138 @@ __device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
 
   __syncthreads();
 
-  // Add data offset onto partitions offsets and write out to global memory.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    uint64_t offset = tmp_partition_offsets[i] + data_offset;
+    // Add block offset and padding to device memory slots.
+    uint64_t offset =
+        tmp_partition_offsets[i] + data_offset + (i + 1) * args.padding_length;
+
+    // Write the temporary offsets used during the partition phase out to device
+    // memory.
+    args.tmp_partition_offsets[gridDim.x * i + blockIdx.x] = offset;
+
+    // Add data offset onto partitions offsets and write out the final offsets
+    // to device memory.
     args.partition_offsets[blockIdx.x * fanout + i] = offset;
+  }
+}
+
+// Contiguous histogram and offset computation
+//
+// Note that this function must be launched with cudaLaunchCooperativeKernel.
+// Cooperative grid synchronization is only supported on Pascal and later GPUs.
+// For testing on pre-Pascal GPUs, the function can be launched with
+// grid_size = 1.
+template <typename K>
+__device__ void gpu_contiguous_histogram(RadixPartitionArgs &args) {
+  extern __shared__ uint32_t shared_mem[];
+
+#if __CUDA_ARCH__ >= 600
+  cg::grid_group grid = cg::this_grid();
+#endif
+  const uint32_t fanout = 1U << args.radix_bits;
+  const uint64_t mask = static_cast<uint64_t>(fanout - 1U);
+
+  // Calculate the data_length per block
+  size_t data_length = (args.data_length + gridDim.x - 1U) / gridDim.x;
+  size_t data_offset = data_length * blockIdx.x;
+  if (blockIdx.x + 1U == gridDim.x) {
+    data_length = args.data_length - data_offset;
+  }
+
+  auto join_attr_data =
+      reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
+
+  uint32_t *const tmp_partition_offsets = shared_mem;
+  uint32_t *const prefix_tmp = &shared_mem[fanout];
+
+  // Ensure counters are all zeroed.
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    tmp_partition_offsets[i] = 0;
   }
 
   __syncthreads();
 
-  // 3. Partition
+  // Compute local histograms per partition for thread block.
+  for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
+    auto key = join_attr_data[i];
+    auto p_index = key_to_partition(key, mask, 0);
+    atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
+  }
+
+  __syncthreads();
+
+  // Copy local histograms to device memory.
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    args.tmp_partition_offsets[gridDim.x * i + blockIdx.x] =
+        tmp_partition_offsets[i];
+  }
+
+  // Initialize prefix sum state before synchronizing the grid.
+  device_exclusive_prefix_sum_initialize(args.prefix_scan_state);
+
+#if __CUDA_ARCH__ >= 600
+  grid.sync();
+#else
+  __syncthreads();
+#endif
+
+  // Compute offsets with exclusive prefix sum for thread block.
+  device_exclusive_prefix_sum(args.tmp_partition_offsets,
+                              fanout * gridDim.x * blockDim.x,
+                              args.padding_length, args.prefix_scan_state);
+
+#if __CUDA_ARCH__ >= 600
+  grid.sync();
+#else
+  __syncthreads();
+#endif
+
+  // Write partitions offsets to global memory. As there exists only one chunk
+  // only the first block must perform the write.
+  if (blockIdx.x == 0) {
+    for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+      args.partition_offsets[i] = args.tmp_partition_offsets[gridDim.x * i];
+    }
+  }
+}
+
+// Non-cached radix partitioning.
+//
+// See the Rust module for details.
+template <typename K, typename V>
+__device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
+  extern __shared__ uint32_t shared_mem[];
+
+  const uint32_t fanout = 1U << args.radix_bits;
+  const uint64_t mask = static_cast<uint64_t>(fanout - 1U);
+
+  // Calculate the data_length per block
+  size_t data_length = (args.data_length + gridDim.x - 1U) / gridDim.x;
+  size_t data_offset = data_length * blockIdx.x;
+  if (blockIdx.x + 1U == gridDim.x) {
+    data_length = args.data_length - data_offset;
+  }
+
+  auto join_attr_data =
+      reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
+  auto payload_attr_data =
+      reinterpret_cast<const V *>(args.payload_attr_data) + data_offset;
+  auto partitioned_relation =
+      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation);
+
+  uint32_t *const tmp_partition_offsets = shared_mem;
+
+  // Load partition offsets from device memory into shared memory.
+  // Sub-optimal memory access pattern doesn't matter, because we are reading
+  // at maxiumum 3 MB data.
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    tmp_partition_offsets[i] =
+        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
+  }
+
+  __syncthreads();
+
+  // Partition data
   for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
     Tuple<K, V> tuple;
     tuple.key = join_attr_data[i];
@@ -189,61 +305,32 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
   }
 
   auto join_attr_data =
-      static_cast<const K *>(args.join_attr_data) + data_offset;
+      reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
   auto payload_attr_data =
-      static_cast<const V *>(args.payload_attr_data) + data_offset;
+      reinterpret_cast<const V *>(args.payload_attr_data) + data_offset;
   auto partitioned_relation =
-      static_cast<Tuple<K, V> *>(args.partitioned_relation) + data_offset;
-
-  auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
+      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation);
 
   const uint32_t laswwc_bytes =
       blockDim.x * TUPLES_PER_THREAD * (sizeof(K) + sizeof(V)) +
-      fanout * sizeof(uint32_t) +
-      max(prefix_tmp_size, fanout) * sizeof(uint32_t);
+      2U * fanout * sizeof(uint32_t);
   assert(laswwc_bytes <= shared_mem_bytes);
 
   K *const cached_keys = (K *)shared_mem;
   V *const cached_vals = (V *)&cached_keys[blockDim.x * TUPLES_PER_THREAD];
   uint32_t *const tmp_partition_offsets =
       (uint32_t *)&cached_vals[blockDim.x * TUPLES_PER_THREAD];
-  uint32_t *const prefix_tmp =
-      &tmp_partition_offsets[fanout];  // max(prefix_tmp_size, fanout)
+  uint32_t *const cache_offsets = &tmp_partition_offsets[fanout];
 
-  // Ensure counters are all zeroed.
+  // Load partition offsets from device memory into shared memory.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    tmp_partition_offsets[i] = 0;
+    tmp_partition_offsets[i] =
+        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
   }
 
   __syncthreads();
 
-  // 1. Compute local histograms per partition for thread block.
-  for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
-    auto key = join_attr_data[i];
-    auto p_index = key_to_partition(key, mask, 0);
-    atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1ULL);
-  }
-
-  __syncthreads();
-
-  // 2. Compute offsets with exclusive prefix sum for thread block.
-  block_exclusive_prefix_sum(tmp_partition_offsets, fanout, args.padding_length,
-                             prefix_tmp);
-
-  __syncthreads();
-
-  // Add data offset onto partitions offsets and write out to global memory.
-  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    uint64_t offset = tmp_partition_offsets[i] + data_offset;
-    args.partition_offsets[blockIdx.x * fanout + i] = offset;
-  }
-
-  __syncthreads();
-
-  // 3. Partition
-
-  // Reuse space from prefix sum for storing cache offsets
-  uint32_t *const cache_offsets = prefix_tmp;
+  // Partition data
   size_t loop_length = (data_length / (blockDim.x * TUPLES_PER_THREAD)) *
                        (blockDim.x * TUPLES_PER_THREAD);
 
@@ -362,13 +449,11 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
   }
 
   auto join_attr_data =
-      static_cast<const K *>(args.join_attr_data) + data_offset;
+      reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
   auto payload_attr_data =
-      static_cast<const V *>(args.payload_attr_data) + data_offset;
+      reinterpret_cast<const V *>(args.payload_attr_data) + data_offset;
   auto partitioned_relation =
-      static_cast<Tuple<K, V> *>(args.partitioned_relation) + data_offset;
-
-  auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
+      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation);
 
   const uint32_t sswwc_buffer_bytes =
       shared_mem_bytes - 3U * fanout * sizeof(uint32_t);
@@ -378,38 +463,15 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
 
   uint32_t *const tmp_partition_offsets =
       reinterpret_cast<uint32_t *>(shared_mem);
-  uint32_t *const prefix_tmp = (uint32_t *)&tmp_partition_offsets[fanout];
-  uint32_t *const slots = prefix_tmp;  // alias to reuse space
+  uint32_t *const slots = &tmp_partition_offsets[fanout];
   uint32_t *const signal_slots = &slots[fanout];
   Tuple<K, V> *const buffers =
       reinterpret_cast<Tuple<K, V> *>(&signal_slots[fanout]);
 
-  // Ensure counters are all zeroed.
+  // Load partition offsets from device memory into shared memory.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    tmp_partition_offsets[i] = 0;
-  }
-
-  __syncthreads();
-
-  // 1. Compute local histograms per partition for thread block.
-  for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
-    auto key = join_attr_data[i];
-    auto p_index = key_to_partition(key, mask, 0);
-    atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1ULL);
-  }
-
-  __syncthreads();
-
-  // 2. Compute offsets with exclusive prefix sum for thread block.
-  block_exclusive_prefix_sum(tmp_partition_offsets, fanout, args.padding_length,
-                             prefix_tmp);
-
-  __syncthreads();
-
-  // Add data offset onto partitions offsets and write out to global memory.
-  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    uint64_t offset = tmp_partition_offsets[i] + data_offset;
-    args.partition_offsets[blockIdx.x * fanout + i] = offset;
+    tmp_partition_offsets[i] =
+        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
   }
 
   // Zero slots
@@ -420,8 +482,8 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
 
   __syncthreads();
 
-  // 3. Partition
-
+  // Partition data
+  //
   // All threads in warp must participate in each loop iteration
   size_t loop_length = (data_length / warpSize) * warpSize;
   for (size_t i = threadIdx.x; i < loop_length; i += blockDim.x) {
@@ -571,13 +633,11 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
   }
 
   auto join_attr_data =
-      static_cast<const K *>(args.join_attr_data) + data_offset;
+      reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
   auto payload_attr_data =
-      static_cast<const V *>(args.payload_attr_data) + data_offset;
+      reinterpret_cast<const V *>(args.payload_attr_data) + data_offset;
   auto partitioned_relation =
-      static_cast<Tuple<K, V> *>(args.partitioned_relation) + data_offset;
-
-  auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
+      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation);
 
   const uint32_t sswwc_buffer_bytes =
       shared_mem_bytes - 3U * fanout * sizeof(uint32_t);
@@ -586,38 +646,15 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
   assert(tuples_per_buffer > 0);
 
   uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
-  uint32_t *const prefix_tmp = &tmp_partition_offsets[fanout];
-  uint32_t *const slots = prefix_tmp;  // alias to reuse space
+  uint32_t *const slots = &tmp_partition_offsets[fanout];
   uint32_t *const signal_slots = &slots[fanout];
   Tuple<K, V> *const buffers =
       reinterpret_cast<Tuple<K, V> *>(&signal_slots[fanout]);
 
-  // Ensure counters are all zeroed.
+  // Load partition offsets from device memory into shared memory.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    tmp_partition_offsets[i] = 0;
-  }
-
-  __syncthreads();
-
-  // 1. Compute local histograms per partition for thread block.
-  for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
-    auto key = join_attr_data[i];
-    auto p_index = key_to_partition(key, mask, 0);
-    atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1ULL);
-  }
-
-  __syncthreads();
-
-  // 2. Compute offsets with exclusive prefix sum for thread block.
-  block_exclusive_prefix_sum(tmp_partition_offsets, fanout, args.padding_length,
-                             prefix_tmp);
-
-  __syncthreads();
-
-  // Add data offset onto partitions offsets and write out to global memory.
-  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    uint64_t offset = tmp_partition_offsets[i] + data_offset;
-    args.partition_offsets[blockIdx.x * fanout + i] = offset;
+    tmp_partition_offsets[i] =
+        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
   }
 
   // Zero slots
@@ -763,16 +800,14 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
   }
 
   auto join_attr_data =
-      static_cast<const K *>(args.join_attr_data) + data_offset;
+      reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
   auto payload_attr_data =
-      static_cast<const V *>(args.payload_attr_data) + data_offset;
+      reinterpret_cast<const V *>(args.payload_attr_data) + data_offset;
   auto partitioned_relation =
-      static_cast<Tuple<K, V> *>(args.partitioned_relation) + data_offset;
+      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation);
   auto dmem_buffers = reinterpret_cast<Tuple<K, V> *>(
       args.device_memory_buffers +
       args.device_memory_buffer_bytes * blockIdx.x);
-
-  auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
 
   const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
                                       2 * fanout * sizeof(uint32_t) -
@@ -789,43 +824,16 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
   assert(tuples_per_dmem_buffer % tuples_per_buffer == 0);
 
   uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
-  uint32_t *const prefix_tmp = &tmp_partition_offsets[fanout];
-  unsigned long long *const slots = reinterpret_cast<unsigned long long *>(
-      prefix_tmp);  // alias to reuse space
+  unsigned long long *const slots =
+      reinterpret_cast<unsigned long long *>(&tmp_partition_offsets[fanout]);
   uint32_t *const signal_slots = reinterpret_cast<uint32_t *>(&slots[fanout]);
   Tuple<K, V> *const buffers =
       reinterpret_cast<Tuple<K, V> *>(&signal_slots[fanout]);
 
-  // Ensure counters are all zeroed.
+  // Load partition offsets from device memory into shared memory.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    tmp_partition_offsets[i] = 0;
-  }
-
-  __syncthreads();
-
-  // 1. Compute local histograms per partition for thread block.
-  for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
-    auto key = join_attr_data[i];
-    auto p_index = key_to_partition(key, mask, 0);
-    atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1ULL);
-  }
-
-  __syncthreads();
-
-  // 2. Compute offsets with exclusive prefix sum for thread block.
-  block_exclusive_prefix_sum(tmp_partition_offsets, fanout, args.padding_length,
-                             prefix_tmp);
-
-  __syncthreads();
-
-  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    // Add padding to device memory slots.
-    tmp_partition_offsets[i] += (i + 1) * args.padding_length;
-
-    // Add data offset onto partitions offsets
-    // and writing them out to global memory.
-    uint64_t offset = tmp_partition_offsets[i] + data_offset;
-    args.partition_offsets[blockIdx.x * fanout + i] = offset;
+    tmp_partition_offsets[i] =
+        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
   }
 
   // Zero shared memory slots.
@@ -836,8 +844,8 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
 
   __syncthreads();
 
-  // 3. Partition
-
+  // Partition data
+  //
   // Slot bits must occupy upper bits, because we need as much number range as
   // possible for the ticket lock. The lock will eventually overflow, but we
   // can defer it with a larger number range.
@@ -1026,16 +1034,14 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
   }
 
   auto join_attr_data =
-      static_cast<const K *>(args.join_attr_data) + data_offset;
+      reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
   auto payload_attr_data =
-      static_cast<const V *>(args.payload_attr_data) + data_offset;
+      reinterpret_cast<const V *>(args.payload_attr_data) + data_offset;
   auto partitioned_relation =
-      static_cast<Tuple<K, V> *>(args.partitioned_relation) + data_offset;
+      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation);
   auto dmem_buffers = reinterpret_cast<Tuple<K, V> *>(
       args.device_memory_buffers +
       args.device_memory_buffer_bytes * blockIdx.x);
-
-  auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
 
   const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
                                       2 * fanout * sizeof(uint32_t) -
@@ -1052,43 +1058,16 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
   assert(tuples_per_dmem_buffer % tuples_per_buffer == 0);
 
   uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
-  uint32_t *const prefix_tmp = &tmp_partition_offsets[fanout];
-  unsigned long long *const slots = reinterpret_cast<unsigned long long *>(
-      prefix_tmp);  // alias to reuse space
+  unsigned long long *const slots =
+      reinterpret_cast<unsigned long long *>(&tmp_partition_offsets[fanout]);
   uint32_t *const signal_slots = reinterpret_cast<uint32_t *>(&slots[fanout]);
   Tuple<K, V> *const buffers =
       reinterpret_cast<Tuple<K, V> *>(&signal_slots[fanout]);
 
-  // Ensure counters are all zeroed.
+  // Load partition offsets from device memory into shared memory.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    tmp_partition_offsets[i] = 0;
-  }
-
-  __syncthreads();
-
-  // 1. Compute local histograms per partition for thread block.
-  for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
-    auto key = join_attr_data[i];
-    auto p_index = key_to_partition(key, mask, 0);
-    atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1ULL);
-  }
-
-  __syncthreads();
-
-  // 2. Compute offsets with exclusive prefix sum for thread block.
-  block_exclusive_prefix_sum(tmp_partition_offsets, fanout, args.padding_length,
-                             prefix_tmp);
-
-  __syncthreads();
-
-  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    // Add padding to device memory slots.
-    tmp_partition_offsets[i] += (i + 1) * args.padding_length;
-
-    // Add data offset onto partitions offsets
-    // and writing them out to global memory.
-    uint64_t offset = tmp_partition_offsets[i] + data_offset;
-    args.partition_offsets[blockIdx.x * fanout + i] = offset;
+    tmp_partition_offsets[i] =
+        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
   }
 
   // Zero shared memory slots.
@@ -1099,8 +1078,8 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
 
   __syncthreads();
 
-  // 3. Partition
-
+  // Partition data
+  //
   // Slot bits must occupy upper bits, because we need as much number range as
   // possible for the ticket lock. The lock will eventually overflow, but we
   // can defer it with a larger number range.
@@ -1299,16 +1278,14 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
   }
 
   auto join_attr_data =
-      static_cast<const K *>(args.join_attr_data) + data_offset;
+      reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
   auto payload_attr_data =
-      static_cast<const V *>(args.payload_attr_data) + data_offset;
+      reinterpret_cast<const V *>(args.payload_attr_data) + data_offset;
   auto partitioned_relation =
-      static_cast<Tuple<K, V> *>(args.partitioned_relation) + data_offset;
+      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation);
   auto dmem_buffers = reinterpret_cast<Tuple<K, V> *>(
       args.device_memory_buffers +
       args.device_memory_buffer_bytes * blockIdx.x);
-
-  auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
 
   const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
                                       3 * fanout * sizeof(uint32_t) -
@@ -1325,45 +1302,18 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
   assert(tuples_per_dmem_buffer % tuples_per_buffer == 0);
 
   uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
-  uint32_t *const prefix_tmp = &tmp_partition_offsets[fanout];
-  unsigned long long *const slots = reinterpret_cast<unsigned long long *>(
-      prefix_tmp);  // alias to reuse space
+  unsigned long long *const slots =
+      reinterpret_cast<unsigned long long *>(&tmp_partition_offsets[fanout]);
   uint32_t *const signal_slots = reinterpret_cast<uint32_t *>(&slots[fanout]);
   unsigned int *const dmem_locks =
       reinterpret_cast<unsigned int *>(&signal_slots[fanout]);
   Tuple<K, V> *const buffers =
       reinterpret_cast<Tuple<K, V> *>(&dmem_locks[fanout]);
 
-  // Ensure counters are all zeroed.
+  // Load partition offsets from device memory into shared memory.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    tmp_partition_offsets[i] = 0;
-  }
-
-  __syncthreads();
-
-  // 1. Compute local histograms per partition for thread block.
-  for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
-    auto key = join_attr_data[i];
-    auto p_index = key_to_partition(key, mask, 0);
-    atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1ULL);
-  }
-
-  __syncthreads();
-
-  // 2. Compute offsets with exclusive prefix sum for thread block.
-  block_exclusive_prefix_sum(tmp_partition_offsets, fanout, args.padding_length,
-                             prefix_tmp);
-
-  __syncthreads();
-
-  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    // Add padding to device memory slots.
-    tmp_partition_offsets[i] += (i + 1) * args.padding_length;
-
-    // Add data offset onto partitions offsets
-    // and writing them out to global memory.
-    uint64_t offset = tmp_partition_offsets[i] + data_offset;
-    args.partition_offsets[blockIdx.x * fanout + i] = offset;
+    tmp_partition_offsets[i] =
+        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
   }
 
   // Zero shared memory slots and initialize dmem locks.
@@ -1375,8 +1325,8 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
 
   __syncthreads();
 
-  // 3. Partition
-
+  // Partition data
+  //
   // Slot bits must occupy upper bits, because we need as much number range as
   // possible for the ticket lock. The lock will eventually overflow, but we
   // can defer it with a larger number range.
@@ -1606,16 +1556,14 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   }
 
   auto join_attr_data =
-      static_cast<const K *>(args.join_attr_data) + data_offset;
+      reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
   auto payload_attr_data =
-      static_cast<const V *>(args.payload_attr_data) + data_offset;
+      reinterpret_cast<const V *>(args.payload_attr_data) + data_offset;
   auto partitioned_relation =
-      static_cast<Tuple<K, V> *>(args.partitioned_relation) + data_offset;
+      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation);
   auto dmem_buffers = reinterpret_cast<Tuple<K, V> *>(
       args.device_memory_buffers +
       args.device_memory_buffer_bytes * blockIdx.x);
-
-  auto prefix_tmp_size = block_exclusive_prefix_sum_size<uint32_t>();
 
   const uint32_t sswwc_buffer_bytes =
       shared_mem_bytes - fanout * sizeof(uint16_t) -
@@ -1632,45 +1580,18 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   assert(tuples_per_dmem_buffer % tuples_per_buffer == 0);
 
   uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
-  uint32_t *const prefix_tmp = &tmp_partition_offsets[fanout];
-  unsigned long long *const slots = reinterpret_cast<unsigned long long *>(
-      prefix_tmp);  // alias to reuse space
+  unsigned long long *const slots =
+      reinterpret_cast<unsigned long long *>(&tmp_partition_offsets[fanout]);
   uint32_t *const signal_slots = reinterpret_cast<uint32_t *>(&slots[fanout]);
   unsigned short int *const dmem_buffer_map =
       reinterpret_cast<unsigned short int *>(&signal_slots[fanout]);
   Tuple<K, V> *const buffers =
       reinterpret_cast<Tuple<K, V> *>(&dmem_buffer_map[fanout]);
 
-  // Ensure counters are all zeroed.
+  // Load partition offsets from device memory into shared memory.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    tmp_partition_offsets[i] = 0;
-  }
-
-  __syncthreads();
-
-  // 1. Compute local histograms per partition for thread block.
-  for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
-    auto key = join_attr_data[i];
-    auto p_index = key_to_partition(key, mask, 0);
-    atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1ULL);
-  }
-
-  __syncthreads();
-
-  // 2. Compute offsets with exclusive prefix sum for thread block.
-  block_exclusive_prefix_sum(tmp_partition_offsets, fanout, args.padding_length,
-                             prefix_tmp);
-
-  __syncthreads();
-
-  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    // Add padding to device memory slots.
-    tmp_partition_offsets[i] += (i + 1) * args.padding_length;
-
-    // Add data offset onto partitions offsets
-    // and writing them out to global memory.
-    uint64_t offset = tmp_partition_offsets[i] + data_offset;
-    args.partition_offsets[blockIdx.x * fanout + i] = offset;
+    tmp_partition_offsets[i] =
+        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
   }
 
   // Zero shared memory slots and initialize dmem buffer map.
@@ -1682,8 +1603,8 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
 
   __syncthreads();
 
-  // 3. Partition
-
+  // Partition data
+  //
   // Slot bits must occupy upper bits, because we need as much number range as
   // possible for the ticket lock. The lock will eventually overflow, but we
   // can defer it with a larger number range.
@@ -1884,108 +1805,28 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   }
 }
 
-// Contiguous radix partitioning.
-//
-// See the Rust module for details.
-template <typename K, typename V>
-__device__ void gpu_contiguous_radix_partition(RadixPartitionArgs &args) {
-  extern __shared__ uint32_t shared_mem[];
+// Exports the histogram function for 8-byte keys.
+extern "C" __launch_bounds__(1024, 2) __global__
+    void gpu_chunked_histogram_int32(RadixPartitionArgs *args) {
+  gpu_chunked_histogram<int>(*args);
+}
 
-#if __CUDA_ARCH__ >= 600
-  cg::grid_group grid = cg::this_grid();
-#endif
-  const uint32_t fanout = 1U << args.radix_bits;
-  // const K mask = static_cast<K>(fanout - 1);
-  const uint64_t mask = static_cast<uint64_t>(fanout - 1U);
+// Exports the histogram function for 16-byte keys.
+extern "C" __launch_bounds__(1024, 2) __global__
+    void gpu_chunked_histogram_int64(RadixPartitionArgs *args) {
+  gpu_chunked_histogram<long long>(*args);
+}
 
-  // Calculate the data_length per block
-  size_t data_length = (args.data_length + gridDim.x - 1U) / gridDim.x;
-  size_t data_offset = data_length * blockIdx.x;
-  if (blockIdx.x + 1U == gridDim.x) {
-    data_length = args.data_length - data_offset;
-  }
+// Exports the histogram function for 8-byte keys.
+extern "C" __launch_bounds__(1024, 2) __global__
+    void gpu_contiguous_histogram_int32(RadixPartitionArgs *args) {
+  gpu_contiguous_histogram<int>(*args);
+}
 
-  auto join_attr_data =
-      static_cast<const K *>(args.join_attr_data) + data_offset;
-  auto payload_attr_data =
-      static_cast<const V *>(args.payload_attr_data) + data_offset;
-  auto partitioned_relation =
-      static_cast<Tuple<K, V> *>(args.partitioned_relation);
-
-  uint32_t *const tmp_partition_offsets = shared_mem;
-  uint32_t *const prefix_tmp = &shared_mem[fanout];
-
-  // Ensure counters are all zeroed.
-  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    tmp_partition_offsets[i] = 0;
-  }
-
-  __syncthreads();
-
-  // Compute local histograms per partition for thread block.
-  for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
-    auto key = join_attr_data[i];
-    auto p_index = key_to_partition(key, mask, 0);
-    atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
-  }
-
-  __syncthreads();
-
-  // Copy local histograms to device memory.
-  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    args.tmp_partition_offsets[gridDim.x * i + blockIdx.x] =
-        tmp_partition_offsets[i];
-  }
-
-  // Initialize prefix sum state before synchronizing the grid.
-  device_exclusive_prefix_sum_initialize(args.prefix_scan_state);
-
-#if __CUDA_ARCH__ >= 600
-  grid.sync();
-#else
-  __syncthreads();
-#endif
-
-  // Compute offsets with exclusive prefix sum for thread block.
-  device_exclusive_prefix_sum(args.tmp_partition_offsets,
-                              fanout * gridDim.x * blockDim.x,
-                              args.padding_length, args.prefix_scan_state);
-
-#if __CUDA_ARCH__ >= 600
-  grid.sync();
-#else
-  __syncthreads();
-#endif
-
-  // Copy device-wide offsets to shared memory.
-  // FIXME: check if we can reuse partitions_offsets instead of
-  // tmp_partition_offsets
-  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    tmp_partition_offsets[i] =
-        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
-  }
-
-  __syncthreads();
-
-  // Write partitions offsets to global memory. As there exists only one chunk
-  // only the first block must perform the write.
-  if (blockIdx.x == 0) {
-    for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-      args.partition_offsets[i] = tmp_partition_offsets[i];
-    }
-  }
-
-  // Partition
-  for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
-    Tuple<K, V> tuple;
-    tuple.key = join_attr_data[i];
-    tuple.value = payload_attr_data[i];
-
-    auto p_index = key_to_partition(tuple.key, mask, 0);
-    auto offset =
-        atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
-    tuple.store(partitioned_relation[offset]);
-  }
+// Exports the histogram function for 16-byte keys.
+extern "C" __launch_bounds__(1024, 2) __global__
+    void gpu_contiguous_histogram_int64(RadixPartitionArgs *args) {
+  gpu_contiguous_histogram<long long>(*args);
 }
 
 // Exports the partitioning function for 8-byte key/value tuples.
@@ -2118,16 +1959,4 @@ extern "C" __launch_bounds__(1024, 1) __global__
         RadixPartitionArgs *args, uint32_t shared_mem_bytes) {
   gpu_chunked_hsswwc_radix_partition_v4<long long, long long>(*args,
                                                               shared_mem_bytes);
-}
-
-// Exports the partitioning function for 8-byte key/value tuples.
-extern "C" __launch_bounds__(1024, 2) __global__
-    void gpu_contiguous_radix_partition_int32_int32(RadixPartitionArgs *args) {
-  gpu_contiguous_radix_partition<int, int>(*args);
-}
-
-// Exports the partitioning function for 16-byte key/value tuples.
-extern "C" __launch_bounds__(1024, 2) __global__
-    void gpu_contiguous_radix_partition_int64_int64(RadixPartitionArgs *args) {
-  gpu_contiguous_radix_partition<long long, long long>(*args);
 }

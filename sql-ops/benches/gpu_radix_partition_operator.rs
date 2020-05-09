@@ -16,6 +16,7 @@ use numa_gpu::runtime::memory::Mem;
 use numa_gpu::runtime::numa::NodeRatio;
 use papi::event_set::Sample;
 
+use itertools::iproduct;
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
@@ -24,7 +25,8 @@ use rustacuda::memory::DeviceCopy;
 use rustacuda::stream::{Stream, StreamFlags};
 use serde_derive::Serialize;
 use sql_ops::partition::gpu_radix_partition::{
-    GpuRadixPartitionAlgorithm, GpuRadixPartitionable, GpuRadixPartitioner, PartitionedRelation,
+    GpuHistogramAlgorithm, GpuRadixPartitionAlgorithm, GpuRadixPartitionable, GpuRadixPartitioner,
+    PartitionedRelation,
 };
 use std::convert::TryInto;
 use std::error::Error;
@@ -77,33 +79,48 @@ impl From<ArgMemTypeHelper> for MemType {
 
 arg_enum! {
     #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+    pub enum ArgHistogramAlgorithm {
+        GpuChunked,
+        GpuContiguous,
+    }
+}
+
+impl Into<GpuHistogramAlgorithm> for ArgHistogramAlgorithm {
+    fn into(self) -> GpuHistogramAlgorithm {
+        match self {
+            Self::GpuChunked => GpuHistogramAlgorithm::GpuChunked,
+            Self::GpuContiguous => GpuHistogramAlgorithm::GpuContiguous,
+        }
+    }
+}
+
+arg_enum! {
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
     pub enum ArgRadixPartitionAlgorithm {
-        Chunked,
-        ChunkedLASWWC,
-        ChunkedSSWWC,
-        ChunkedSSWWCNT,
-        ChunkedSSWWCv2,
-        ChunkedHSSWWC,
-        ChunkedHSSWWCv2,
-        ChunkedHSSWWCv3,
-        ChunkedHSSWWCv4,
-        Contiguous,
+        NC,
+        LASWWC,
+        SSWWC,
+        SSWWCNT,
+        SSWWCv2,
+        HSSWWC,
+        HSSWWCv2,
+        HSSWWCv3,
+        HSSWWCv4,
     }
 }
 
 impl Into<GpuRadixPartitionAlgorithm> for ArgRadixPartitionAlgorithm {
     fn into(self) -> GpuRadixPartitionAlgorithm {
         match self {
-            Self::Chunked => GpuRadixPartitionAlgorithm::Chunked,
-            Self::ChunkedLASWWC => GpuRadixPartitionAlgorithm::ChunkedLASWWC,
-            Self::ChunkedSSWWC => GpuRadixPartitionAlgorithm::ChunkedSSWWC,
-            Self::ChunkedSSWWCNT => GpuRadixPartitionAlgorithm::ChunkedSSWWCNT,
-            Self::ChunkedSSWWCv2 => GpuRadixPartitionAlgorithm::ChunkedSSWWCv2,
-            Self::ChunkedHSSWWC => GpuRadixPartitionAlgorithm::ChunkedHSSWWC,
-            Self::ChunkedHSSWWCv2 => GpuRadixPartitionAlgorithm::ChunkedHSSWWCv2,
-            Self::ChunkedHSSWWCv3 => GpuRadixPartitionAlgorithm::ChunkedHSSWWCv3,
-            Self::ChunkedHSSWWCv4 => GpuRadixPartitionAlgorithm::ChunkedHSSWWCv4,
-            Self::Contiguous => GpuRadixPartitionAlgorithm::Contiguous,
+            Self::NC => GpuRadixPartitionAlgorithm::NC,
+            Self::LASWWC => GpuRadixPartitionAlgorithm::LASWWC,
+            Self::SSWWC => GpuRadixPartitionAlgorithm::SSWWC,
+            Self::SSWWCNT => GpuRadixPartitionAlgorithm::SSWWCNT,
+            Self::SSWWCv2 => GpuRadixPartitionAlgorithm::SSWWCv2,
+            Self::HSSWWC => GpuRadixPartitionAlgorithm::HSSWWC,
+            Self::HSSWWCv2 => GpuRadixPartitionAlgorithm::HSSWWCv2,
+            Self::HSSWWCv3 => GpuRadixPartitionAlgorithm::HSSWWCv3,
+            Self::HSSWWCv4 => GpuRadixPartitionAlgorithm::HSSWWCv4,
         }
     }
 }
@@ -114,15 +131,25 @@ impl Into<GpuRadixPartitionAlgorithm> for ArgRadixPartitionAlgorithm {
     about = "A benchmark of the GPU radix partition operator using PAPI."
 )]
 struct Options {
-    /// Select the algorithms to run
+    /// Select the histogram algorithms to run
     #[structopt(
         long,
-        default_value = "Chunked",
+        default_value = "GpuChunked",
+        possible_values = &ArgHistogramAlgorithm::variants(),
+        case_insensitive = true,
+        require_delimiter = true
+    )]
+    histogram_algorithms: Vec<ArgHistogramAlgorithm>,
+
+    /// Select the radix partition algorithms to run
+    #[structopt(
+        long,
+        default_value = "NC",
         possible_values = &ArgRadixPartitionAlgorithm::variants(),
         case_insensitive = true,
         require_delimiter = true
     )]
-    algorithms: Vec<ArgRadixPartitionAlgorithm>,
+    partition_algorithms: Vec<ArgRadixPartitionAlgorithm>,
 
     /// No effect (passed by Cargo to run only benchmarks instead of unit tests)
     #[structopt(long)]
@@ -224,7 +251,8 @@ struct DataPoint {
 fn gpu_radix_partition_benchmark<T, W>(
     bench_group: &str,
     bench_function: &str,
-    algorithm: GpuRadixPartitionAlgorithm,
+    histogram_algorithm: GpuHistogramAlgorithm,
+    partition_algorithm: GpuRadixPartitionAlgorithm,
     radix_bits_list: &[u32],
     input_data: &(Mem<T>, Mem<T>),
     output_mem_type: &MemType,
@@ -269,7 +297,8 @@ where
         .iter()
         .map(|&radix_bits| {
             let mut radix_prnr = GpuRadixPartitioner::new(
-                algorithm,
+                histogram_algorithm,
+                partition_algorithm,
                 radix_bits,
                 Allocator::mem_alloc_fn(MemType::CudaDevMem),
                 &grid_size,
@@ -279,7 +308,7 @@ where
 
             let mut partitioned_relation = PartitionedRelation::new(
                 input_data.0.len(),
-                algorithm,
+                histogram_algorithm,
                 radix_bits,
                 &grid_size,
                 Allocator::mem_alloc_fn(output_mem_type.clone()),
@@ -416,11 +445,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         ..DataPoint::default()
     };
 
-    for algorithm in options.algorithms {
+    for (histogram_algorithm, partition_algorithm) in
+        iproduct!(options.histogram_algorithms, options.partition_algorithms)
+    {
         gpu_radix_partition_benchmark::<i64, _>(
             "gpu_radix_partition",
-            &algorithm.to_string(),
-            algorithm.into(),
+            &(histogram_algorithm.to_string() + &partition_algorithm.to_string()),
+            histogram_algorithm.into(),
+            partition_algorithm.into(),
             &options.radix_bits,
             &input_data,
             &output_mem_type,
