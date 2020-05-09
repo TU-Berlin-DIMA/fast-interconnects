@@ -171,9 +171,9 @@ struct Options {
     #[structopt(long = "grid-size")]
     grid_size: Option<u32>,
 
-    /// Device memory buffer size for HSSWWC variants (in KiB)
-    #[structopt(long = "dmem-buffer-size", default_value = "2048")]
-    dmem_buffer_size: usize,
+    /// Device memory buffer sizes for HSSWWC variants (in KiB)
+    #[structopt(long, default_value = "2048", require_delimiter = true)]
+    dmem_buffer_sizes: Vec<usize>,
 
     /// Memory type with which to allocate input relation
     #[structopt(
@@ -445,9 +445,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         ..DataPoint::default()
     };
 
-    for (histogram_algorithm, partition_algorithm) in
-        iproduct!(options.histogram_algorithms, options.partition_algorithms)
-    {
+    for (histogram_algorithm, partition_algorithm, dmem_buffer_size) in iproduct!(
+        options.histogram_algorithms,
+        options.partition_algorithms,
+        options.dmem_buffer_sizes
+    ) {
         gpu_radix_partition_benchmark::<i64, _>(
             "gpu_radix_partition",
             &(histogram_algorithm.to_string() + &partition_algorithm.to_string()),
@@ -457,7 +459,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             &input_data,
             &output_mem_type,
             &grid_size_hint,
-            options.dmem_buffer_size * 1024,
+            dmem_buffer_size * 1024,
             // &papi,
             &options.papi_preset,
             options.repeat,
