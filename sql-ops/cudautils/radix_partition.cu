@@ -68,14 +68,14 @@ struct Tuple {
   K key;
   V value;
 
-  __device__ __forceinline__ void load(Tuple<int, int> &const src) {
-    int2 tmp = *reinterpret_cast<int2 *const>(&src);
+  __device__ __forceinline__ void load(Tuple<int, int> const &src) {
+    int2 tmp = *reinterpret_cast<int2 const *>(&src);
     this->key = tmp.x;
     this->value = tmp.y;
   }
 
-  __device__ __forceinline__ void load(Tuple<long long, long long> &const src) {
-    longlong2 tmp = *reinterpret_cast<longlong2 *const>(&src);
+  __device__ __forceinline__ void load(Tuple<long long, long long> const &src) {
+    longlong2 tmp = *reinterpret_cast<longlong2 const *>(&src);
     this->key = tmp.x;
     this->value = tmp.y;
   }
@@ -187,7 +187,6 @@ __device__ void gpu_contiguous_histogram(RadixPartitionArgs &args) {
       reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
 
   uint32_t *const tmp_partition_offsets = shared_mem;
-  uint32_t *const prefix_tmp = &shared_mem[fanout];
 
   // Ensure counters are all zeroed.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
@@ -437,8 +436,6 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
   const uint32_t fanout = 1U << args.radix_bits;
   const uint64_t mask = static_cast<uint64_t>(fanout - 1);
   const int lane_id = threadIdx.x % warpSize;
-  const int warp_id = threadIdx.x / warpSize;
-  const int num_warps = blockDim.x / warpSize;
   constexpr uint32_t warp_mask = 0xFFFFFFFFu;
 
   // Calculate the data_length per block
@@ -621,8 +618,6 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
   const uint32_t fanout = 1U << args.radix_bits;
   const uint64_t mask = static_cast<uint64_t>(fanout - 1);
   const int lane_id = threadIdx.x % warpSize;
-  const int warp_id = threadIdx.x / warpSize;
-  const int num_warps = blockDim.x / warpSize;
   constexpr uint32_t warp_mask = 0xFFFFFFFFu;
 
   // Calculate the data_length per block
@@ -788,8 +783,6 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
   const uint32_t fanout = 1U << args.radix_bits;
   const uint64_t mask = static_cast<uint64_t>(fanout - 1);
   const int lane_id = threadIdx.x % warpSize;
-  const int warp_id = threadIdx.x / warpSize;
-  const int num_warps = blockDim.x / warpSize;
   constexpr uint32_t warp_mask = 0xFFFFFFFFu;
 
   // Calculate the data_length per block
@@ -1022,8 +1015,6 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
   const uint32_t fanout = 1U << args.radix_bits;
   const uint64_t mask = static_cast<uint64_t>(fanout - 1);
   const int lane_id = threadIdx.x % warpSize;
-  const int warp_id = threadIdx.x / warpSize;
-  const int num_warps = blockDim.x / warpSize;
   constexpr uint32_t warp_mask = 0xFFFFFFFFu;
 
   // Calculate the data_length per block
@@ -1266,8 +1257,6 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
   const uint32_t fanout = 1U << args.radix_bits;
   const uint64_t mask = static_cast<uint64_t>(fanout - 1);
   const int lane_id = threadIdx.x % warpSize;
-  const int warp_id = threadIdx.x / warpSize;
-  const int num_warps = blockDim.x / warpSize;
   constexpr uint32_t warp_mask = 0xFFFFFFFFu;
 
   // Calculate the data_length per block
