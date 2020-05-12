@@ -1554,9 +1554,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
       args.device_memory_buffers +
       args.device_memory_buffer_bytes * blockIdx.x);
 
-  const uint32_t sswwc_buffer_bytes =
-      shared_mem_bytes - fanout * sizeof(uint16_t) -
-      2 * fanout * sizeof(uint32_t) - fanout * sizeof(uint64_t);
+  const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
+                                      2 * fanout * sizeof(uint16_t) -
+                                      3 * fanout * sizeof(uint32_t);
   const uint32_t tuples_per_buffer =
       1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
                                     fanout);
@@ -1568,10 +1568,14 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   assert(tuples_per_buffer > 0);
   assert(tuples_per_dmem_buffer % tuples_per_buffer == 0);
 
+  // FIXME: don't cache partition offsets in shared memory
   uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
-  unsigned long long *const slots =
-      reinterpret_cast<unsigned long long *>(&tmp_partition_offsets[fanout]);
-  uint32_t *const signal_slots = reinterpret_cast<uint32_t *>(&slots[fanout]);
+  unsigned int *const slots =
+      reinterpret_cast<unsigned int *>(&tmp_partition_offsets[fanout]);
+  unsigned short int *const dmem_slots =
+      reinterpret_cast<unsigned short int *>(&slots[fanout]);
+  uint32_t *const signal_slots =
+      reinterpret_cast<uint32_t *>(&dmem_slots[fanout]);
   unsigned short int *const dmem_buffer_map =
       reinterpret_cast<unsigned short int *>(&signal_slots[fanout]);
   Tuple<K, V> *const buffers =
@@ -1586,6 +1590,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   // Zero shared memory slots and initialize dmem buffer map.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
     slots[i] = 0;
+    dmem_slots[i] = 0;
     signal_slots[i] = 0;
     dmem_buffer_map[i] = i;
   }
@@ -1594,13 +1599,6 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
 
   // Partition data
   //
-  // Slot bits must occupy upper bits, because we need as much number range as
-  // possible for the ticket lock. The lock will eventually overflow, but we
-  // can defer it with a larger number range.
-  const uint32_t smem_slot_bits =
-      64 - log2_ceil_power_of_two(slots_per_dmem_buffer);
-  const uint64_t smem_slot_mask = (1ULL << smem_slot_bits) - 1ULL;
-
   // Assign initial spare dmem buffers
   uint32_t spare_dmem_buffer;
   if (lane_id == 0) {
@@ -1619,13 +1617,10 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
     bool done = false;
     do {
       // Fetch a position if don't have a valid position yet
-      unsigned long long slot = 0;
       if (not done) {
-        slot = atomicAdd(&slots[p_index], 1ULL);
-        /* slot = atomicInc((unsigned int *)&slots[p_index], fill-in-the-max);
+        pos = atomicAdd(&slots[p_index], 1ULL);
+        /* pos = atomicInc((unsigned int *)&slots[p_index], fill-in-the-max);
          */
-
-        pos = static_cast<unsigned int>(slot & smem_slot_mask);
 
         if (pos < tuples_per_buffer) {
           buffers[write_combine_slot(tuples_per_buffer, p_index, pos)] = tuple;
@@ -1657,7 +1652,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
         // appropriately. The short-cut is to reuse our slot, because it already
         // contains the corrent smem and dmem values.
         if (is_candidate && lane_id != leader_id) {
-          atomicExch(&slots[p_index], slot);
+          atomicExch(&slots[p_index], pos);
         }
 
         // Finish unlocking slots before entering busy-wait.
@@ -1672,9 +1667,8 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
         }
         __syncwarp();
 
-        uint32_t dmem_slot = static_cast<unsigned int>(slot >> smem_slot_bits);
-        dmem_slot = __shfl_sync(warp_mask, dmem_slot, leader_id);
         uint32_t current_index = __shfl_sync(warp_mask, p_index, leader_id);
+        unsigned short int dmem_slot = dmem_slots[current_index];
 
         // Look up the dmem_buffer for current_index in the map.
         unsigned short int current_dmem_buffer = dmem_buffer_map[current_index];
@@ -1709,18 +1703,20 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
           // Ensure that smem flush and buffer swap occur before the smem lock
           // is released.
           __syncwarp();
-          __threadfence_block();
         }
 
         // Release the smem_lock.
         if (lane_id == leader_id) {
-          // Set smem_slot to zero.
-          slot = (static_cast<unsigned long long>(dmem_slot) << smem_slot_bits);
+          dmem_slots[current_index] = dmem_slot;
+
+          // Ensure that the dmem_slot is updated before releasing the smem
+          // lock.
+          __threadfence_block();
 
           // Normal write is not visible to other threads
           //   Use atomic function instead of:
           //   slots[p_indexj] = slot;
-          atomicExch(&slots[current_index], slot);
+          atomicExch(&slots[current_index], 0U);
         }
 
         // Flush dmem buffer to memory if necessary.
@@ -1755,7 +1751,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
     uint32_t p_index = i >> log2_tuples_per_dmem_buffer;
     uint32_t slot = i & (tuples_per_dmem_buffer - 1U);
 
-    if (slot < (static_cast<unsigned int>(slots[p_index] >> smem_slot_bits)
+    if (slot < (static_cast<unsigned int>(dmem_slots[p_index])
                 << log2_tuples_per_buffer)) {
       uint32_t dst =
           atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
@@ -1774,7 +1770,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
     uint32_t p_index = i >> log2_tuples_per_buffer;
     uint32_t slot = i & (tuples_per_buffer - 1U);
 
-    if (slot < (slots[p_index] & smem_slot_mask)) {
+    if (slot < slots[p_index]) {
       uint32_t dst =
           atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
       partitioned_relation[dst] = buffers[i];
