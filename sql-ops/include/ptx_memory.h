@@ -44,6 +44,16 @@ __device__ __forceinline__ long long ptx_load_cache_global<>(
 }
 
 template <>
+__device__ __forceinline__ longlong2
+ptx_load_cache_global<>(const longlong2 *addr) {
+  longlong2 return_value;
+  asm volatile("ld.global.cg.v2.s64 {%0, %1}, [%2];"
+               : "=l"(return_value.x), "=l"(return_value.y)
+               : "l"(addr));
+  return return_value;
+}
+
+template <>
 __device__ __forceinline__ unsigned long long ptx_load_cache_global<>(
     const unsigned long long *addr) {
   unsigned long long return_value;
@@ -102,30 +112,37 @@ __device__ __forceinline__ long long ptx_load_nocache<>(const long long *addr) {
  * Stores only in L2 cache, by-passing L1 cache.
  */
 template <typename T>
-__device__ __forceinline__ void ptx_store_cache_global(const T *addr, T value);
+__device__ __forceinline__ void ptx_store_cache_global(T *addr, T value);
 
 template <>
-__device__ __forceinline__ void ptx_store_cache_global<>(const int *addr,
-                                                         int value) {
+__device__ __forceinline__ void ptx_store_cache_global<>(int *addr, int value) {
   asm volatile("st.global.cg.s32 [%0], %1;" : : "l"(addr), "r"(value));
 }
 
 template <>
-__device__ __forceinline__ void ptx_store_cache_global<>(
-    const unsigned int *addr, unsigned int value) {
+__device__ __forceinline__ void ptx_store_cache_global<>(unsigned int *addr,
+                                                         unsigned int value) {
   asm volatile("st.global.cg.u32 [%0], %1;" : : "l"(addr), "r"(value));
 }
 
 template <>
-__device__ __forceinline__ void ptx_store_cache_global<>(const long long *addr,
+__device__ __forceinline__ void ptx_store_cache_global<>(long long *addr,
                                                          long long value) {
   asm volatile("st.global.cg.s64 [%0], %1;" : : "l"(addr), "l"(value));
 }
 
 template <>
 __device__ __forceinline__ void ptx_store_cache_global<>(
-    const unsigned long long *addr, unsigned long long value) {
+    unsigned long long *addr, unsigned long long value) {
   asm volatile("st.global.cg.u64 [%0], %1;" : : "l"(addr), "l"(value));
+}
+
+template <>
+__device__ __forceinline__ void ptx_store_cache_global<>(longlong2 *addr,
+                                                         longlong2 value) {
+  asm volatile("st.global.cg.v2.s64 [%0], {%1, %2};"
+               :
+               : "l"(addr), "l"(value.x), "l"(value.y));
 }
 
 /*
@@ -135,18 +152,17 @@ __device__ __forceinline__ void ptx_store_cache_global<>(
  * limit cache pollution.
  */
 template <typename T>
-__device__ __forceinline__ void ptx_store_cache_streaming(const T *addr,
-                                                          T value);
+__device__ __forceinline__ void ptx_store_cache_streaming(T *addr, T value);
 
 template <>
-__device__ __forceinline__ void ptx_store_cache_streaming<>(const int *addr,
+__device__ __forceinline__ void ptx_store_cache_streaming<>(int *addr,
                                                             int value) {
   asm volatile("st.global.cs.s32 [%0], %1;" : : "l"(addr), "r"(value));
 }
 
 template <>
-__device__ __forceinline__ void ptx_store_cache_streaming<>(
-    const long long *addr, long long value) {
+__device__ __forceinline__ void ptx_store_cache_streaming<>(long long *addr,
+                                                            long long value) {
   asm volatile("st.global.cs.s64 [%0], %1;" : : "l"(addr), "l"(value));
 }
 
@@ -156,16 +172,15 @@ __device__ __forceinline__ void ptx_store_cache_streaming<>(
  * Writes through the L2 cache to memory.
  */
 template <typename T>
-__device__ __forceinline__ void ptx_store_nocache(const T *addr, T value);
+__device__ __forceinline__ void ptx_store_nocache(T *addr, T value);
 
 template <>
-__device__ __forceinline__ void ptx_store_nocache<>(const int *addr,
-                                                    int value) {
+__device__ __forceinline__ void ptx_store_nocache<>(int *addr, int value) {
   asm volatile("st.global.wt.s32 [%0], %1;" : : "l"(addr), "r"(value));
 }
 
 template <>
-__device__ __forceinline__ void ptx_store_nocache<>(const long long *addr,
+__device__ __forceinline__ void ptx_store_nocache<>(long long *addr,
                                                     long long value) {
   asm volatile("st.global.wt.s64 [%0], %1;" : : "l"(addr), "l"(value));
 }
