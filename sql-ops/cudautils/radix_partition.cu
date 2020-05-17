@@ -1719,10 +1719,35 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
 
   // Zero shared memory slots and initialize dmem buffer map.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    slots[i] = 0;
-    dmem_slots[i] = 0;
-    signal_slots[i] = 0;
+    auto offset = args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
+    auto aligned_fill_state = offset % align_tuples;
+    args.tmp_partition_offsets[gridDim.x * i + blockIdx.x] =
+        offset - aligned_fill_state;
+
+    uint32_t smem_fill_state = aligned_fill_state % tuples_per_buffer;
+    uint32_t dmem_fill_state = aligned_fill_state / tuples_per_buffer;
+
+    slots[i] = smem_fill_state;
+    dmem_slots[i] = dmem_fill_state;
+    signal_slots[i] = smem_fill_state;
     dmem_buffer_map[i] = i;
+  }
+
+  // Zero the buffers so that we don't write out uninitialized data
+  for (uint32_t i = threadIdx.x; i < fanout * tuples_per_buffer;
+       i += blockDim.x) {
+    buffers[i] = {0};
+  }
+
+  // Sync before accessing dmem_slots
+  __syncthreads();
+
+  for (uint32_t i = warp_id; i < fanout; i += num_warps) {
+    for (uint32_t j = lane_id; i < align_tuples; i += warpSize) {
+      auto current_dmem_buffer = dmem_slots[i];
+      dmem_buffers[write_combine_slot(tuples_per_dmem_buffer,
+                                      current_dmem_buffer, j)] = {0};
+    }
   }
 
   __syncthreads();
@@ -1874,44 +1899,47 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   // Wait until all warps are done
   __syncthreads();
 
-  // Flush dmem buffers to memory.
   uint32_t log2_tuples_per_buffer = log2_floor_power_of_two(tuples_per_buffer);
   uint32_t log2_tuples_per_dmem_buffer =
       log2_floor_power_of_two(tuples_per_dmem_buffer);
-  for (uint32_t i = threadIdx.x; i < (fanout << log2_tuples_per_dmem_buffer);
-       i += blockDim.x) {
-    uint32_t p_index = i >> log2_tuples_per_dmem_buffer;
-    uint32_t slot = i & (tuples_per_dmem_buffer - 1U);
 
-    if (slot < (static_cast<unsigned int>(dmem_slots[p_index])
-                << log2_tuples_per_buffer)) {
-      uint32_t dst = atomicAdd(
-          (unsigned int *)&args
-              .tmp_partition_offsets[gridDim.x * p_index + blockIdx.x],
-          1U);
-      unsigned short int current_dmem_buffer = dmem_buffer_map[p_index];
+  // Flush buffers. Cannot flush smem buffers directly to memory because
+  // alignment may require us to pad zeroes at the front of the dmem buffer.
+  for (uint32_t p_index = warp_id; p_index < fanout; p_index += num_warps) {
+    auto dmem_slot = dmem_slots[p_index];
+    uint32_t smem_fill_state = signal_slots[p_index];
+    auto dmem_fill_state =
+        (static_cast<unsigned int>(dmem_slot) << log2_tuples_per_buffer) +
+        smem_fill_state;
+    auto current_dmem_buffer = dmem_buffer_map[p_index];
+
+    auto dst = args.tmp_partition_offsets[gridDim.x * p_index + blockIdx.x];
+    if (lane_id == 0) {
+      args.tmp_partition_offsets[gridDim.x * p_index + blockIdx.x] +=
+          dmem_fill_state;
+    }
+
+    // Flush the smem buffer.
+    for (uint32_t i = lane_id; i < smem_fill_state; i += warpSize) {
+      Tuple<K, V> tmp =
+          buffers[write_combine_slot(tuples_per_buffer, p_index, i)];
+      tmp.store(dmem_buffers[write_combine_slot(
+          tuples_per_dmem_buffer, current_dmem_buffer,
+          write_combine_slot(tuples_per_buffer, dmem_slot, i))]);
+    }
+
+    __syncwarp();
+
+    // Flush dmem buffers to memory.
+    for (uint32_t i = lane_id; i < dmem_fill_state; i += warpSize) {
       Tuple<K, V> tmp;
       tmp.load(dmem_buffers[write_combine_slot(tuples_per_dmem_buffer,
-                                               current_dmem_buffer, slot)]);
-      tmp.store(partitioned_relation[dst]);
+                                               current_dmem_buffer, i)]);
+      tmp.store(partitioned_relation[dst + i]);
     }
   }
 
-  // Flush smem buffers directly to memory, because we don't keep track of dmem
-  // buffer fill state on tuple-wise granularity.
-  for (uint32_t i = threadIdx.x; i < (fanout << log2_tuples_per_buffer);
-       i += blockDim.x) {
-    uint32_t p_index = i >> log2_tuples_per_buffer;
-    uint32_t slot = i & (tuples_per_buffer - 1U);
-
-    if (slot < slots[p_index]) {
-      uint32_t dst = atomicAdd(
-          (unsigned int *)&args
-              .tmp_partition_offsets[gridDim.x * p_index + blockIdx.x],
-          1U);
-      partitioned_relation[dst] = buffers[i];
-    }
-  }
+  __syncthreads();
 
   // Handle case when data_length % warpSize != 0
   for (size_t i = loop_length + threadIdx.x; i < data_length; i += blockDim.x) {
