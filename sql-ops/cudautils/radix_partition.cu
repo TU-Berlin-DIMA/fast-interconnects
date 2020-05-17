@@ -1691,8 +1691,8 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
           ((size_t)dmem_buffers) % align_tuples == 0U));
 
   const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
-                                      2 * fanout * sizeof(uint16_t) -
-                                      3 * fanout * sizeof(uint32_t);
+                                      1 * fanout * sizeof(uint16_t) -
+                                      2 * fanout * sizeof(uint32_t);
   const uint32_t tuples_per_buffer =
       1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
                                     fanout);
@@ -1707,10 +1707,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   assert(("DMem buffer size must be a multiple of SMem buffer size",
           tuples_per_dmem_buffer % tuples_per_buffer == 0));
 
-  // FIXME: don't cache partition offsets in shared memory
-  uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
-  unsigned int *const slots =
-      reinterpret_cast<unsigned int *>(&tmp_partition_offsets[fanout]);
+  unsigned int *const slots = reinterpret_cast<unsigned int *>(shared_mem);
   unsigned short int *const dmem_slots =
       reinterpret_cast<unsigned short int *>(&slots[fanout]);
   uint32_t *const signal_slots =
@@ -1719,12 +1716,6 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
       reinterpret_cast<unsigned short int *>(&signal_slots[fanout]);
   Tuple<K, V> *const buffers =
       reinterpret_cast<Tuple<K, V> *>(&dmem_buffer_map[fanout]);
-
-  // Load partition offsets from device memory into shared memory.
-  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    tmp_partition_offsets[i] =
-        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
-  }
 
   // Zero shared memory slots and initialize dmem buffer map.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
@@ -1835,8 +1826,10 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
           dmem_slot = 0;
           if (lane_id == 0) {
             dmem_buffer_map[current_index] = spare_dmem_buffer;
-            dst = tmp_partition_offsets[current_index];
-            tmp_partition_offsets[current_index] += tuples_per_dmem_buffer;
+            dst = args.tmp_partition_offsets[gridDim.x * current_index +
+                                             blockIdx.x];
+            args.tmp_partition_offsets[gridDim.x * current_index +
+                                       blockIdx.x] += tuples_per_dmem_buffer;
           }
 
           // Ensure that smem flush and buffer swap occur before the smem lock
@@ -1892,8 +1885,10 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
 
     if (slot < (static_cast<unsigned int>(dmem_slots[p_index])
                 << log2_tuples_per_buffer)) {
-      uint32_t dst =
-          atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
+      uint32_t dst = atomicAdd(
+          (unsigned int *)&args
+              .tmp_partition_offsets[gridDim.x * p_index + blockIdx.x],
+          1U);
       unsigned short int current_dmem_buffer = dmem_buffer_map[p_index];
       Tuple<K, V> tmp;
       tmp.load(dmem_buffers[write_combine_slot(tuples_per_dmem_buffer,
@@ -1910,8 +1905,10 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
     uint32_t slot = i & (tuples_per_buffer - 1U);
 
     if (slot < slots[p_index]) {
-      uint32_t dst =
-          atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
+      uint32_t dst = atomicAdd(
+          (unsigned int *)&args
+              .tmp_partition_offsets[gridDim.x * p_index + blockIdx.x],
+          1U);
       partitioned_relation[dst] = buffers[i];
     }
   }
@@ -1924,7 +1921,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
 
     auto p_index = key_to_partition(tuple.key, mask, 0);
     auto offset =
-        atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
+        atomicAdd((unsigned int *)&args
+                      .tmp_partition_offsets[gridDim.x * p_index + blockIdx.x],
+                  1U);
     partitioned_relation[offset] = tuple;
   }
 }
