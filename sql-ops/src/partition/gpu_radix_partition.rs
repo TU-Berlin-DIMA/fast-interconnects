@@ -90,6 +90,15 @@ pub struct PartitionedRelation<T: DeviceCopy> {
 }
 
 impl<T: DeviceCopy> PartitionedRelation<T> {
+    /// Defines the padding bytes between partitions.
+    ///
+    /// Padding is necessary for partitioning algorithms to align writes. Aligned writes have fixed
+    /// length and may overwrite the padding space in front of their partition.  For this reason,
+    /// also the first partition includes padding in front.
+    ///
+    /// Note that the padding length must be equal to or larger than the alignment.
+    const PADDING_BYTES: u32 = 128;
+
     /// Creates a new partitioned relation, and automatically includes the
     /// necessary padding and metadata.
     pub fn new(
@@ -105,9 +114,9 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
             GpuHistogramAlgorithm::GpuContiguous => 1,
         };
 
-        let padding_len = 0;
+        let padding_len = Self::PADDING_BYTES / mem::size_of::<T>() as u32;
         let num_partitions = fanout(radix_bits);
-        let relation_len = len + (num_partitions * chunks as usize) * padding_len;
+        let relation_len = len + (num_partitions * chunks as usize) * padding_len as usize;
 
         let relation = partition_alloc_fn(relation_len);
         let offsets = offsets_alloc_fn(num_partitions * chunks as usize);
@@ -140,7 +149,7 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
 
     /// Returns the number of padding elements per partition.
     pub(super) fn padding_len(&self) -> u32 {
-        0
+        Self::PADDING_BYTES / mem::size_of::<T>() as u32
     }
 }
 
@@ -724,7 +733,8 @@ impl_gpu_radix_partition_for_type!(i64, int64);
 mod tests {
     use super::*;
     use datagen::relation::UniformRelation;
-    use numa_gpu::runtime::allocator::{Allocator, MemType};
+    use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
+    use numa_gpu::runtime::memory::Mem;
     use rustacuda::function::{BlockSize, GridSize};
     use rustacuda::memory::LockedBuffer;
     use rustacuda::stream::{Stream, StreamFlags};
@@ -758,12 +768,19 @@ mod tests {
             .zip(data_pay.iter().cloned().zip(std::iter::repeat(0)))
             .collect();
 
+        // Ensure that the allocated memory is zeroed
+        let alloc_fn = Box::new(|len: usize| {
+            let mut mem = Allocator::alloc_deref_mem(DerefMemType::CudaUniMem, len);
+            mem.iter_mut().for_each(|x| *x = Default::default());
+            mem.into()
+        });
+
         let mut partitioned_relation = PartitionedRelation::new(
             tuples,
             histogram_algorithm,
             radix_bits,
             &grid_size,
-            Allocator::mem_alloc_fn(MemType::CudaUniMem),
+            alloc_fn,
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
         );
 
@@ -895,6 +912,31 @@ mod tests {
             });
 
         Ok(())
+    }
+
+    #[test]
+    fn gpu_tuple_loss_or_duplicates_small_chunked_i32_2_bits() -> Result<(), Box<dyn Error>> {
+        gpu_tuple_loss_or_duplicates_i32(
+            100,
+            GpuHistogramAlgorithm::GpuChunked,
+            GpuRadixPartitionAlgorithm::NC,
+            2,
+            GridSize::from(4),
+            BlockSize::from(128),
+        )
+    }
+
+    #[test]
+    fn gpu_verify_partitions_small_chunked_i32_2_bits() -> Result<(), Box<dyn Error>> {
+        gpu_verify_partitions_i32(
+            100,
+            1..=(32 << 20),
+            GpuHistogramAlgorithm::GpuChunked,
+            GpuRadixPartitionAlgorithm::NC,
+            2,
+            GridSize::from(4),
+            BlockSize::from(128),
+        )
     }
 
     #[test]

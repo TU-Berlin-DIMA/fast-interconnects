@@ -16,6 +16,10 @@
 #define TUPLES_PER_THREAD 5U
 #endif
 
+#ifndef ALIGN_BYTES
+#define ALIGN_BYTES 128U
+#endif
+
 #define __UINT_MAX__ static_cast<unsigned int>(__INT_MAX__ * 2U + 1U)
 
 // Grid synchronization is only supported on Pascal and higher, and will not
@@ -109,10 +113,15 @@ __device__ void gpu_chunked_histogram(RadixPartitionArgs &args) {
 
   const uint32_t fanout = 1U << args.radix_bits;
   const uint64_t mask = static_cast<uint64_t>(fanout - 1U);
+  constexpr size_t input_align_mask =
+      ~(static_cast<size_t>(ALIGN_BYTES / sizeof(K)) - 1ULL);
 
   // Calculate the data_length per block
-  size_t data_length = (args.data_length + gridDim.x - 1U) / gridDim.x;
+  size_t data_length =
+      ((args.data_length + gridDim.x - 1U) / gridDim.x) & input_align_mask;
   size_t data_offset = data_length * blockIdx.x;
+  size_t partitioned_data_offset =
+      (data_length + args.padding_length * fanout) * blockIdx.x;
   if (blockIdx.x + 1U == gridDim.x) {
     data_length = args.data_length - data_offset;
   }
@@ -140,15 +149,14 @@ __device__ void gpu_chunked_histogram(RadixPartitionArgs &args) {
   __syncthreads();
 
   // 2. Compute offsets with exclusive prefix sum for thread block.
-  block_exclusive_prefix_sum(tmp_partition_offsets, fanout, args.padding_length,
-                             prefix_tmp);
+  block_exclusive_prefix_sum(tmp_partition_offsets, fanout, 0, prefix_tmp);
 
   __syncthreads();
 
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
     // Add block offset and padding to device memory slots.
-    uint64_t offset =
-        tmp_partition_offsets[i] + data_offset + (i + 1) * args.padding_length;
+    uint64_t offset = tmp_partition_offsets[i] + partitioned_data_offset +
+                      (i + 1) * args.padding_length;
 
     // Write the temporary offsets used during the partition phase out to device
     // memory.
@@ -175,9 +183,12 @@ __device__ void gpu_contiguous_histogram(RadixPartitionArgs &args) {
 #endif
   const uint32_t fanout = 1U << args.radix_bits;
   const uint64_t mask = static_cast<uint64_t>(fanout - 1U);
+  constexpr size_t input_align_mask =
+      ~(static_cast<size_t>(ALIGN_BYTES / sizeof(K)) - 1ULL);
 
   // Calculate the data_length per block
-  size_t data_length = (args.data_length + gridDim.x - 1U) / gridDim.x;
+  size_t data_length =
+      ((args.data_length + gridDim.x - 1U) / gridDim.x) & input_align_mask;
   size_t data_offset = data_length * blockIdx.x;
   if (blockIdx.x + 1U == gridDim.x) {
     data_length = args.data_length - data_offset;
@@ -248,9 +259,12 @@ __device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
 
   const uint32_t fanout = 1U << args.radix_bits;
   const uint64_t mask = static_cast<uint64_t>(fanout - 1U);
+  constexpr size_t input_align_mask =
+      ~(static_cast<size_t>(ALIGN_BYTES / sizeof(K)) - 1ULL);
 
   // Calculate the data_length per block
-  size_t data_length = (args.data_length + gridDim.x - 1U) / gridDim.x;
+  size_t data_length =
+      ((args.data_length + gridDim.x - 1U) / gridDim.x) & input_align_mask;
   size_t data_offset = data_length * blockIdx.x;
   if (blockIdx.x + 1U == gridDim.x) {
     data_length = args.data_length - data_offset;
@@ -295,9 +309,12 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
 
   const uint32_t fanout = 1U << args.radix_bits;
   const uint64_t mask = static_cast<uint64_t>(fanout - 1);
+  constexpr size_t input_align_mask =
+      ~(static_cast<size_t>(ALIGN_BYTES / sizeof(K)) - 1ULL);
 
   // Calculate the data_length per block
-  size_t data_length = (args.data_length + gridDim.x - 1U) / gridDim.x;
+  size_t data_length =
+      ((args.data_length + gridDim.x - 1U) / gridDim.x) & input_align_mask;
   size_t data_offset = data_length * blockIdx.x;
   if (blockIdx.x + 1U == gridDim.x) {
     data_length = args.data_length - data_offset;
@@ -310,10 +327,18 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
   auto partitioned_relation =
       reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation);
 
+  assert(("Key column should be aligned to ALIGN_BYTES for best performance",
+          ((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U));
+  assert(
+      ("Payload column should be aligned to ALIGN_BYTES for best performance",
+       ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U));
+
   const uint32_t laswwc_bytes =
       blockDim.x * TUPLES_PER_THREAD * (sizeof(K) + sizeof(V)) +
       2U * fanout * sizeof(uint32_t);
-  assert(laswwc_bytes <= shared_mem_bytes);
+
+  assert(("LA-SWWC buffer must fit into shared memory",
+          laswwc_bytes <= shared_mem_bytes));
 
   K *const cached_keys = (K *)shared_mem;
   V *const cached_vals = (V *)&cached_keys[blockDim.x * TUPLES_PER_THREAD];
@@ -437,9 +462,16 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
   const uint64_t mask = static_cast<uint64_t>(fanout - 1);
   const int lane_id = threadIdx.x % warpSize;
   constexpr uint32_t warp_mask = 0xFFFFFFFFu;
+  constexpr size_t input_align_mask =
+      ~(static_cast<size_t>(ALIGN_BYTES / sizeof(K)) - 1ULL);
+  constexpr uint32_t align_tuples = ALIGN_BYTES / sizeof(Tuple<K, V>);
+
+  assert(("Padding must be large enough for alignment",
+          align_tuples <= args.padding_length));
 
   // Calculate the data_length per block
-  size_t data_length = (args.data_length + gridDim.x - 1U) / gridDim.x;
+  size_t data_length =
+      ((args.data_length + gridDim.x - 1U) / gridDim.x) & input_align_mask;
   size_t data_offset = data_length * blockIdx.x;
   if (blockIdx.x + 1U == gridDim.x) {
     data_length = args.data_length - data_offset;
@@ -452,11 +484,20 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
   auto partitioned_relation =
       reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation);
 
+  assert(("Key column should be aligned to ALIGN_BYTES for best performance",
+          ((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U));
+  assert(
+      ("Payload column should be aligned to ALIGN_BYTES for best performance",
+       ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(V)) == 0U));
+
   const uint32_t sswwc_buffer_bytes =
       shared_mem_bytes - 3U * fanout * sizeof(uint32_t);
   const uint32_t tuples_per_buffer =
-      sswwc_buffer_bytes / sizeof(Tuple<K, V>) / fanout;
-  assert(tuples_per_buffer > 0);
+      1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
+                                    fanout);
+
+  assert(("At least one tuple per partition must fit into SWWC buffer",
+          tuples_per_buffer > 0));
 
   uint32_t *const tmp_partition_offsets =
       reinterpret_cast<uint32_t *>(shared_mem);
@@ -471,10 +512,20 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
         args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
   }
 
-  // Zero slots
+  // Align the initial slots
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    slots[i] = 0;
-    signal_slots[i] = 0;
+    uint32_t offset = tmp_partition_offsets[i];
+    uint32_t aligned_fill_state = offset % min(align_tuples, tuples_per_buffer);
+    tmp_partition_offsets[i] = offset - aligned_fill_state;
+
+    slots[i] = aligned_fill_state;
+    signal_slots[i] = aligned_fill_state;
+  }
+
+  // Zero the buffers so that we don't write out uninitialized data
+  for (uint32_t i = threadIdx.x; i < fanout * tuples_per_buffer;
+       i += blockDim.x) {
+    buffers[i] = {0};
   }
 
   __syncthreads();
@@ -619,9 +670,16 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
   const uint64_t mask = static_cast<uint64_t>(fanout - 1);
   const int lane_id = threadIdx.x % warpSize;
   constexpr uint32_t warp_mask = 0xFFFFFFFFu;
+  constexpr size_t input_align_mask =
+      ~(static_cast<size_t>(ALIGN_BYTES / sizeof(K)) - 1ULL);
+  constexpr uint32_t align_tuples = ALIGN_BYTES / sizeof(Tuple<K, V>);
+
+  assert(("Padding must be large enough for alignment",
+          align_tuples <= args.padding_length));
 
   // Calculate the data_length per block
-  size_t data_length = (args.data_length + gridDim.x - 1U) / gridDim.x;
+  size_t data_length =
+      ((args.data_length + gridDim.x - 1U) / gridDim.x) & input_align_mask;
   size_t data_offset = data_length * blockIdx.x;
   if (blockIdx.x + 1U == gridDim.x) {
     data_length = args.data_length - data_offset;
@@ -634,11 +692,19 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
   auto partitioned_relation =
       reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation);
 
+  assert(("Key column should be aligned to ALIGN_BYTES for best performance",
+          ((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U));
+  assert(
+      ("Payload column should be aligned to ALIGN_BYTES for best performance",
+       ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(V)) == 0U));
+
   const uint32_t sswwc_buffer_bytes =
       shared_mem_bytes - 3U * fanout * sizeof(uint32_t);
   const uint32_t tuples_per_buffer =
-      sswwc_buffer_bytes / sizeof(Tuple<K, V>) / fanout;
-  assert(tuples_per_buffer > 0);
+      1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
+                                    fanout);
+  assert(("At least one tuple per partition must fit into SWWC buffer",
+          tuples_per_buffer > 0));
 
   uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
   uint32_t *const slots = &tmp_partition_offsets[fanout];
@@ -652,10 +718,20 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
         args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
   }
 
-  // Zero slots
+  // Align the initial slots
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    slots[i] = 0;
-    signal_slots[i] = 0;
+    uint32_t offset = tmp_partition_offsets[i];
+    uint32_t aligned_fill_state = offset % min(align_tuples, tuples_per_buffer);
+    tmp_partition_offsets[i] = offset - aligned_fill_state;
+
+    slots[i] = aligned_fill_state;
+    signal_slots[i] = aligned_fill_state;
+  }
+
+  // Zero the buffers so that we don't write out uninitialized data
+  for (uint32_t i = threadIdx.x; i < fanout * tuples_per_buffer;
+       i += blockDim.x) {
+    buffers[i] = {0};
   }
 
   __syncthreads();
@@ -784,9 +860,13 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
   const uint64_t mask = static_cast<uint64_t>(fanout - 1);
   const int lane_id = threadIdx.x % warpSize;
   constexpr uint32_t warp_mask = 0xFFFFFFFFu;
+  constexpr size_t input_align_mask =
+      ~(static_cast<size_t>(ALIGN_BYTES / sizeof(K)) - 1ULL);
+  constexpr uint32_t align_tuples = ALIGN_BYTES / sizeof(Tuple<K, V>);
 
   // Calculate the data_length per block
-  size_t data_length = (args.data_length + gridDim.x - 1U) / gridDim.x;
+  size_t data_length =
+      ((args.data_length + gridDim.x - 1U) / gridDim.x) & input_align_mask;
   size_t data_offset = data_length * blockIdx.x;
   if (blockIdx.x + 1U == gridDim.x) {
     data_length = args.data_length - data_offset;
@@ -802,6 +882,14 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
       args.device_memory_buffers +
       args.device_memory_buffer_bytes * blockIdx.x);
 
+  assert(("Key column should be aligned to ALIGN_BYTES for best performance",
+          ((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U));
+  assert(
+      ("Payload column should be aligned to ALIGN_BYTES for best performance",
+       ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(V)) == 0U));
+  assert(("DMem buffers should be aligned to ALIGN_BYTES for best performance",
+          ((size_t)dmem_buffers) % align_tuples == 0U));
+
   const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
                                       2 * fanout * sizeof(uint32_t) -
                                       fanout * sizeof(uint64_t);
@@ -813,8 +901,11 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
                                     sizeof(Tuple<K, V>) / fanout);
   const uint32_t slots_per_dmem_buffer =
       tuples_per_dmem_buffer / tuples_per_buffer;
-  assert(tuples_per_buffer > 0);
-  assert(tuples_per_dmem_buffer % tuples_per_buffer == 0);
+
+  assert(("At least one tuple per partition must fit into SWWC buffer",
+          tuples_per_buffer > 0));
+  assert(("DMem buffer size must be a multiple of SMem buffer size",
+          tuples_per_dmem_buffer % tuples_per_buffer == 0));
 
   uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
   unsigned long long *const slots =
@@ -842,6 +933,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
   // Slot bits must occupy upper bits, because we need as much number range as
   // possible for the ticket lock. The lock will eventually overflow, but we
   // can defer it with a larger number range.
+  // FIXME: refactor into 32-bit smem_slot and 16-bit dmem_slot
   const uint32_t smem_slot_bits =
       64 - log2_ceil_power_of_two(slots_per_dmem_buffer);
   const uint64_t smem_slot_mask = (1ULL << smem_slot_bits) - 1ULL;
@@ -1016,9 +1108,13 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
   const uint64_t mask = static_cast<uint64_t>(fanout - 1);
   const int lane_id = threadIdx.x % warpSize;
   constexpr uint32_t warp_mask = 0xFFFFFFFFu;
+  constexpr size_t input_align_mask =
+      ~(static_cast<size_t>(ALIGN_BYTES / sizeof(K)) - 1ULL);
+  constexpr uint32_t align_tuples = ALIGN_BYTES / sizeof(Tuple<K, V>);
 
   // Calculate the data_length per block
-  size_t data_length = (args.data_length + gridDim.x - 1U) / gridDim.x;
+  size_t data_length =
+      ((args.data_length + gridDim.x - 1U) / gridDim.x) & input_align_mask;
   size_t data_offset = data_length * blockIdx.x;
   if (blockIdx.x + 1U == gridDim.x) {
     data_length = args.data_length - data_offset;
@@ -1034,6 +1130,14 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
       args.device_memory_buffers +
       args.device_memory_buffer_bytes * blockIdx.x);
 
+  assert(("Key column should be aligned to ALIGN_BYTES for best performance",
+          ((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U));
+  assert(
+      ("Payload column should be aligned to ALIGN_BYTES for best performance",
+       ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(V)) == 0U));
+  assert(("DMem buffers should be aligned to ALIGN_BYTES for best performance",
+          ((size_t)dmem_buffers) % align_tuples == 0U));
+
   const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
                                       2 * fanout * sizeof(uint32_t) -
                                       fanout * sizeof(uint64_t);
@@ -1045,8 +1149,11 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
                                     sizeof(Tuple<K, V>) / fanout);
   const uint32_t slots_per_dmem_buffer =
       tuples_per_dmem_buffer / tuples_per_buffer;
-  assert(tuples_per_buffer > 0);
-  assert(tuples_per_dmem_buffer % tuples_per_buffer == 0);
+
+  assert(("At least one tuple per partition must fit into SWWC buffer",
+          tuples_per_buffer > 0));
+  assert(("DMem buffer size must be a multiple of SMem buffer size",
+          tuples_per_dmem_buffer % tuples_per_buffer == 0));
 
   uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
   unsigned long long *const slots =
@@ -1074,6 +1181,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
   // Slot bits must occupy upper bits, because we need as much number range as
   // possible for the ticket lock. The lock will eventually overflow, but we
   // can defer it with a larger number range.
+  // FIXME: refactor into 32-bit smem_slot and 16-bit dmem_slot
   const uint32_t smem_slot_bits =
       64 - log2_ceil_power_of_two(slots_per_dmem_buffer);
   const uint64_t smem_slot_mask = (1ULL << smem_slot_bits) - 1ULL;
@@ -1258,9 +1366,13 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
   const uint64_t mask = static_cast<uint64_t>(fanout - 1);
   const int lane_id = threadIdx.x % warpSize;
   constexpr uint32_t warp_mask = 0xFFFFFFFFu;
+  constexpr size_t input_align_mask =
+      ~(static_cast<size_t>(ALIGN_BYTES / sizeof(K)) - 1ULL);
+  constexpr uint32_t align_tuples = ALIGN_BYTES / sizeof(Tuple<K, V>);
 
   // Calculate the data_length per block
-  size_t data_length = (args.data_length + gridDim.x - 1U) / gridDim.x;
+  size_t data_length =
+      ((args.data_length + gridDim.x - 1U) / gridDim.x) & input_align_mask;
   size_t data_offset = data_length * blockIdx.x;
   if (blockIdx.x + 1U == gridDim.x) {
     data_length = args.data_length - data_offset;
@@ -1276,6 +1388,14 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
       args.device_memory_buffers +
       args.device_memory_buffer_bytes * blockIdx.x);
 
+  assert(("Key column should be aligned to ALIGN_BYTES for best performance",
+          ((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U));
+  assert(
+      ("Payload column should be aligned to ALIGN_BYTES for best performance",
+       ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(V)) == 0U));
+  assert(("DMem buffers should be aligned to ALIGN_BYTES for best performance",
+          ((size_t)dmem_buffers) % align_tuples == 0U));
+
   const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
                                       3 * fanout * sizeof(uint32_t) -
                                       fanout * sizeof(uint64_t);
@@ -1287,8 +1407,11 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
                                     sizeof(Tuple<K, V>) / fanout);
   const uint32_t slots_per_dmem_buffer =
       tuples_per_dmem_buffer / tuples_per_buffer;
-  assert(tuples_per_buffer > 0);
-  assert(tuples_per_dmem_buffer % tuples_per_buffer == 0);
+
+  assert(("At least one tuple per partition must fit into SWWC buffer",
+          tuples_per_buffer > 0));
+  assert(("DMem buffer size must be a multiple of SMem buffer size",
+          tuples_per_dmem_buffer % tuples_per_buffer == 0));
 
   uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
   unsigned long long *const slots =
@@ -1319,6 +1442,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
   // Slot bits must occupy upper bits, because we need as much number range as
   // possible for the ticket lock. The lock will eventually overflow, but we
   // can defer it with a larger number range.
+  // FIXME: refactor into 32-bit smem_slot and 16-bit dmem_slot
   const uint32_t smem_slot_bits =
       64 - log2_ceil_power_of_two(slots_per_dmem_buffer);
   const uint64_t smem_slot_mask = (1ULL << smem_slot_bits) - 1ULL;
@@ -1536,9 +1660,13 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   const int warp_id = threadIdx.x / warpSize;
   const int num_warps = blockDim.x / warpSize;
   constexpr uint32_t warp_mask = 0xFFFFFFFFu;
+  constexpr size_t input_align_mask =
+      ~(static_cast<size_t>(ALIGN_BYTES / sizeof(K)) - 1ULL);
+  constexpr uint32_t align_tuples = ALIGN_BYTES / sizeof(Tuple<K, V>);
 
   // Calculate the data_length per block
-  size_t data_length = (args.data_length + gridDim.x - 1U) / gridDim.x;
+  size_t data_length =
+      ((args.data_length + gridDim.x - 1U) / gridDim.x) & input_align_mask;
   size_t data_offset = data_length * blockIdx.x;
   if (blockIdx.x + 1U == gridDim.x) {
     data_length = args.data_length - data_offset;
@@ -1554,6 +1682,14 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
       args.device_memory_buffers +
       args.device_memory_buffer_bytes * blockIdx.x);
 
+  assert(("Key column should be aligned to ALIGN_BYTES for best performance",
+          ((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U));
+  assert(
+      ("Payload column should be aligned to ALIGN_BYTES for best performance",
+       ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(V)) == 0U));
+  assert(("DMem buffers should be aligned to ALIGN_BYTES for best performance",
+          ((size_t)dmem_buffers) % align_tuples == 0U));
+
   const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
                                       2 * fanout * sizeof(uint16_t) -
                                       3 * fanout * sizeof(uint32_t);
@@ -1565,8 +1701,11 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
                                     sizeof(Tuple<K, V>) / (fanout + num_warps));
   const uint32_t slots_per_dmem_buffer =
       tuples_per_dmem_buffer / tuples_per_buffer;
-  assert(tuples_per_buffer > 0);
-  assert(tuples_per_dmem_buffer % tuples_per_buffer == 0);
+
+  assert(("At least one tuple per partition must fit into SWWC buffer",
+          tuples_per_buffer > 0));
+  assert(("DMem buffer size must be a multiple of SMem buffer size",
+          tuples_per_dmem_buffer % tuples_per_buffer == 0));
 
   // FIXME: don't cache partition offsets in shared memory
   uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
