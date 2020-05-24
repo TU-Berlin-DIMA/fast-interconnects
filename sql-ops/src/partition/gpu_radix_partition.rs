@@ -27,6 +27,7 @@ use rustacuda::memory::{DeviceBox, DeviceBuffer, DeviceCopy};
 use rustacuda::module::Module;
 use rustacuda::stream::Stream;
 use rustacuda::{launch, launch_cooperative};
+use std::cmp;
 use std::convert::TryInto;
 use std::ffi::CString;
 use std::mem;
@@ -440,7 +441,6 @@ macro_rules! impl_gpu_radix_partition_for_type {
 
                     let module = &rp.module;
                     let grid_size = rp.grid_size.clone();
-                    let block_size = rp.block_size.clone();
                     let device = CurrentContext::get_device()?;
                     let _warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
                     let max_shared_mem_bytes =
@@ -454,6 +454,21 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         RadixPartitionState::GpuContiguous(ref mut prefix_scan_state, ref mut offsets)
                             => (prefix_scan_state.as_launchable_mut_ptr(), offsets.as_launchable_mut_ptr()),
                     };
+
+                    let block_size = rp.block_size.clone();
+                    let rp_block_size: u32 = cmp::min(
+                        block_size.x,
+                        match rp.partition_algorithm {
+                            GpuRadixPartitionAlgorithm::NC => 1024,
+                            GpuRadixPartitionAlgorithm::LASWWC => 1024,
+                            GpuRadixPartitionAlgorithm::SSWWC => 1024,
+                            GpuRadixPartitionAlgorithm::SSWWCNT => 1024,
+                            GpuRadixPartitionAlgorithm::SSWWCv2 => 1024,
+                            GpuRadixPartitionAlgorithm::HSSWWC => 512,
+                            GpuRadixPartitionAlgorithm::HSSWWCv2 => 512,
+                            GpuRadixPartitionAlgorithm::HSSWWCv3 => 512,
+                            GpuRadixPartitionAlgorithm::HSSWWCv4 => 512,
+                        });
 
                     let (mut dmem_buffer, device_memory_buffer_bytes) = match rp.partition_algorithm {
                         GpuRadixPartitionAlgorithm::HSSWWC
@@ -549,7 +564,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 launch!(
                                     module.[<gpu_chunked_radix_partition_ $Suffix _ $Suffix>]<<<
                                     grid_size,
-                                    block_size,
+                                    rp_block_size,
                                     shared_mem_bytes,
                                     stream
                                     >>>(
@@ -568,7 +583,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 launch!(
                                     function<<<
                                     grid_size,
-                                    block_size,
+                                    rp_block_size,
                                     max_shared_mem_bytes,
                                     stream
                                     >>>(
@@ -588,7 +603,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 launch!(
                                     function<<<
                                     grid_size,
-                                    block_size,
+                                    rp_block_size,
                                     max_shared_mem_bytes,
                                     stream
                                     >>>(
@@ -608,7 +623,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 launch!(
                                     function<<<
                                     grid_size,
-                                    block_size,
+                                    rp_block_size,
                                     max_shared_mem_bytes,
                                     stream
                                     >>>(
@@ -628,7 +643,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 launch!(
                                     function<<<
                                     grid_size,
-                                    block_size,
+                                    rp_block_size,
                                     max_shared_mem_bytes,
                                     stream
                                     >>>(
@@ -648,7 +663,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 launch!(
                                     function<<<
                                     grid_size,
-                                    block_size,
+                                    rp_block_size,
                                     max_shared_mem_bytes,
                                     stream
                                     >>>(
@@ -668,7 +683,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 launch!(
                                     function<<<
                                     grid_size,
-                                    block_size,
+                                    rp_block_size,
                                     max_shared_mem_bytes,
                                     stream
                                     >>>(
@@ -688,7 +703,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 launch!(
                                     function<<<
                                     grid_size,
-                                    block_size,
+                                    rp_block_size,
                                     max_shared_mem_bytes,
                                     stream
                                     >>>(
@@ -708,7 +723,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 launch!(
                                     function<<<
                                     grid_size,
-                                    block_size,
+                                    rp_block_size,
                                     max_shared_mem_bytes,
                                     stream
                                     >>>(

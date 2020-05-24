@@ -2102,14 +2102,14 @@ extern "C" __launch_bounds__(1024, 1) __global__
 }
 
 // Exports the partitioning function for 8-byte key/value tuples.
-extern "C" __launch_bounds__(1024, 1) __global__
+extern "C" __launch_bounds__(512, 1) __global__
     void gpu_chunked_hsswwc_radix_partition_int32_int32(
         RadixPartitionArgs *args, uint32_t shared_mem_bytes) {
   gpu_chunked_hsswwc_radix_partition<int, int>(*args, shared_mem_bytes);
 }
 
 // Exports the partitioning function for 16-byte key/value tuples.
-extern "C" __launch_bounds__(1024, 1) __global__
+extern "C" __launch_bounds__(512, 1) __global__
     void gpu_chunked_hsswwc_radix_partition_int64_int64(
         RadixPartitionArgs *args, uint32_t shared_mem_bytes) {
   gpu_chunked_hsswwc_radix_partition<long long, long long>(*args,
@@ -2117,14 +2117,14 @@ extern "C" __launch_bounds__(1024, 1) __global__
 }
 
 // Exports the partitioning function for 8-byte key/value tuples.
-extern "C" __launch_bounds__(1024, 1) __global__
+extern "C" __launch_bounds__(512, 1) __global__
     void gpu_chunked_hsswwc_radix_partition_v2_int32_int32(
         RadixPartitionArgs *args, uint32_t shared_mem_bytes) {
   gpu_chunked_hsswwc_radix_partition_v2<int, int>(*args, shared_mem_bytes);
 }
 
 // Exports the partitioning function for 16-byte key/value tuples.
-extern "C" __launch_bounds__(1024, 1) __global__
+extern "C" __launch_bounds__(512, 1) __global__
     void gpu_chunked_hsswwc_radix_partition_v2_int64_int64(
         RadixPartitionArgs *args, uint32_t shared_mem_bytes) {
   gpu_chunked_hsswwc_radix_partition_v2<long long, long long>(*args,
@@ -2132,14 +2132,14 @@ extern "C" __launch_bounds__(1024, 1) __global__
 }
 
 // Exports the partitioning function for 8-byte key/value tuples.
-extern "C" __launch_bounds__(1024, 1) __global__
+extern "C" __launch_bounds__(512, 1) __global__
     void gpu_chunked_hsswwc_radix_partition_v3_int32_int32(
         RadixPartitionArgs *args, uint32_t shared_mem_bytes) {
   gpu_chunked_hsswwc_radix_partition_v3<int, int>(*args, shared_mem_bytes);
 }
 
 // Exports the partitioning function for 16-byte key/value tuples.
-extern "C" __launch_bounds__(1024, 1) __global__
+extern "C" __launch_bounds__(512, 1) __global__
     void gpu_chunked_hsswwc_radix_partition_v3_int64_int64(
         RadixPartitionArgs *args, uint32_t shared_mem_bytes) {
   gpu_chunked_hsswwc_radix_partition_v3<long long, long long>(*args,
@@ -2147,14 +2147,14 @@ extern "C" __launch_bounds__(1024, 1) __global__
 }
 
 // Exports the partitioning function for 8-byte key/value tuples.
-extern "C" __launch_bounds__(1024, 1) __global__
+extern "C" __launch_bounds__(512, 1) __global__
     void gpu_chunked_hsswwc_radix_partition_v4_int32_int32(
         RadixPartitionArgs *args, uint32_t shared_mem_bytes) {
   gpu_chunked_hsswwc_radix_partition_v4<int, int>(*args, shared_mem_bytes);
 }
 
 // Exports the partitioning function for 16-byte key/value tuples.
-extern "C" __launch_bounds__(1024, 1) __global__
+extern "C" __launch_bounds__(512, 1) __global__
     void gpu_chunked_hsswwc_radix_partition_v4_int64_int64(
         RadixPartitionArgs *args, uint32_t shared_mem_bytes) {
   gpu_chunked_hsswwc_radix_partition_v4<long long, long long>(*args,
