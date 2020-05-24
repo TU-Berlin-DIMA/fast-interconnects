@@ -1746,7 +1746,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
 
   const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
                                       1 * fanout * sizeof(uint16_t) -
-                                      2 * fanout * sizeof(uint32_t);
+                                      3 * fanout * sizeof(uint32_t);
   const uint32_t tuples_per_buffer =
       1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
                                     fanout);
@@ -1761,7 +1761,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   assert(("DMem buffer size must be a multiple of SMem buffer size",
           tuples_per_dmem_buffer % tuples_per_buffer == 0));
 
-  unsigned int *const slots = reinterpret_cast<unsigned int *>(shared_mem);
+  unsigned int *const tmp_partition_offsets = (unsigned int *)shared_mem;
+  unsigned int *const slots =
+      reinterpret_cast<unsigned int *>(&tmp_partition_offsets[fanout]);
   unsigned short int *const dmem_slots =
       reinterpret_cast<unsigned short int *>(&slots[fanout]);
   uint32_t *const signal_slots =
@@ -1775,8 +1777,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
     auto offset = args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
     auto aligned_fill_state = offset % align_tuples;
-    args.tmp_partition_offsets[gridDim.x * i + blockIdx.x] =
-        offset - aligned_fill_state;
+    tmp_partition_offsets[i] = offset - aligned_fill_state;
 
     uint32_t smem_fill_state = aligned_fill_state % tuples_per_buffer;
     uint32_t dmem_fill_state = aligned_fill_state / tuples_per_buffer;
@@ -1905,10 +1906,8 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
           dmem_slot = 0;
           if (lane_id == 0) {
             dmem_buffer_map[current_index] = spare_dmem_buffer;
-            dst = args.tmp_partition_offsets[gridDim.x * current_index +
-                                             blockIdx.x];
-            args.tmp_partition_offsets[gridDim.x * current_index +
-                                       blockIdx.x] += tuples_per_dmem_buffer;
+            dst = tmp_partition_offsets[current_index];
+            tmp_partition_offsets[current_index] += tuples_per_dmem_buffer;
           }
 
           // Ensure that smem flush and buffer swap occur before the smem lock
@@ -1967,10 +1966,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
         smem_fill_state;
     auto current_dmem_buffer = dmem_buffer_map[p_index];
 
-    auto dst = args.tmp_partition_offsets[gridDim.x * p_index + blockIdx.x];
+    auto dst = tmp_partition_offsets[p_index];
     if (lane_id == 0) {
-      args.tmp_partition_offsets[gridDim.x * p_index + blockIdx.x] +=
-          dmem_fill_state;
+      tmp_partition_offsets[p_index] += dmem_fill_state;
     }
 
     // Flush the smem buffer.
@@ -2002,10 +2000,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
     tuple.value = payload_attr_data[i];
 
     auto p_index = key_to_partition(tuple.key, mask, 0);
-    auto offset =
-        atomicAdd((unsigned int *)&args
-                      .tmp_partition_offsets[gridDim.x * p_index + blockIdx.x],
-                  1U);
+    auto offset = atomicAdd(&tmp_partition_offsets[p_index], 1U);
     partitioned_relation[offset] = tuple;
   }
 }
