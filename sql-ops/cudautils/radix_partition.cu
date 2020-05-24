@@ -53,8 +53,8 @@ struct RadixPartitionArgs {
   uint32_t const radix_bits;
 
   // State
-  ScanState<uint32_t> *const prefix_scan_state;
-  uint32_t *const __restrict__ tmp_partition_offsets;
+  ScanState<unsigned long long> *const prefix_scan_state;
+  unsigned long long *const __restrict__ tmp_partition_offsets;
   char *const __restrict__ device_memory_buffers;
   uint64_t const device_memory_buffer_bytes;
 
@@ -129,8 +129,9 @@ __device__ void gpu_chunked_histogram(RadixPartitionArgs &args) {
   auto join_attr_data =
       reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
 
-  uint32_t *const tmp_partition_offsets = shared_mem;
-  uint32_t *const prefix_tmp = &shared_mem[fanout];
+  unsigned int *const tmp_partition_offsets =
+      reinterpret_cast<unsigned int *>(shared_mem);
+  unsigned int *const prefix_tmp = &tmp_partition_offsets[fanout];
 
   // Ensure counters are all zeroed.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
@@ -143,7 +144,7 @@ __device__ void gpu_chunked_histogram(RadixPartitionArgs &args) {
   for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
     auto key = join_attr_data[i];
     auto p_index = key_to_partition(key, mask, 0);
-    atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
+    atomicAdd(&tmp_partition_offsets[p_index], 1U);
   }
 
   __syncthreads();
@@ -155,8 +156,8 @@ __device__ void gpu_chunked_histogram(RadixPartitionArgs &args) {
 
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
     // Add block offset and padding to device memory slots.
-    uint64_t offset = tmp_partition_offsets[i] + partitioned_data_offset +
-                      (i + 1) * args.padding_length;
+    uint64_t offset = static_cast<uint64_t>(tmp_partition_offsets[i]) +
+                      partitioned_data_offset + (i + 1) * args.padding_length;
 
     // Write the temporary offsets used during the partition phase out to device
     // memory.
@@ -197,7 +198,8 @@ __device__ void gpu_contiguous_histogram(RadixPartitionArgs &args) {
   auto join_attr_data =
       reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
 
-  uint32_t *const tmp_partition_offsets = shared_mem;
+  unsigned long long *const tmp_partition_offsets =
+      reinterpret_cast<unsigned long long *>(shared_mem);
 
   // Ensure counters are all zeroed.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
@@ -210,7 +212,7 @@ __device__ void gpu_contiguous_histogram(RadixPartitionArgs &args) {
   for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
     auto key = join_attr_data[i];
     auto p_index = key_to_partition(key, mask, 0);
-    atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
+    atomicAdd(&tmp_partition_offsets[p_index], 1U);
   }
 
   __syncthreads();
@@ -269,22 +271,29 @@ __device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
   if (blockIdx.x + 1U == gridDim.x) {
     data_length = args.data_length - data_offset;
   }
+  unsigned long long partitioned_relation_offset =
+      args.tmp_partition_offsets[blockIdx.x];
 
   auto join_attr_data =
       reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
   auto payload_attr_data =
       reinterpret_cast<const V *>(args.payload_attr_data) + data_offset;
+  // Handle relations larger than 32 GiB that cause integer overflow.  Subtract
+  // chunk offset so that relative value is within range of unsigned int.
   auto partitioned_relation =
-      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation);
+      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation) +
+      partitioned_relation_offset;
 
-  uint32_t *const tmp_partition_offsets = shared_mem;
+  unsigned int *const tmp_partition_offsets =
+      reinterpret_cast<unsigned int *>(shared_mem);
 
   // Load partition offsets from device memory into shared memory.
   // Sub-optimal memory access pattern doesn't matter, because we are reading
   // at maxiumum 3 MB data.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    tmp_partition_offsets[i] =
-        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
+    tmp_partition_offsets[i] = static_cast<unsigned int>(
+        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x] -
+        partitioned_relation_offset);
   }
 
   __syncthreads();
@@ -296,8 +305,7 @@ __device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
     tuple.value = payload_attr_data[i];
 
     auto p_index = key_to_partition(tuple.key, mask, 0);
-    auto offset =
-        atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
+    auto offset = atomicAdd(&tmp_partition_offsets[p_index], 1U);
     tuple.store(partitioned_relation[offset]);
   }
 }
@@ -319,13 +327,18 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
   if (blockIdx.x + 1U == gridDim.x) {
     data_length = args.data_length - data_offset;
   }
+  unsigned long long partitioned_relation_offset =
+      args.tmp_partition_offsets[blockIdx.x];
 
   auto join_attr_data =
       reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
   auto payload_attr_data =
       reinterpret_cast<const V *>(args.payload_attr_data) + data_offset;
+  // Handle relations larger than 32 GiB that cause integer overflow.  Subtract
+  // chunk offset so that relative value is within range of unsigned int.
   auto partitioned_relation =
-      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation);
+      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation) +
+      partitioned_relation_offset;
 
   assert(("Key column should be aligned to ALIGN_BYTES for best performance",
           ((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U));
@@ -342,14 +355,16 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
 
   K *const cached_keys = (K *)shared_mem;
   V *const cached_vals = (V *)&cached_keys[blockDim.x * TUPLES_PER_THREAD];
-  uint32_t *const tmp_partition_offsets =
-      (uint32_t *)&cached_vals[blockDim.x * TUPLES_PER_THREAD];
-  uint32_t *const cache_offsets = &tmp_partition_offsets[fanout];
+  unsigned int *const tmp_partition_offsets = reinterpret_cast<unsigned int *>(
+      &cached_vals[blockDim.x * TUPLES_PER_THREAD]);
+  unsigned int *const cache_offsets =
+      reinterpret_cast<unsigned int *>(&tmp_partition_offsets[fanout]);
 
   // Load partition offsets from device memory into shared memory.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    tmp_partition_offsets[i] =
-        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
+    tmp_partition_offsets[i] = static_cast<unsigned int>(
+        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x] -
+        partitioned_relation_offset);
   }
 
   __syncthreads();
@@ -381,7 +396,7 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
       auto p_index = key_to_partition(tuple[k].key, mask, 0);
 
       // Build histogram of cached tuples
-      atomicAdd((unsigned int *)&cache_offsets[p_index], 1U);
+      atomicAdd(&cache_offsets[p_index], 1U);
     }
 
     // Set linear allocator to zero
@@ -404,7 +419,7 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
 #pragma unroll
     for (int k = 0; k < TUPLES_PER_THREAD; ++k) {
       auto p_index = key_to_partition(tuple[k].key, mask, 0);
-      auto pos = atomicAdd((unsigned int *)&cache_offsets[p_index], 1U);
+      auto pos = atomicAdd(&cache_offsets[p_index], 1U);
       cached_keys[pos] = tuple[k].key;
       cached_vals[pos] = tuple[k].value;
     }
@@ -420,7 +435,7 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
       tuple.value = cached_vals[k];
       auto p_index = key_to_partition(tuple.key, mask, 0);
 
-      auto offset = cache_offsets[p_index] - (k + 1);
+      unsigned int offset = cache_offsets[p_index] - (k + 1);
       offset += tmp_partition_offsets[p_index];
 
       tuple.store(partitioned_relation[offset]);
@@ -434,7 +449,7 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
          k += blockDim.x) {
       auto key = cached_keys[k];
       auto p_index = key_to_partition(key, mask, 0);
-      atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1);
+      atomicAdd(&tmp_partition_offsets[p_index], 1);
     }
   }
 
@@ -447,8 +462,7 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
     tuple.value = payload_attr_data[i];
 
     auto p_index = key_to_partition(tuple.key, mask, 0);
-    auto offset =
-        atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
+    auto offset = atomicAdd(&tmp_partition_offsets[p_index], 1U);
     partitioned_relation[offset] = tuple;
   }
 }
@@ -476,13 +490,18 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
   if (blockIdx.x + 1U == gridDim.x) {
     data_length = args.data_length - data_offset;
   }
+  unsigned long long partitioned_relation_offset =
+      args.tmp_partition_offsets[blockIdx.x];
 
   auto join_attr_data =
       reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
   auto payload_attr_data =
       reinterpret_cast<const V *>(args.payload_attr_data) + data_offset;
+  // Handle relations larger than 32 GiB that cause integer overflow.  Subtract
+  // chunk offset so that relative value is within range of unsigned int.
   auto partitioned_relation =
-      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation);
+      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation) +
+      partitioned_relation_offset;
 
   assert(("Key column should be aligned to ALIGN_BYTES for best performance",
           ((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U));
@@ -499,22 +518,24 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
   assert(("At least one tuple per partition must fit into SWWC buffer",
           tuples_per_buffer > 0));
 
-  uint32_t *const tmp_partition_offsets =
-      reinterpret_cast<uint32_t *>(shared_mem);
-  uint32_t *const slots = &tmp_partition_offsets[fanout];
-  uint32_t *const signal_slots = &slots[fanout];
+  unsigned int *const tmp_partition_offsets =
+      reinterpret_cast<unsigned int *>(shared_mem);
+  unsigned int *const slots =
+      reinterpret_cast<unsigned int *>(&tmp_partition_offsets[fanout]);
+  unsigned int *const signal_slots = &slots[fanout];
   Tuple<K, V> *const buffers =
       reinterpret_cast<Tuple<K, V> *>(&signal_slots[fanout]);
 
   // Load partition offsets from device memory into shared memory.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    tmp_partition_offsets[i] =
-        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
+    tmp_partition_offsets[i] = static_cast<unsigned int>(
+        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x] -
+        partitioned_relation_offset);
   }
 
   // Align the initial slots
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    uint32_t offset = tmp_partition_offsets[i];
+    auto offset = tmp_partition_offsets[i];
     uint32_t aligned_fill_state = offset % min(align_tuples, tuples_per_buffer);
     tmp_partition_offsets[i] = offset - aligned_fill_state;
 
@@ -550,7 +571,7 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
     do {
       // Fetch a position if don't have a valid position yet
       if (not done) {
-        pos = atomicAdd((unsigned int *)&slots[p_index], 1U);
+        pos = atomicAdd(&slots[p_index], 1U);
 
         if (pos < tuples_per_buffer) {
           buffers[write_combine_slot(tuples_per_buffer, p_index, pos)] = tuple;
@@ -586,7 +607,7 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
         __syncwarp();
 
         uint32_t current_index = __shfl_sync(warp_mask, p_index, leader_id);
-        uint32_t dst = tmp_partition_offsets[current_index];
+        auto dst = tmp_partition_offsets[current_index];
 
         // Memcpy from cached buffer to memory
         for (uint32_t i = lane_id; i < tuples_per_buffer; i += warpSize) {
@@ -636,8 +657,7 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
     uint32_t slot = i % tuples_per_buffer;
 
     if (slot < slots[p_index]) {
-      uint32_t dst =
-          atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
+      auto dst = atomicAdd(&tmp_partition_offsets[p_index], 1U);
       Tuple<K, V> tuple = buffers[i];
       tuple.store(partitioned_relation[dst]);
     }
@@ -652,8 +672,7 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
     tuple.value = payload_attr_data[i];
 
     auto p_index = key_to_partition(tuple.key, mask, 0);
-    auto offset =
-        atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
+    auto offset = atomicAdd(&tmp_partition_offsets[p_index], 1U);
     partitioned_relation[offset] = tuple;
   }
 }
@@ -684,13 +703,18 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
   if (blockIdx.x + 1U == gridDim.x) {
     data_length = args.data_length - data_offset;
   }
+  unsigned long long partitioned_relation_offset =
+      args.tmp_partition_offsets[blockIdx.x];
 
   auto join_attr_data =
       reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
   auto payload_attr_data =
       reinterpret_cast<const V *>(args.payload_attr_data) + data_offset;
+  // Handle relations larger than 32 GiB that cause integer overflow.  Subtract
+  // chunk offset so that relative value is within range of unsigned int.
   auto partitioned_relation =
-      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation);
+      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation) +
+      partitioned_relation_offset;
 
   assert(("Key column should be aligned to ALIGN_BYTES for best performance",
           ((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U));
@@ -706,21 +730,24 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
   assert(("At least one tuple per partition must fit into SWWC buffer",
           tuples_per_buffer > 0));
 
-  uint32_t *const tmp_partition_offsets = (uint32_t *)shared_mem;
-  uint32_t *const slots = &tmp_partition_offsets[fanout];
-  uint32_t *const signal_slots = &slots[fanout];
+  unsigned int *const tmp_partition_offsets =
+      reinterpret_cast<unsigned int *>(shared_mem);
+  unsigned int *const slots =
+      reinterpret_cast<unsigned int *>(&tmp_partition_offsets[fanout]);
+  unsigned int *const signal_slots = &slots[fanout];
   Tuple<K, V> *const buffers =
       reinterpret_cast<Tuple<K, V> *>(&signal_slots[fanout]);
 
   // Load partition offsets from device memory into shared memory.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    tmp_partition_offsets[i] =
-        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
+    tmp_partition_offsets[i] = static_cast<unsigned int>(
+        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x] -
+        partitioned_relation_offset);
   }
 
   // Align the initial slots
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    uint32_t offset = tmp_partition_offsets[i];
+    auto offset = tmp_partition_offsets[i];
     uint32_t aligned_fill_state = offset % min(align_tuples, tuples_per_buffer);
     tmp_partition_offsets[i] = offset - aligned_fill_state;
 
@@ -751,7 +778,7 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
     do {
       // Fetch a position if don't have a valid position yet
       if (not done) {
-        pos = atomicAdd((unsigned int *)&slots[p_index], 1U);
+        pos = atomicAdd(&slots[p_index], 1U);
 
         if (pos < tuples_per_buffer) {
           buffers[write_combine_slot(tuples_per_buffer, p_index, pos)] = tuple;
@@ -795,7 +822,7 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
         __syncwarp();
 
         uint32_t current_index = __shfl_sync(warp_mask, p_index, leader_id);
-        uint32_t dst = tmp_partition_offsets[current_index];
+        auto dst = tmp_partition_offsets[current_index];
 
         // Memcpy from cached buffer to memory
         for (uint32_t i = lane_id; i < tuples_per_buffer; i += warpSize) {
@@ -829,8 +856,7 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
     uint32_t slot = i % tuples_per_buffer;
 
     if (slot < slots[p_index]) {
-      uint32_t dst =
-          atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
+      auto dst = atomicAdd(&tmp_partition_offsets[p_index], 1U);
       Tuple<K, V> tuple = buffers[i];
       tuple.store(partitioned_relation[dst]);
     }
@@ -845,8 +871,7 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
     tuple.value = payload_attr_data[i];
 
     auto p_index = key_to_partition(tuple.key, mask, 0);
-    auto offset =
-        atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
+    auto offset = atomicAdd(&tmp_partition_offsets[p_index], 1U);
     partitioned_relation[offset] = tuple;
   }
 }
@@ -873,13 +898,18 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
   if (blockIdx.x + 1U == gridDim.x) {
     data_length = args.data_length - data_offset;
   }
+  unsigned long long partitioned_relation_offset =
+      args.tmp_partition_offsets[blockIdx.x];
 
   auto join_attr_data =
       reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
   auto payload_attr_data =
       reinterpret_cast<const V *>(args.payload_attr_data) + data_offset;
+  // Handle relations larger than 32 GiB that cause integer overflow.  Subtract
+  // chunk offset so that relative value is within range of unsigned int.
   auto partitioned_relation =
-      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation);
+      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation) +
+      partitioned_relation_offset;
   auto dmem_buffers = reinterpret_cast<Tuple<K, V> *>(
       args.device_memory_buffers +
       args.device_memory_buffer_bytes * blockIdx.x);
@@ -909,7 +939,8 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
   assert(("DMem buffer size must be a multiple of SMem buffer size",
           tuples_per_dmem_buffer % tuples_per_buffer == 0));
 
-  unsigned int *const tmp_partition_offsets = (unsigned int *)shared_mem;
+  unsigned int *const tmp_partition_offsets =
+      reinterpret_cast<unsigned int *>(shared_mem);
   unsigned int *const slots =
       reinterpret_cast<unsigned int *>(&tmp_partition_offsets[fanout]);
   unsigned short int *const dmem_slots =
@@ -922,7 +953,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
   // Load partition offsets from device memory into shared memory,
   // zero shared memory slots and initialize dmem buffer map.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    auto offset = args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
+    auto offset = static_cast<unsigned int>(
+        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x] -
+        partitioned_relation_offset);
     auto aligned_fill_state = offset % align_tuples;
     tmp_partition_offsets[i] = offset - aligned_fill_state;
 
@@ -1108,8 +1141,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
     tuple.value = payload_attr_data[i];
 
     auto p_index = key_to_partition(tuple.key, mask, 0);
-    auto offset =
-        atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
+    auto offset = atomicAdd(&tmp_partition_offsets[p_index], 1U);
     partitioned_relation[offset] = tuple;
   }
 }
@@ -1139,13 +1171,18 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
   if (blockIdx.x + 1U == gridDim.x) {
     data_length = args.data_length - data_offset;
   }
+  unsigned long long partitioned_relation_offset =
+      args.tmp_partition_offsets[blockIdx.x];
 
   auto join_attr_data =
       reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
   auto payload_attr_data =
       reinterpret_cast<const V *>(args.payload_attr_data) + data_offset;
+  // Handle relations larger than 32 GiB that cause integer overflow.  Subtract
+  // chunk offset so that relative value is within range of unsigned int.
   auto partitioned_relation =
-      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation);
+      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation) +
+      partitioned_relation_offset;
   auto dmem_buffers = reinterpret_cast<Tuple<K, V> *>(
       args.device_memory_buffers +
       args.device_memory_buffer_bytes * blockIdx.x);
@@ -1175,7 +1212,8 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
   assert(("DMem buffer size must be a multiple of SMem buffer size",
           tuples_per_dmem_buffer % tuples_per_buffer == 0));
 
-  unsigned int *const tmp_partition_offsets = (unsigned int *)shared_mem;
+  unsigned int *const tmp_partition_offsets =
+      reinterpret_cast<unsigned int *>(shared_mem);
   unsigned int *const slots =
       reinterpret_cast<unsigned int *>(&tmp_partition_offsets[fanout]);
   unsigned short int *const dmem_slots =
@@ -1188,7 +1226,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
   // Load partition offsets from device memory into shared memory,
   // zero shared memory slots and initialize dmem buffer map.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    auto offset = args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
+    auto offset = static_cast<unsigned int>(
+        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x] -
+        partitioned_relation_offset);
     auto aligned_fill_state = offset % align_tuples;
     tmp_partition_offsets[i] = offset - aligned_fill_state;
 
@@ -1383,8 +1423,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
     tuple.value = payload_attr_data[i];
 
     auto p_index = key_to_partition(tuple.key, mask, 0);
-    auto offset =
-        atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
+    auto offset = atomicAdd(&tmp_partition_offsets[p_index], 1U);
     partitioned_relation[offset] = tuple;
   }
 }
@@ -1415,13 +1454,18 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
   if (blockIdx.x + 1U == gridDim.x) {
     data_length = args.data_length - data_offset;
   }
+  unsigned long long partitioned_relation_offset =
+      args.tmp_partition_offsets[blockIdx.x];
 
   auto join_attr_data =
       reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
   auto payload_attr_data =
       reinterpret_cast<const V *>(args.payload_attr_data) + data_offset;
+  // Handle relations larger than 32 GiB that cause integer overflow.  Subtract
+  // chunk offset so that relative value is within range of unsigned int.
   auto partitioned_relation =
-      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation);
+      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation) +
+      partitioned_relation_offset;
   auto dmem_buffers = reinterpret_cast<Tuple<K, V> *>(
       args.device_memory_buffers +
       args.device_memory_buffer_bytes * blockIdx.x);
@@ -1451,7 +1495,8 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
   assert(("DMem buffer size must be a multiple of SMem buffer size",
           tuples_per_dmem_buffer % tuples_per_buffer == 0));
 
-  unsigned int *const tmp_partition_offsets = (unsigned int *)shared_mem;
+  unsigned int *const tmp_partition_offsets =
+      reinterpret_cast<unsigned int *>(shared_mem);
   unsigned int *const slots =
       reinterpret_cast<unsigned int *>(&tmp_partition_offsets[fanout]);
   unsigned short int *const dmem_slots =
@@ -1466,7 +1511,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
   // Load partition offsets from device memory into shared memory,
   // zero shared memory slots and initialize dmem buffer map.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    auto offset = args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
+    auto offset = static_cast<unsigned int>(
+        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x] -
+        partitioned_relation_offset);
     auto aligned_fill_state = offset % align_tuples;
     tmp_partition_offsets[i] = offset - aligned_fill_state;
 
@@ -1694,8 +1741,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
     tuple.value = payload_attr_data[i];
 
     auto p_index = key_to_partition(tuple.key, mask, 0);
-    auto offset =
-        atomicAdd((unsigned int *)&tmp_partition_offsets[p_index], 1U);
+    auto offset = atomicAdd(&tmp_partition_offsets[p_index], 1U);
     partitioned_relation[offset] = tuple;
   }
 }
@@ -1725,13 +1771,18 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   if (blockIdx.x + 1U == gridDim.x) {
     data_length = args.data_length - data_offset;
   }
+  unsigned long long partitioned_relation_offset =
+      args.tmp_partition_offsets[blockIdx.x];
 
   auto join_attr_data =
       reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
   auto payload_attr_data =
       reinterpret_cast<const V *>(args.payload_attr_data) + data_offset;
+  // Handle relations larger than 32 GiB that cause integer overflow.  Subtract
+  // chunk offset so that relative value is within range of unsigned int.
   auto partitioned_relation =
-      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation);
+      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation) +
+      partitioned_relation_offset;
   auto dmem_buffers = reinterpret_cast<Tuple<K, V> *>(
       args.device_memory_buffers +
       args.device_memory_buffer_bytes * blockIdx.x);
@@ -1761,7 +1812,8 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   assert(("DMem buffer size must be a multiple of SMem buffer size",
           tuples_per_dmem_buffer % tuples_per_buffer == 0));
 
-  unsigned int *const tmp_partition_offsets = (unsigned int *)shared_mem;
+  unsigned int *const tmp_partition_offsets =
+      reinterpret_cast<unsigned int *>(shared_mem);
   unsigned int *const slots =
       reinterpret_cast<unsigned int *>(&tmp_partition_offsets[fanout]);
   unsigned short int *const dmem_slots =
@@ -1775,7 +1827,9 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
 
   // Zero shared memory slots and initialize dmem buffer map.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    auto offset = args.tmp_partition_offsets[gridDim.x * i + blockIdx.x];
+    auto offset = static_cast<unsigned int>(
+        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x] -
+        partitioned_relation_offset);
     auto aligned_fill_state = offset % align_tuples;
     tmp_partition_offsets[i] = offset - aligned_fill_state;
 

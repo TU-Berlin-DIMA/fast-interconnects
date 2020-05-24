@@ -48,8 +48,8 @@ struct RadixPartitionArgs<T> {
     radix_bits: u32,
 
     // State
-    prefix_scan_state: LaunchableMutPtr<GpuPrefixScanState<u32>>,
-    tmp_partition_offsets: LaunchableMutPtr<u32>,
+    prefix_scan_state: LaunchableMutPtr<GpuPrefixScanState<u64>>,
+    tmp_partition_offsets: LaunchableMutPtr<u64>,
     device_memory_buffers: LaunchableMutPtr<i8>,
     device_memory_buffer_bytes: u64,
 
@@ -316,8 +316,8 @@ pub enum GpuRadixPartitionAlgorithm {
 
 #[derive(Debug)]
 enum RadixPartitionState {
-    GpuChunked(Mem<u32>),
-    GpuContiguous(Mem<GpuPrefixScanState<u32>>, Mem<u32>),
+    GpuChunked(Mem<u64>),
+    GpuContiguous(Mem<GpuPrefixScanState<u64>>, Mem<u64>),
 }
 
 #[derive(Debug)]
@@ -438,6 +438,13 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                         ))?;
                             }
                     }
+                    if (partition_attr.len() + (rp.grid_size.x as usize) - 1)
+                        / (rp.grid_size.x as usize) >= std::u32::MAX as usize {
+                            let msg = "Relation is too large and causes an integer overflow. Try using more chunks by setting a higher CUDA grid size";
+                            Err(ErrorKind::IntegerOverflow(msg.to_string(),))?
+
+
+                    }
 
                     let module = &rp.module;
                     let grid_size = rp.grid_size.clone();
@@ -532,7 +539,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         GpuHistogramAlgorithm::GpuContiguous => {
                             let shared_mem_bytes = (
                                 (block_size.x + (block_size.x >> rp.log2_num_banks)) + fanout_u32
-                                ) * mem::size_of::<u32>() as u32;
+                                ) * mem::size_of::<u64>() as u32;
                             assert!(
                                 shared_mem_bytes <= max_shared_mem_bytes,
                                 "Failed to allocate enough shared memory"
@@ -1199,31 +1206,6 @@ mod tests {
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::LASWWC,
             10,
-            GridSize::from(1),
-            BlockSize::from(128),
-        )
-    }
-
-    #[test]
-    fn gpu_tuple_loss_or_duplicates_chunked_laswwc_i32_12_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
-            (32 << 20) / mem::size_of::<i32>(),
-            GpuHistogramAlgorithm::GpuChunked,
-            GpuRadixPartitionAlgorithm::LASWWC,
-            12,
-            GridSize::from(1),
-            BlockSize::from(128),
-        )
-    }
-
-    #[test]
-    fn gpu_verify_partitions_chunked_laswwc_i32_12_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
-            (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
-            GpuHistogramAlgorithm::GpuChunked,
-            GpuRadixPartitionAlgorithm::LASWWC,
-            12,
             GridSize::from(1),
             BlockSize::from(128),
         )
