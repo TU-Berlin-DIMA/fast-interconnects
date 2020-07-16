@@ -4,19 +4,17 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2019 Clemens Lutz, German Research Center for Artificial Intelligence
+ * Copyright 2019-2020 Clemens Lutz, German Research Center for Artificial Intelligence
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
 use datagen::relation::{KeyAttribute, UniformRelation};
+use itertools::iproduct;
 use num_rational::Ratio;
 use num_traits::cast::FromPrimitive;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::memory::Mem;
 use numa_gpu::runtime::numa::NodeRatio;
-use papi::event_set::Sample;
-
-use itertools::iproduct;
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
@@ -128,7 +126,7 @@ impl Into<GpuRadixPartitionAlgorithm> for ArgRadixPartitionAlgorithm {
 #[derive(Debug, StructOpt)]
 #[structopt(
     name = "GPU Radix Partition Benchmark",
-    about = "A benchmark of the GPU radix partition operator using PAPI."
+    about = "A benchmark of the GPU radix partition operator."
 )]
 struct Options {
     /// Select the histogram algorithms to run
@@ -205,14 +203,6 @@ struct Options {
     #[structopt(long, default_value = "target/bench/gpu_radix_partition_operator.csv")]
     csv: PathBuf,
 
-    /// PAPI configuration file
-    #[structopt(long, requires("papi-preset"), default_value = "resources/papi.toml")]
-    papi_config: PathBuf,
-
-    /// Choose a PAPI preset from the PAPI configuration file
-    #[structopt(long, default_value = "gpu_default")]
-    papi_preset: String,
-
     /// Number of samples to gather
     #[structopt(long, default_value = "30")]
     repeat: u32,
@@ -236,16 +226,6 @@ struct DataPoint {
     pub tuples: Option<usize>,
     pub radix_bits: Option<u32>,
     pub ns: Option<u128>,
-    pub papi_name_0: Option<String>,
-    pub papi_value_0: Option<i64>,
-    pub papi_name_1: Option<String>,
-    pub papi_value_1: Option<i64>,
-    pub papi_name_2: Option<String>,
-    pub papi_value_2: Option<i64>,
-    pub papi_name_3: Option<String>,
-    pub papi_value_3: Option<i64>,
-    pub papi_name_4: Option<String>,
-    pub papi_value_4: Option<i64>,
 }
 
 fn gpu_radix_partition_benchmark<T, W>(
@@ -258,8 +238,6 @@ fn gpu_radix_partition_benchmark<T, W>(
     output_mem_type: &MemType,
     grid_size_hint: &Option<GridSize>,
     dmem_buffer_bytes: usize,
-    // papi: &Papi,
-    _papi_preset: &str,
     repeat: u32,
     template: &DataPoint,
     csv_writer: &mut csv::Writer<W>,
@@ -316,13 +294,6 @@ where
             );
 
             let result: Result<(), Box<dyn Error>> = (0..repeat).into_iter().try_for_each(|_| {
-                // let ready_event_set = EventSetBuilder::new(&papi)?
-                //     .use_preset(papi_preset)?
-                //     .build()?;
-                let sample = Sample::default();
-                // ready_event_set.init_sample(&mut sample)?;
-
-                // let running_event_set = ready_event_set.start()?;
                 let timer = Instant::now();
 
                 radix_prnr.partition(
@@ -334,24 +305,12 @@ where
                 stream.synchronize()?;
 
                 let time = timer.elapsed();
-                // running_event_set.stop(&mut sample)?;
-                let sample_vec = sample.into_iter().collect::<Vec<_>>();
 
                 let dp = DataPoint {
                     radix_bits: Some(radix_bits),
                     grid_size: Some(grid_size.x),
                     block_size: Some(block_size.x),
                     ns: Some(time.as_nanos()),
-                    papi_name_0: sample_vec.get(0).map(|x| x.0.clone()),
-                    papi_value_0: sample_vec.get(0).map(|x| x.1.clone()),
-                    papi_name_1: sample_vec.get(1).map(|x| x.0.clone()),
-                    papi_value_1: sample_vec.get(1).map(|x| x.1.clone()),
-                    papi_name_2: sample_vec.get(2).map(|x| x.0.clone()),
-                    papi_value_2: sample_vec.get(2).map(|x| x.1.clone()),
-                    papi_name_3: sample_vec.get(3).map(|x| x.0.clone()),
-                    papi_value_3: sample_vec.get(3).map(|x| x.1.clone()),
-                    papi_name_4: sample_vec.get(4).map(|x| x.0.clone()),
-                    papi_value_4: sample_vec.get(4).map(|x| x.1.clone()),
                     ..template.clone()
                 };
 
@@ -397,8 +356,6 @@ where
 
 fn main() -> Result<(), Box<dyn Error>> {
     let options = Options::from_args();
-    let _papi_config = papi::Config::parse_file(&options.papi_config)?;
-    // let papi = Papi::init_with_config(papi_config)?;
 
     let _context = rustacuda::quick_init()?;
 
@@ -460,8 +417,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             &output_mem_type,
             &grid_size_hint,
             dmem_buffer_size * 1024,
-            // &papi,
-            &options.papi_preset,
             options.repeat,
             &template,
             &mut csv_writer,

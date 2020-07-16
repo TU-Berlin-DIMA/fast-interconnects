@@ -30,8 +30,6 @@ hostname = "0.2"
 itertools = "0.9"
 num_cpus = "1.11"
 num-rational = "0.2"
-# papi = { version = "~0.1.0" }
-papi = { git = 'https://github.com/lutzcle/papi-rs', branch = "master" }
 rand = "0.7"
 rayon = "~1.2.0"
 serde = "~1.0.76"
