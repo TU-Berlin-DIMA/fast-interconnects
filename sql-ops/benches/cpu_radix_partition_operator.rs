@@ -8,19 +8,21 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-use datagen::relation::UniformRelation;
+use datagen::relation::{KeyAttribute, UniformRelation};
 use num_traits::cast::FromPrimitive;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::hw_info;
+use numa_gpu::runtime::memory::DerefMem;
+use rustacuda::memory::DeviceCopy;
 use serde_derive::Serialize;
+use serde_repr::Serialize_repr;
 use sql_ops::partition::cpu_radix_partition::{
     CpuRadixPartitionAlgorithm, CpuRadixPartitionable, CpuRadixPartitioner, PartitionedRelation,
 };
 use std::error::Error;
 use std::fs;
 use std::io::Write;
-use std::mem;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,6 +35,15 @@ arg_enum! {
     pub enum ArgRadixPartitionAlgorithm {
         Chunked,
         ChunkedSwwc,
+    }
+}
+
+arg_enum! {
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize_repr)]
+    #[repr(usize)]
+    pub enum ArgTupleBytes {
+        Bytes8 = 8,
+        Bytes16 = 16,
     }
 }
 
@@ -69,6 +80,15 @@ struct Options {
     #[structopt(long, default_value = "10000000")]
     tuples: usize,
 
+    /// Tuple size (bytes)
+    #[structopt(
+        long = "tuple-bytes",
+        default_value = "Bytes8",
+        possible_values = &ArgTupleBytes::variants(),
+        case_insensitive = true
+    )]
+    tuple_bytes: ArgTupleBytes,
+
     #[structopt(
         long = "radix-bits",
         default_value = "8,10,12,14,16",
@@ -93,7 +113,7 @@ struct Options {
     csv: PathBuf,
 
     /// Number of samples to gather
-    #[structopt(long, default_value = "30")]
+    #[structopt(long, default_value = "1")]
     repeat: u32,
 }
 
@@ -106,7 +126,9 @@ struct DataPoint {
     pub threads: Option<usize>,
     pub grid_size: Option<u32>,
     pub block_size: Option<u32>,
-    pub tuple_bytes: Option<usize>,
+    pub input_location: Option<u16>,
+    pub output_location: Option<u16>,
+    pub tuple_bytes: Option<ArgTupleBytes>,
     pub tuples: Option<usize>,
     pub radix_bits: Option<u32>,
     pub ns: Option<u128>,
@@ -116,42 +138,28 @@ fn cpu_radix_partition_benchmark<T, W>(
     bench_group: &str,
     bench_function: &str,
     algorithm: CpuRadixPartitionAlgorithm,
-    tuples: usize,
     radix_bits_list: &[u32],
+    input_data: &(DerefMem<T>, DerefMem<T>),
+    output_mem_type: &DerefMemType,
     threads: usize,
     cpu_affinity: &CpuAffinity,
-    rel_location: u16,
     repeat: u32,
+    template: &DataPoint,
     csv_writer: &mut csv::Writer<W>,
 ) -> Result<(), Box<dyn Error>>
 where
-    T: Clone + Default + Send + FromPrimitive + CpuRadixPartitionable,
+    T: Clone + Default + Send + Sync + FromPrimitive + CpuRadixPartitionable,
     W: Write,
 {
-    const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
-
-    let mut data_key =
-        Allocator::alloc_deref_mem::<i64>(DerefMemType::NumaMem(rel_location), tuples);
-    let mut data_pay =
-        Allocator::alloc_deref_mem::<i64>(DerefMemType::NumaMem(rel_location), tuples);
-
-    UniformRelation::gen_primary_key_par(data_key.as_mut_slice(), None).unwrap();
-    UniformRelation::gen_attr_par(data_pay.as_mut_slice(), PAYLOAD_RANGE).unwrap();
-
+    let tuples = input_data.0.len();
     let chunk_len = (tuples + threads - 1) / threads;
-    let data_key_chunks: Vec<_> = data_key.chunks(chunk_len).collect();
-    let data_pay_chunks: Vec<_> = data_pay.chunks(chunk_len).collect();
+    let data_key_chunks: Vec<_> = input_data.0.chunks(chunk_len).collect();
+    let data_pay_chunks: Vec<_> = input_data.1.chunks(chunk_len).collect();
 
     let template = DataPoint {
         group: bench_group.to_string(),
         function: bench_function.to_string(),
-        hostname: hostname::get()?
-            .into_string()
-            .expect("Couldn't convert hostname into UTF-8 string"),
-        device_codename: Some(hw_info::cpu_codename()?),
-        tuple_bytes: Some(2 * mem::size_of::<T>()),
-        tuples: Some(tuples),
-        ..DataPoint::default()
+        ..template.clone()
     };
 
     let boxed_cpu_affinity = Arc::new(cpu_affinity.clone());
@@ -173,7 +181,7 @@ where
                     CpuRadixPartitioner::new(
                         algorithm,
                         radix_bits,
-                        Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(rel_location)),
+                        Allocator::deref_mem_alloc_fn(output_mem_type.clone()),
                     )
                 })
                 .collect();
@@ -185,8 +193,8 @@ where
                     PartitionedRelation::new(
                         chunk_len,
                         radix_bits,
-                        Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(rel_location)),
-                        Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(rel_location)),
+                        Allocator::deref_mem_alloc_fn(output_mem_type.clone()),
+                        Allocator::deref_mem_alloc_fn(output_mem_type.clone()),
                     )
                 })
                 .collect();
@@ -231,6 +239,24 @@ where
     Ok(())
 }
 
+fn alloc_and_gen<T>(
+    tuples: usize,
+    mem_type: &DerefMemType,
+) -> Result<(DerefMem<T>, DerefMem<T>), Box<dyn Error>>
+where
+    T: Clone + Default + Send + DeviceCopy + FromPrimitive + KeyAttribute,
+{
+    const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
+
+    let mut data_key = Allocator::alloc_deref_mem(mem_type.clone(), tuples);
+    let mut data_pay = Allocator::alloc_deref_mem(mem_type.clone(), tuples);
+
+    UniformRelation::gen_primary_key_par(data_key.as_mut_slice(), None)?;
+    UniformRelation::gen_attr_par(data_pay.as_mut_slice(), PAYLOAD_RANGE)?;
+
+    Ok((data_key, data_pay))
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let options = Options::from_args();
 
@@ -246,6 +272,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         CpuAffinity::default()
     };
 
+    let input_mem_type = DerefMemType::NumaMem(options.rel_location);
+    let output_mem_type = DerefMemType::NumaMem(options.rel_location);
+
     if let Some(parent) = options.csv.parent() {
         if !parent.exists() {
             fs::create_dir_all(parent)?;
@@ -255,19 +284,55 @@ fn main() -> Result<(), Box<dyn Error>> {
     let csv_file = std::fs::File::create(&options.csv)?;
     let mut csv_writer = csv::Writer::from_writer(csv_file);
 
-    for algorithm in options.algorithms {
-        cpu_radix_partition_benchmark::<i64, _>(
-            "cpu_radix_partition",
-            &algorithm.to_string(),
-            algorithm.into(),
-            options.tuples,
-            &options.radix_bits,
-            threads,
-            &cpu_affinity,
-            options.rel_location,
-            options.repeat,
-            &mut csv_writer,
-        )?;
+    let template = DataPoint {
+        hostname: hostname::get()?
+            .into_string()
+            .expect("Couldn't convert hostname into UTF-8 string"),
+        device_codename: Some(hw_info::cpu_codename()?),
+        input_location: Some(options.rel_location),
+        output_location: Some(options.rel_location),
+        tuple_bytes: Some(options.tuple_bytes),
+        tuples: Some(options.tuples),
+        ..DataPoint::default()
+    };
+
+    match options.tuple_bytes {
+        ArgTupleBytes::Bytes8 => {
+            let input_data = alloc_and_gen(options.tuples, &input_mem_type)?;
+            for algorithm in options.algorithms {
+                cpu_radix_partition_benchmark::<i32, _>(
+                    "cpu_radix_partition",
+                    &algorithm.to_string(),
+                    algorithm.into(),
+                    &options.radix_bits,
+                    &input_data,
+                    &output_mem_type,
+                    threads,
+                    &cpu_affinity,
+                    options.repeat,
+                    &template,
+                    &mut csv_writer,
+                )?;
+            }
+        }
+        ArgTupleBytes::Bytes16 => {
+            let input_data = alloc_and_gen(options.tuples, &input_mem_type)?;
+            for algorithm in options.algorithms {
+                cpu_radix_partition_benchmark::<i64, _>(
+                    "cpu_radix_partition",
+                    &algorithm.to_string(),
+                    algorithm.into(),
+                    &options.radix_bits,
+                    &input_data,
+                    &output_mem_type,
+                    threads,
+                    &cpu_affinity,
+                    options.repeat,
+                    &template,
+                    &mut csv_writer,
+                )?;
+            }
+        }
     }
 
     Ok(())

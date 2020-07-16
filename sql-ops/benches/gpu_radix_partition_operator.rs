@@ -22,6 +22,7 @@ use rustacuda::memory::DeviceBuffer;
 use rustacuda::memory::DeviceCopy;
 use rustacuda::stream::{Stream, StreamFlags};
 use serde_derive::Serialize;
+use serde_repr::Serialize_repr;
 use sql_ops::partition::gpu_radix_partition::{
     GpuHistogramAlgorithm, GpuRadixPartitionAlgorithm, GpuRadixPartitionable, GpuRadixPartitioner,
     PartitionedRelation,
@@ -30,7 +31,6 @@ use std::convert::TryInto;
 use std::error::Error;
 use std::fs;
 use std::io::Write;
-use std::mem;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -80,6 +80,15 @@ arg_enum! {
     pub enum ArgHistogramAlgorithm {
         GpuChunked,
         GpuContiguous,
+    }
+}
+
+arg_enum! {
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize_repr)]
+    #[repr(usize)]
+    pub enum ArgTupleBytes {
+        Bytes8 = 8,
+        Bytes16 = 16,
     }
 }
 
@@ -157,6 +166,15 @@ struct Options {
     #[structopt(long, default_value = "10000000")]
     tuples: usize,
 
+    /// Tuple size (bytes)
+    #[structopt(
+        long = "tuple-bytes",
+        default_value = "Bytes8",
+        possible_values = &ArgTupleBytes::variants(),
+        case_insensitive = true
+    )]
+    tuple_bytes: ArgTupleBytes,
+
     #[structopt(long = "radix-bits", default_value = "8,10", require_delimiter = true)]
     /// Radix bits with which to partition
     radix_bits: Vec<u32>,
@@ -204,7 +222,7 @@ struct Options {
     csv: PathBuf,
 
     /// Number of samples to gather
-    #[structopt(long, default_value = "30")]
+    #[structopt(long, default_value = "1")]
     repeat: u32,
 }
 
@@ -222,7 +240,7 @@ struct DataPoint {
     pub output_mem_type: Option<ArgMemType>,
     pub input_location: Option<u16>,
     pub output_location: Option<u16>,
-    pub tuple_bytes: Option<usize>,
+    pub tuple_bytes: Option<ArgTupleBytes>,
     pub tuples: Option<usize>,
     pub radix_bits: Option<u32>,
     pub ns: Option<u128>,
@@ -266,8 +284,6 @@ where
         group: bench_group.to_string(),
         function: bench_function.to_string(),
         dmem_buffer_bytes: Some(dmem_buffer_bytes),
-        tuple_bytes: Some(2 * mem::size_of::<T>()),
-        tuples: Some(input_data.0.len()),
         ..template.clone()
     };
 
@@ -326,7 +342,7 @@ where
     Ok(())
 }
 
-fn alloc_and_gen<T>(tuples: usize, mem_type: MemType) -> Result<(Mem<T>, Mem<T>), Box<dyn Error>>
+fn alloc_and_gen<T>(tuples: usize, mem_type: &MemType) -> Result<(Mem<T>, Mem<T>), Box<dyn Error>>
 where
     T: Clone + Default + Send + DeviceCopy + FromPrimitive + KeyAttribute,
 {
@@ -388,8 +404,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let grid_size_hint = options.grid_size.map(GridSize::from);
 
-    let input_data = alloc_and_gen(options.tuples, input_mem_type)?;
-
     let template = DataPoint {
         hostname: hostname::get()?
             .into_string()
@@ -399,28 +413,58 @@ fn main() -> Result<(), Box<dyn Error>> {
         output_mem_type: Some(options.output_mem_type),
         input_location: Some(options.input_location),
         output_location: Some(options.output_location),
+        tuple_bytes: Some(options.tuple_bytes),
+        tuples: Some(options.tuples),
         ..DataPoint::default()
     };
 
-    for (histogram_algorithm, partition_algorithm, dmem_buffer_size) in iproduct!(
-        options.histogram_algorithms,
-        options.partition_algorithms,
-        options.dmem_buffer_sizes
-    ) {
-        gpu_radix_partition_benchmark::<i64, _>(
-            "gpu_radix_partition",
-            &(histogram_algorithm.to_string() + &partition_algorithm.to_string()),
-            histogram_algorithm.into(),
-            partition_algorithm.into(),
-            &options.radix_bits,
-            &input_data,
-            &output_mem_type,
-            &grid_size_hint,
-            dmem_buffer_size * 1024,
-            options.repeat,
-            &template,
-            &mut csv_writer,
-        )?;
+    match options.tuple_bytes {
+        ArgTupleBytes::Bytes8 => {
+            let input_data = alloc_and_gen(options.tuples, &input_mem_type)?;
+            for (histogram_algorithm, partition_algorithm, dmem_buffer_size) in iproduct!(
+                options.histogram_algorithms,
+                options.partition_algorithms,
+                options.dmem_buffer_sizes
+            ) {
+                gpu_radix_partition_benchmark::<i32, _>(
+                    "gpu_radix_partition",
+                    &(histogram_algorithm.to_string() + &partition_algorithm.to_string()),
+                    histogram_algorithm.into(),
+                    partition_algorithm.into(),
+                    &options.radix_bits,
+                    &input_data,
+                    &output_mem_type,
+                    &grid_size_hint,
+                    dmem_buffer_size * 1024,
+                    options.repeat,
+                    &template,
+                    &mut csv_writer,
+                )?;
+            }
+        }
+        ArgTupleBytes::Bytes16 => {
+            let input_data = alloc_and_gen(options.tuples, &input_mem_type)?;
+            for (histogram_algorithm, partition_algorithm, dmem_buffer_size) in iproduct!(
+                options.histogram_algorithms,
+                options.partition_algorithms,
+                options.dmem_buffer_sizes
+            ) {
+                gpu_radix_partition_benchmark::<i64, _>(
+                    "gpu_radix_partition",
+                    &(histogram_algorithm.to_string() + &partition_algorithm.to_string()),
+                    histogram_algorithm.into(),
+                    partition_algorithm.into(),
+                    &options.radix_bits,
+                    &input_data,
+                    &output_mem_type,
+                    &grid_size_hint,
+                    dmem_buffer_size * 1024,
+                    options.repeat,
+                    &template,
+                    &mut csv_writer,
+                )?;
+            }
+        }
     }
 
     Ok(())
