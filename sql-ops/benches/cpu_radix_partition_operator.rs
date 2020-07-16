@@ -8,7 +8,7 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-use datagen::relation::{KeyAttribute, UniformRelation};
+use datagen::relation::{KeyAttribute, UniformRelation, ZipfRelation};
 use num_traits::cast::FromPrimitive;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
@@ -44,6 +44,15 @@ arg_enum! {
     pub enum ArgTupleBytes {
         Bytes8 = 8,
         Bytes16 = 16,
+    }
+}
+
+arg_enum! {
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+    pub enum ArgDataDistribution {
+        Uniform,
+        Unique,
+        Zipf,
     }
 }
 
@@ -108,6 +117,22 @@ struct Options {
     #[structopt(long = "rel-location", default_value = "0")]
     rel_location: u16,
 
+    /// Relation's data distribution
+    #[structopt(
+        long = "data-distribution",
+        default_value = "Uniform",
+        possible_values = &ArgDataDistribution::variants(),
+        case_insensitive = true
+    )]
+    data_distribution: ArgDataDistribution,
+
+    /// Zipf exponent for Zipf-sampled relation
+    #[structopt(
+        long = "zipf-exponent",
+        required_ifs(&[("data-distribution", "Zipf"), ("data-distribution", "zipf")])
+    )]
+    zipf_exponent: Option<f64>,
+
     /// Output path for the measurements CSV file
     #[structopt(long, default_value = "target/bench/cpu_radix_partition_operator.csv")]
     csv: PathBuf,
@@ -130,6 +155,8 @@ struct DataPoint {
     pub output_location: Option<u16>,
     pub tuple_bytes: Option<ArgTupleBytes>,
     pub tuples: Option<usize>,
+    pub data_distribution: Option<ArgDataDistribution>,
+    pub zipf_exponent: Option<f64>,
     pub radix_bits: Option<u32>,
     pub ns: Option<u128>,
 }
@@ -242,16 +269,33 @@ where
 fn alloc_and_gen<T>(
     tuples: usize,
     mem_type: &DerefMemType,
+    data_distribution: ArgDataDistribution,
+    zipf_exponent: Option<f64>,
 ) -> Result<(DerefMem<T>, DerefMem<T>), Box<dyn Error>>
 where
     T: Clone + Default + Send + DeviceCopy + FromPrimitive + KeyAttribute,
 {
+    let key_range = tuples;
     const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
 
     let mut data_key = Allocator::alloc_deref_mem(mem_type.clone(), tuples);
     let mut data_pay = Allocator::alloc_deref_mem(mem_type.clone(), tuples);
 
-    UniformRelation::gen_primary_key_par(data_key.as_mut_slice(), None)?;
+    match data_distribution {
+        ArgDataDistribution::Unique => {
+            UniformRelation::gen_primary_key_par(data_key.as_mut_slice(), None)?;
+        }
+        ArgDataDistribution::Uniform => {
+            UniformRelation::gen_attr_par(data_key.as_mut_slice(), 1..=key_range)?;
+        }
+        ArgDataDistribution::Zipf if !(zipf_exponent.unwrap() > 0.0) => {
+            UniformRelation::gen_attr_par(data_key.as_mut_slice(), 1..=key_range)?;
+        }
+        ArgDataDistribution::Zipf => {
+            ZipfRelation::gen_attr_par(data_key.as_mut_slice(), key_range, zipf_exponent.unwrap())?;
+        }
+    }
+
     UniformRelation::gen_attr_par(data_pay.as_mut_slice(), PAYLOAD_RANGE)?;
 
     Ok((data_key, data_pay))
@@ -293,12 +337,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         output_location: Some(options.rel_location),
         tuple_bytes: Some(options.tuple_bytes),
         tuples: Some(options.tuples),
+        data_distribution: Some(options.data_distribution),
+        zipf_exponent: options.zipf_exponent,
         ..DataPoint::default()
     };
 
     match options.tuple_bytes {
         ArgTupleBytes::Bytes8 => {
-            let input_data = alloc_and_gen(options.tuples, &input_mem_type)?;
+            let input_data = alloc_and_gen(
+                options.tuples,
+                &input_mem_type,
+                options.data_distribution,
+                options.zipf_exponent,
+            )?;
             for algorithm in options.algorithms {
                 cpu_radix_partition_benchmark::<i32, _>(
                     "cpu_radix_partition",
@@ -316,7 +367,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         ArgTupleBytes::Bytes16 => {
-            let input_data = alloc_and_gen(options.tuples, &input_mem_type)?;
+            let input_data = alloc_and_gen(
+                options.tuples,
+                &input_mem_type,
+                options.data_distribution,
+                options.zipf_exponent,
+            )?;
             for algorithm in options.algorithms {
                 cpu_radix_partition_benchmark::<i64, _>(
                     "cpu_radix_partition",

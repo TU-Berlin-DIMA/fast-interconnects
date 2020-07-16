@@ -8,7 +8,7 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-use datagen::relation::{KeyAttribute, UniformRelation};
+use datagen::relation::{KeyAttribute, UniformRelation, ZipfRelation};
 use itertools::iproduct;
 use num_rational::Ratio;
 use num_traits::cast::FromPrimitive;
@@ -83,15 +83,6 @@ arg_enum! {
     }
 }
 
-arg_enum! {
-    #[derive(Copy, Clone, Debug, PartialEq, Serialize_repr)]
-    #[repr(usize)]
-    pub enum ArgTupleBytes {
-        Bytes8 = 8,
-        Bytes16 = 16,
-    }
-}
-
 impl Into<GpuHistogramAlgorithm> for ArgHistogramAlgorithm {
     fn into(self) -> GpuHistogramAlgorithm {
         match self {
@@ -129,6 +120,24 @@ impl Into<GpuRadixPartitionAlgorithm> for ArgRadixPartitionAlgorithm {
             Self::HSSWWCv3 => GpuRadixPartitionAlgorithm::HSSWWCv3,
             Self::HSSWWCv4 => GpuRadixPartitionAlgorithm::HSSWWCv4,
         }
+    }
+}
+
+arg_enum! {
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize_repr)]
+    #[repr(usize)]
+    pub enum ArgTupleBytes {
+        Bytes8 = 8,
+        Bytes16 = 16,
+    }
+}
+
+arg_enum! {
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+    pub enum ArgDataDistribution {
+        Uniform,
+        Unique,
+        Zipf,
     }
 }
 
@@ -217,6 +226,22 @@ struct Options {
     #[structopt(long = "output-location", default_value = "0")]
     output_location: u16,
 
+    /// Relation's data distribution
+    #[structopt(
+        long = "data-distribution",
+        default_value = "Uniform",
+        possible_values = &ArgDataDistribution::variants(),
+        case_insensitive = true
+    )]
+    data_distribution: ArgDataDistribution,
+
+    /// Zipf exponent for Zipf-sampled relation
+    #[structopt(
+        long = "zipf-exponent",
+        required_ifs(&[("data-distribution", "Zipf"), ("data-distribution", "zipf")])
+    )]
+    zipf_exponent: Option<f64>,
+
     /// Output path for the measurements CSV file
     #[structopt(long, default_value = "target/bench/gpu_radix_partition_operator.csv")]
     csv: PathBuf,
@@ -242,6 +267,8 @@ struct DataPoint {
     pub output_location: Option<u16>,
     pub tuple_bytes: Option<ArgTupleBytes>,
     pub tuples: Option<usize>,
+    pub data_distribution: Option<ArgDataDistribution>,
+    pub zipf_exponent: Option<f64>,
     pub radix_bits: Option<u32>,
     pub ns: Option<u128>,
 }
@@ -342,10 +369,16 @@ where
     Ok(())
 }
 
-fn alloc_and_gen<T>(tuples: usize, mem_type: &MemType) -> Result<(Mem<T>, Mem<T>), Box<dyn Error>>
+fn alloc_and_gen<T>(
+    tuples: usize,
+    mem_type: &MemType,
+    data_distribution: ArgDataDistribution,
+    zipf_exponent: Option<f64>,
+) -> Result<(Mem<T>, Mem<T>), Box<dyn Error>>
 where
     T: Clone + Default + Send + DeviceCopy + FromPrimitive + KeyAttribute,
 {
+    let key_range = tuples;
     const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
 
     let host_alloc = match mem_type.clone().try_into() {
@@ -355,7 +388,25 @@ where
     let mut host_data_key = host_alloc(tuples);
     let mut host_data_pay = host_alloc(tuples);
 
-    UniformRelation::gen_primary_key_par(host_data_key.as_mut_slice(), None).unwrap();
+    match data_distribution {
+        ArgDataDistribution::Unique => {
+            UniformRelation::gen_primary_key_par(host_data_key.as_mut_slice(), None)?;
+        }
+        ArgDataDistribution::Uniform => {
+            UniformRelation::gen_attr_par(host_data_key.as_mut_slice(), 1..=key_range)?;
+        }
+        ArgDataDistribution::Zipf if !(zipf_exponent.unwrap() > 0.0) => {
+            UniformRelation::gen_attr_par(host_data_key.as_mut_slice(), 1..=key_range)?;
+        }
+        ArgDataDistribution::Zipf => {
+            ZipfRelation::gen_attr_par(
+                host_data_key.as_mut_slice(),
+                key_range,
+                zipf_exponent.unwrap(),
+            )?;
+        }
+    }
+
     UniformRelation::gen_attr_par(host_data_pay.as_mut_slice(), PAYLOAD_RANGE).unwrap();
 
     let dev_data = if let MemType::CudaDevMem = mem_type {
@@ -415,12 +466,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         output_location: Some(options.output_location),
         tuple_bytes: Some(options.tuple_bytes),
         tuples: Some(options.tuples),
+        data_distribution: Some(options.data_distribution),
+        zipf_exponent: options.zipf_exponent,
         ..DataPoint::default()
     };
 
     match options.tuple_bytes {
         ArgTupleBytes::Bytes8 => {
-            let input_data = alloc_and_gen(options.tuples, &input_mem_type)?;
+            let input_data = alloc_and_gen(
+                options.tuples,
+                &input_mem_type,
+                options.data_distribution,
+                options.zipf_exponent,
+            )?;
             for (histogram_algorithm, partition_algorithm, dmem_buffer_size) in iproduct!(
                 options.histogram_algorithms,
                 options.partition_algorithms,
@@ -443,7 +501,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         ArgTupleBytes::Bytes16 => {
-            let input_data = alloc_and_gen(options.tuples, &input_mem_type)?;
+            let input_data = alloc_and_gen(
+                options.tuples,
+                &input_mem_type,
+                options.data_distribution,
+                options.zipf_exponent,
+            )?;
             for (histogram_algorithm, partition_algorithm, dmem_buffer_size) in iproduct!(
                 options.histogram_algorithms,
                 options.partition_algorithms,
