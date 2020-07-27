@@ -78,6 +78,7 @@ impl From<ArgMemTypeHelper> for MemType {
 arg_enum! {
     #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
     pub enum ArgHistogramAlgorithm {
+        CpuChunked,
         GpuChunked,
         GpuContiguous,
     }
@@ -86,6 +87,7 @@ arg_enum! {
 impl Into<GpuHistogramAlgorithm> for ArgHistogramAlgorithm {
     fn into(self) -> GpuHistogramAlgorithm {
         match self {
+            Self::CpuChunked => GpuHistogramAlgorithm::CpuChunked,
             Self::GpuChunked => GpuHistogramAlgorithm::GpuChunked,
             Self::GpuContiguous => GpuHistogramAlgorithm::GpuContiguous,
         }

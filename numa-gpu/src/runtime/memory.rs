@@ -389,6 +389,7 @@ impl<'a, T: DeviceCopy> LaunchableMem for UnifiedBuffer<T> {
 /// `LaunchablePtr` is guaranteed to have an equivalent internal
 /// representation to a raw pointer. Thus, it can be safely reinterpreted or
 /// transmuted to `*const T`.
+#[repr(C)]
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 pub struct LaunchablePtr<T>(*const T);
 
@@ -424,6 +425,7 @@ impl<T> From<DevicePointer<T>> for LaunchablePtr<T> {
 /// `LaunchableMutPtr` is guaranteed to have an equivalent internal
 /// representation to a raw pointer. Thus, it can be safely reinterpreted or
 /// transmuted to `*mut T`.
+#[repr(C)]
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 pub struct LaunchableMutPtr<T>(*mut T);
 

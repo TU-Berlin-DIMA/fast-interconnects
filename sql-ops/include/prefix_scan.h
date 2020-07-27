@@ -41,6 +41,7 @@
 
 #include <cstdint>
 
+#include "prefix_scan_state.h"
 #include "ptx_memory.h"
 
 // Grid synchronization is only supported on Pascal and higher, and will not
@@ -48,18 +49,6 @@
 #if __CUDA_ARCH__ >= 600
 #include <cooperative_groups.h>
 #endif
-
-#define SCAN_STATUS_INVALID 0
-#define SCAN_STATUS_AGGREGATE_AVAIL 1
-#define SCAN_STATUS_PREFIX_AVAIL 2
-
-template <typename T>
-struct ScanState {
-  T status;
-  T aggregate;
-  T prefix;
-  T __padding;
-};
 
 // Block-wise exclusive prefix sum
 template <typename T>

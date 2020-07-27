@@ -139,5 +139,6 @@ fn main() {
         .pic(true)
         .file("cpputils/no_partitioning_join.cpp")
         .file("cpputils/radix_partition.cpp")
+        .file("cpputils/gpu_radix_partition.cpp")
         .compile("libcpputils.a");
 }

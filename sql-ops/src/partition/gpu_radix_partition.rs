@@ -18,8 +18,8 @@
 use super::{fanout, Tuple};
 use crate::error::{ErrorKind, Result};
 use crate::prefix_scan::{GpuPrefixScanState, GpuPrefixSum};
-use numa_gpu::runtime::allocator::{Allocator, MemAllocFn, MemType};
-use numa_gpu::runtime::memory::{LaunchableMutPtr, LaunchablePtr, LaunchableSlice, Mem};
+use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemAllocFn, MemType};
+use numa_gpu::runtime::memory::{DerefMem, LaunchableMutPtr, LaunchablePtr, LaunchableSlice, Mem};
 use rustacuda::context::CurrentContext;
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
@@ -32,6 +32,11 @@ use std::convert::TryInto;
 use std::ffi::CString;
 use std::mem;
 use std::ops::{Index, IndexMut};
+
+extern "C" {
+    fn cpu_chunked_histogram_int32(args: *mut RadixPartitionArgs<i32>, num_chunks: u32);
+    fn cpu_chunked_histogram_int64(args: *mut RadixPartitionArgs<i64>, num_chunks: u32);
+}
 
 /// Arguments to the C/C++ partitioning function.
 ///
@@ -111,6 +116,7 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
         offsets_alloc_fn: MemAllocFn<u64>,
     ) -> Self {
         let chunks: u32 = match histogram_algorithm {
+            GpuHistogramAlgorithm::CpuChunked => grid_size.x,
             GpuHistogramAlgorithm::GpuChunked => grid_size.x,
             GpuHistogramAlgorithm::GpuContiguous => 1,
         };
@@ -208,9 +214,22 @@ impl<T: DeviceCopy> IndexMut<(usize, usize)> for PartitionedRelation<T> {
 /// Specifies the histogram algorithm that computes the partition offsets.
 #[derive(Copy, Clone, Debug)]
 pub enum GpuHistogramAlgorithm {
+    /// Chunked partitions, that are computed on the CPU.
+    ///
+    /// `CpuChunked` computes the exact same result as `GpuChunked`. However,
+    /// `CpuChunked` computes the histogram on the CPU instead of on the GPU.
+    /// This saves us from transferring the keys twice over the interconnect,
+    /// once for the histogram and once for partitioning.
+    ///
+    /// The reasoning is that the required histograms are cheap to compute. The
+    /// target size at maximum 2^12 buckets, which is only 32 KiB and should fit
+    /// into the CPU's L1 cache. This upper bound for buckets is given by the
+    /// GPU hardware and partitioning algorithm.
+    CpuChunked,
+
     /// Chunked partitions, that are computed on the GPU.
     ///
-    /// `Chunked` computes a separate set of partitions per thread block. Tuples
+    /// `GpuChunked` computes a separate set of partitions per thread block. Tuples
     /// of the resulting partitions are thus distributed among all chunks.
     ///
     /// It was originally introduced for NUMA locality by Schuh et al. in "An
@@ -226,7 +245,7 @@ pub enum GpuHistogramAlgorithm {
 
     /// Contiguous partitions, that are computed on the GPU.
     ///
-    /// `Contiguous` computes the "normal" partition layout. Each resulting
+    /// `GpuContiguous` computes the "normal" partition layout. Each resulting
     /// partition is laid out contiguously in memory.
     ///
     /// Note that this algorithm does not work on pre-`Pascal` GPUs, because it
@@ -316,6 +335,7 @@ pub enum GpuRadixPartitionAlgorithm {
 
 #[derive(Debug)]
 enum RadixPartitionState {
+    CpuChunked(DerefMem<u64>),
     GpuChunked(Mem<u64>),
     GpuContiguous(Mem<GpuPrefixScanState<u64>>, Mem<u64>),
 }
@@ -352,6 +372,9 @@ impl GpuRadixPartitioner {
         let tmp_partition_offsets_len = num_partitions as usize * grid_size.x as usize;
 
         let state = match histogram_algorithm {
+            GpuHistogramAlgorithm::CpuChunked => RadixPartitionState::CpuChunked(
+                Allocator::alloc_deref_mem(DerefMemType::CudaPinnedMem, tmp_partition_offsets_len),
+            ),
             GpuHistogramAlgorithm::GpuChunked => RadixPartitionState::GpuChunked(
                 Allocator::alloc_mem(MemType::CudaDevMem, tmp_partition_offsets_len),
             ),
@@ -424,6 +447,12 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 ))?;
                     }
                     match rp.histogram_algorithm {
+                        GpuHistogramAlgorithm::CpuChunked
+                            => if partitioned_relation.chunks() != rp.grid_size.x {
+                                Err(ErrorKind::InvalidArgument(
+                                        "PartitionedRelation has mismatching number of chunks".to_string(),
+                                        ))?;
+                            },
                         GpuHistogramAlgorithm::GpuChunked
                             => if partitioned_relation.chunks() != rp.grid_size.x {
                                 Err(ErrorKind::InvalidArgument(
@@ -455,6 +484,8 @@ macro_rules! impl_gpu_radix_partition_for_type {
 
                     let data_len = partition_attr.len();
                     let (prefix_scan_state, tmp_partition_offsets) = match rp.state {
+                        RadixPartitionState::CpuChunked(ref mut offsets)
+                             => (LaunchableMutPtr::null_mut(), offsets.as_launchable_mut_ptr()),
                         RadixPartitionState::GpuChunked(ref mut offsets)
                              => (LaunchableMutPtr::null_mut(), offsets.as_launchable_mut_ptr()),
                         RadixPartitionState::GpuContiguous(ref mut prefix_scan_state, ref mut offsets)
@@ -491,7 +522,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         _ => (None, 0)
                     };
 
-                    let args = RadixPartitionArgs {
+                    let mut args = RadixPartitionArgs {
                         partition_attr_data: partition_attr.as_launchable_ptr(),
                         payload_attr_data: payload_attr.as_launchable_ptr(),
                         data_len,
@@ -513,7 +544,13 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     // FIXME: copy on same stream as kernels instead of on default stream
                     let mut device_args = DeviceBox::new(&args)?;
 
+                    // FIXME: Break data into chunks for CpuChunked histogram, and parallelize
                     match rp.histogram_algorithm {
+                        GpuHistogramAlgorithm::CpuChunked => {
+                            unsafe {
+                                [<cpu_chunked_histogram_ $Suffix>](&mut args as *mut RadixPartitionArgs<$Type>, grid_size.x);
+                            }
+                        },
                         GpuHistogramAlgorithm::GpuChunked => {
                             let shared_mem_bytes = (
                                 (block_size.x + (block_size.x >> rp.log2_num_banks)) + fanout_u32
@@ -933,6 +970,31 @@ mod tests {
             });
 
         Ok(())
+    }
+
+    #[test]
+    fn gpu_tuple_loss_or_duplicates_cpu_chunked_i32_2_bits() -> Result<(), Box<dyn Error>> {
+        gpu_tuple_loss_or_duplicates_i32(
+            (32 << 20) / mem::size_of::<i32>(),
+            GpuHistogramAlgorithm::CpuChunked,
+            GpuRadixPartitionAlgorithm::NC,
+            2,
+            GridSize::from(10),
+            BlockSize::from(128),
+        )
+    }
+
+    #[test]
+    fn gpu_verify_partitions_cpu_chunked_i32_2_bits() -> Result<(), Box<dyn Error>> {
+        gpu_verify_partitions_i32(
+            (32 << 20) / mem::size_of::<i32>(),
+            1..=(32 << 20),
+            GpuHistogramAlgorithm::CpuChunked,
+            GpuRadixPartitionAlgorithm::NC,
+            2,
+            GridSize::from(10),
+            BlockSize::from(128),
+        )
     }
 
     #[test]
