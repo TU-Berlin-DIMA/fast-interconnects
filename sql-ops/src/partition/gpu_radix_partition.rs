@@ -349,8 +349,7 @@ impl GpuRadixPartitioner {
             .parse::<u32>()
             .expect("Failed to parse \"log2_num_banks\" string to an integer");
         let prefix_scan_state_len = GpuPrefixSum::state_len(grid_size.clone(), block_size.clone())?;
-        let tmp_partition_offsets_len =
-            num_partitions as usize * grid_size.x as usize * block_size.x as usize;
+        let tmp_partition_offsets_len = num_partitions as usize * grid_size.x as usize;
 
         let state = match histogram_algorithm {
             GpuHistogramAlgorithm::GpuChunked => RadixPartitionState::GpuChunked(
