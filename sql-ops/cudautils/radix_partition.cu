@@ -304,18 +304,18 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
       reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation) +
       partitioned_relation_offset;
 
-  assert(("Key column should be aligned to ALIGN_BYTES for best performance",
-          ((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U));
+  assert(((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U &&
+         "Key column should be aligned to ALIGN_BYTES for best performance");
   assert(
-      ("Payload column should be aligned to ALIGN_BYTES for best performance",
-       ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U));
+      ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U &&
+      "Payload column should be aligned to ALIGN_BYTES for best performance");
 
   const uint32_t laswwc_bytes =
       blockDim.x * TUPLES_PER_THREAD * (sizeof(K) + sizeof(V)) +
       2U * fanout * sizeof(uint32_t);
 
-  assert(("LA-SWWC buffer must fit into shared memory",
-          laswwc_bytes <= shared_mem_bytes));
+  assert(laswwc_bytes <= shared_mem_bytes &&
+         "LA-SWWC buffer must fit into shared memory");
 
   K *const cached_keys = (K *)shared_mem;
   V *const cached_vals = (V *)&cached_keys[blockDim.x * TUPLES_PER_THREAD];
@@ -444,8 +444,8 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
       ~(static_cast<size_t>(ALIGN_BYTES / sizeof(K)) - 1ULL);
   constexpr uint32_t align_tuples = ALIGN_BYTES / sizeof(Tuple<K, V>);
 
-  assert(("Padding must be large enough for alignment",
-          align_tuples <= args.padding_length));
+  assert(align_tuples <= args.padding_length &&
+         "Padding must be large enough for alignment");
 
   // Calculate the data_length per block
   size_t data_length =
@@ -467,11 +467,11 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
       reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation) +
       partitioned_relation_offset;
 
-  assert(("Key column should be aligned to ALIGN_BYTES for best performance",
-          ((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U));
+  assert(((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U &&
+         "Key column should be aligned to ALIGN_BYTES for best performance");
   assert(
-      ("Payload column should be aligned to ALIGN_BYTES for best performance",
-       ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(V)) == 0U));
+      ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(V)) == 0U &&
+      "Payload column should be aligned to ALIGN_BYTES for best performance");
 
   const uint32_t sswwc_buffer_bytes =
       shared_mem_bytes - 3U * fanout * sizeof(uint32_t);
@@ -479,8 +479,8 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
       1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
                                     fanout);
 
-  assert(("At least one tuple per partition must fit into SWWC buffer",
-          tuples_per_buffer > 0));
+  assert(tuples_per_buffer > 0 &&
+         "At least one tuple per partition must fit into SWWC buffer");
 
   unsigned int *const tmp_partition_offsets =
       reinterpret_cast<unsigned int *>(shared_mem);
@@ -558,7 +558,7 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
       //        same partition -> handled by atomicAdd and retry
       uint32_t ballot = 0;
       int is_candidate = (pos == tuples_per_buffer);
-      while (ballot = __ballot_sync(warp_mask, is_candidate)) {
+      while ((ballot = __ballot_sync(warp_mask, is_candidate))) {
         int leader_id = __ffs(ballot) - 1;
 
         // Wait until all threads are done writing their tuples into the buffer.
@@ -657,8 +657,8 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
       ~(static_cast<size_t>(ALIGN_BYTES / sizeof(K)) - 1ULL);
   constexpr uint32_t align_tuples = ALIGN_BYTES / sizeof(Tuple<K, V>);
 
-  assert(("Padding must be large enough for alignment",
-          align_tuples <= args.padding_length));
+  assert(align_tuples <= args.padding_length &&
+         "Padding must be large enough for alignment");
 
   // Calculate the data_length per block
   size_t data_length =
@@ -680,19 +680,19 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
       reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation) +
       partitioned_relation_offset;
 
-  assert(("Key column should be aligned to ALIGN_BYTES for best performance",
-          ((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U));
+  assert(((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U &&
+         "Key column should be aligned to ALIGN_BYTES for best performance");
   assert(
-      ("Payload column should be aligned to ALIGN_BYTES for best performance",
-       ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(V)) == 0U));
+      ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(V)) == 0U &&
+      "Payload column should be aligned to ALIGN_BYTES for best performance");
 
   const uint32_t sswwc_buffer_bytes =
       shared_mem_bytes - 3U * fanout * sizeof(uint32_t);
   const uint32_t tuples_per_buffer =
       1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
                                     fanout);
-  assert(("At least one tuple per partition must fit into SWWC buffer",
-          tuples_per_buffer > 0));
+  assert(tuples_per_buffer > 0 &&
+         "At least one tuple per partition must fit into SWWC buffer");
 
   unsigned int *const tmp_partition_offsets =
       reinterpret_cast<unsigned int *>(shared_mem);
@@ -765,7 +765,7 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
       //        same partition -> handled by atomicAdd and retry
       uint32_t ballot = 0;
       int is_candidate = (pos == tuples_per_buffer);
-      if (ballot = __ballot_sync(warp_mask, is_candidate)) {
+      if ((ballot = __ballot_sync(warp_mask, is_candidate))) {
         int leader_id = __ffs(ballot) - 1;
 
         // Release the lock if not the leader and try again in next round.
@@ -878,13 +878,13 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
       args.device_memory_buffers +
       args.device_memory_buffer_bytes * blockIdx.x);
 
-  assert(("Key column should be aligned to ALIGN_BYTES for best performance",
-          ((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U));
+  assert(((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U &&
+         "Key column should be aligned to ALIGN_BYTES for best performance");
   assert(
-      ("Payload column should be aligned to ALIGN_BYTES for best performance",
-       ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(V)) == 0U));
-  assert(("DMem buffers should be aligned to ALIGN_BYTES for best performance",
-          ((size_t)dmem_buffers) % align_tuples == 0U));
+      ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(V)) == 0U &&
+      "Payload column should be aligned to ALIGN_BYTES for best performance");
+  assert(((size_t)dmem_buffers) % align_tuples == 0U &&
+         "DMem buffers should be aligned to ALIGN_BYTES for best performance");
 
   const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
                                       fanout * sizeof(uint16_t) -
@@ -898,10 +898,10 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
   const uint32_t slots_per_dmem_buffer =
       tuples_per_dmem_buffer / tuples_per_buffer;
 
-  assert(("At least one tuple per partition must fit into SWWC buffer",
-          tuples_per_buffer > 0));
-  assert(("DMem buffer size must be a multiple of SMem buffer size",
-          tuples_per_dmem_buffer % tuples_per_buffer == 0));
+  assert(tuples_per_buffer > 0 &&
+         "At least one tuple per partition must fit into SWWC buffer");
+  assert(tuples_per_dmem_buffer % tuples_per_buffer == 0 &&
+         "DMem buffer size must be a multiple of SMem buffer size");
 
   unsigned int *const tmp_partition_offsets =
       reinterpret_cast<unsigned int *>(shared_mem);
@@ -985,7 +985,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
       //        same partition -> handled by atomicAdd and retry
       uint32_t ballot = 0;
       int is_candidate = (pos == tuples_per_buffer);
-      while (ballot = __ballot_sync(warp_mask, is_candidate)) {
+      while ((ballot = __ballot_sync(warp_mask, is_candidate))) {
         int leader_id = __ffs(ballot) - 1;
 
         // Wait until all threads are done writing their tuples into the buffer.
@@ -1059,8 +1059,6 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
   __syncthreads();
 
   uint32_t log2_tuples_per_buffer = log2_floor_power_of_two(tuples_per_buffer);
-  uint32_t log2_tuples_per_dmem_buffer =
-      log2_floor_power_of_two(tuples_per_dmem_buffer);
 
   // Flush buffers. Cannot flush smem buffers directly to memory because
   // alignment may require us to pad zeroes at the front of the dmem buffer.
@@ -1151,13 +1149,13 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
       args.device_memory_buffers +
       args.device_memory_buffer_bytes * blockIdx.x);
 
-  assert(("Key column should be aligned to ALIGN_BYTES for best performance",
-          ((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U));
+  assert(((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U &&
+         "Key column should be aligned to ALIGN_BYTES for best performance");
   assert(
-      ("Payload column should be aligned to ALIGN_BYTES for best performance",
-       ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(V)) == 0U));
-  assert(("DMem buffers should be aligned to ALIGN_BYTES for best performance",
-          ((size_t)dmem_buffers) % align_tuples == 0U));
+      ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(V)) == 0U &&
+      "Payload column should be aligned to ALIGN_BYTES for best performance");
+  assert(((size_t)dmem_buffers) % align_tuples == 0U &&
+         "DMem buffers should be aligned to ALIGN_BYTES for best performance");
 
   const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
                                       fanout * sizeof(uint16_t) -
@@ -1171,10 +1169,10 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
   const uint32_t slots_per_dmem_buffer =
       tuples_per_dmem_buffer / tuples_per_buffer;
 
-  assert(("At least one tuple per partition must fit into SWWC buffer",
-          tuples_per_buffer > 0));
-  assert(("DMem buffer size must be a multiple of SMem buffer size",
-          tuples_per_dmem_buffer % tuples_per_buffer == 0));
+  assert(tuples_per_buffer > 0 &&
+         "At least one tuple per partition must fit into SWWC buffer");
+  assert(tuples_per_dmem_buffer % tuples_per_buffer == 0 &&
+         "DMem buffer size must be a multiple of SMem buffer size");
 
   unsigned int *const tmp_partition_offsets =
       reinterpret_cast<unsigned int *>(shared_mem);
@@ -1258,7 +1256,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
       //        same partition -> handled by atomicAdd and retry
       uint32_t ballot = 0;
       int is_candidate = (pos == tuples_per_buffer);
-      if (ballot = __ballot_sync(warp_mask, is_candidate)) {
+      if ((ballot = __ballot_sync(warp_mask, is_candidate))) {
         int leader_id = __ffs(ballot) - 1;
 
         // Release the lock if not the leader and try again in next round.
@@ -1341,8 +1339,6 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
   __syncthreads();
 
   uint32_t log2_tuples_per_buffer = log2_floor_power_of_two(tuples_per_buffer);
-  uint32_t log2_tuples_per_dmem_buffer =
-      log2_floor_power_of_two(tuples_per_dmem_buffer);
 
   // Flush buffers. Cannot flush smem buffers directly to memory because
   // alignment may require us to pad zeroes at the front of the dmem buffer.
@@ -1434,13 +1430,13 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
       args.device_memory_buffers +
       args.device_memory_buffer_bytes * blockIdx.x);
 
-  assert(("Key column should be aligned to ALIGN_BYTES for best performance",
-          ((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U));
+  assert(((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U &&
+         "Key column should be aligned to ALIGN_BYTES for best performance");
   assert(
-      ("Payload column should be aligned to ALIGN_BYTES for best performance",
-       ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(V)) == 0U));
-  assert(("DMem buffers should be aligned to ALIGN_BYTES for best performance",
-          ((size_t)dmem_buffers) % align_tuples == 0U));
+      ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(V)) == 0U &&
+      "Payload column should be aligned to ALIGN_BYTES for best performance");
+  assert(((size_t)dmem_buffers) % align_tuples == 0U &&
+         "DMem buffers should be aligned to ALIGN_BYTES for best performance");
 
   const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
                                       fanout * sizeof(uint16_t) -
@@ -1454,10 +1450,10 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
   const uint32_t slots_per_dmem_buffer =
       tuples_per_dmem_buffer / tuples_per_buffer;
 
-  assert(("At least one tuple per partition must fit into SWWC buffer",
-          tuples_per_buffer > 0));
-  assert(("DMem buffer size must be a multiple of SMem buffer size",
-          tuples_per_dmem_buffer % tuples_per_buffer == 0));
+  assert(tuples_per_buffer > 0 &&
+         "At least one tuple per partition must fit into SWWC buffer");
+  assert(tuples_per_dmem_buffer % tuples_per_buffer == 0 &&
+         "DMem buffer size must be a multiple of SMem buffer size");
 
   unsigned int *const tmp_partition_offsets =
       reinterpret_cast<unsigned int *>(shared_mem);
@@ -1544,7 +1540,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
       //        same partition -> handled by atomicAdd and retry
       uint32_t ballot = 0;
       int is_candidate = (pos == tuples_per_buffer);
-      if (ballot = __ballot_sync(warp_mask, is_candidate)) {
+      if ((ballot = __ballot_sync(warp_mask, is_candidate))) {
         int leader_id = __ffs(ballot) - 1;
 
         // Release the lock if not the leader and try again in next round.
@@ -1659,8 +1655,6 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
   __syncthreads();
 
   uint32_t log2_tuples_per_buffer = log2_floor_power_of_two(tuples_per_buffer);
-  uint32_t log2_tuples_per_dmem_buffer =
-      log2_floor_power_of_two(tuples_per_dmem_buffer);
 
   // Flush buffers. Cannot flush smem buffers directly to memory because
   // alignment may require us to pad zeroes at the front of the dmem buffer.
@@ -1751,13 +1745,13 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
       args.device_memory_buffers +
       args.device_memory_buffer_bytes * blockIdx.x);
 
-  assert(("Key column should be aligned to ALIGN_BYTES for best performance",
-          ((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U));
+  assert(((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U &&
+         "Key column should be aligned to ALIGN_BYTES for best performance");
   assert(
-      ("Payload column should be aligned to ALIGN_BYTES for best performance",
-       ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(V)) == 0U));
-  assert(("DMem buffers should be aligned to ALIGN_BYTES for best performance",
-          ((size_t)dmem_buffers) % align_tuples == 0U));
+      ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(V)) == 0U &&
+      "Payload column should be aligned to ALIGN_BYTES for best performance");
+  assert(((size_t)dmem_buffers) % align_tuples == 0U &&
+         "DMem buffers should be aligned to ALIGN_BYTES for best performance");
 
   const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
                                       1 * fanout * sizeof(uint16_t) -
@@ -1771,10 +1765,10 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   const uint32_t slots_per_dmem_buffer =
       tuples_per_dmem_buffer / tuples_per_buffer;
 
-  assert(("At least one tuple per partition must fit into SWWC buffer",
-          tuples_per_buffer > 0));
-  assert(("DMem buffer size must be a multiple of SMem buffer size",
-          tuples_per_dmem_buffer % tuples_per_buffer == 0));
+  assert(tuples_per_buffer > 0 &&
+         "At least one tuple per partition must fit into SWWC buffer");
+  assert(tuples_per_dmem_buffer % tuples_per_buffer == 0 &&
+         "DMem buffer size must be a multiple of SMem buffer size");
 
   unsigned int *const tmp_partition_offsets =
       reinterpret_cast<unsigned int *>(shared_mem);
@@ -1871,7 +1865,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
       //        same partition -> handled by atomicAdd and retry
       uint32_t ballot = 0;
       int is_candidate = (pos == tuples_per_buffer);
-      if (ballot = __ballot_sync(warp_mask, is_candidate)) {
+      if ((ballot = __ballot_sync(warp_mask, is_candidate))) {
         int leader_id = __ffs(ballot) - 1;
 
         // Release the lock if not the leader and try again in next round.
@@ -1971,8 +1965,6 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   __syncthreads();
 
   uint32_t log2_tuples_per_buffer = log2_floor_power_of_two(tuples_per_buffer);
-  uint32_t log2_tuples_per_dmem_buffer =
-      log2_floor_power_of_two(tuples_per_dmem_buffer);
 
   // Flush buffers. Cannot flush smem buffers directly to memory because
   // alignment may require us to pad zeroes at the front of the dmem buffer.
