@@ -30,6 +30,22 @@
 
 #define __UINT_MAX__ static_cast<unsigned int>(__INT_MAX__ * 2U + 1U)
 
+struct PrefixSumArgs {
+  // Inputs
+  const void *const __restrict__ partition_attr;
+  std::size_t const data_length;
+  uint32_t const padding_length;
+  uint32_t const radix_bits;
+
+  // State
+  ScanState<unsigned long long> *const prefix_scan_state;
+  unsigned long long *const __restrict__ tmp_partition_offsets;
+
+  // Outputs
+  // unsigned long long *const __restrict__ sorted_partition_offsets;
+  unsigned long long *const __restrict__ partition_offsets;
+};
+
 // Arguments to the partitioning function.
 //
 // Note that the struct's layout must be kept in sync with its counterpart in
@@ -41,15 +57,13 @@ struct RadixPartitionArgs {
   std::size_t const data_length;
   uint32_t const padding_length;
   uint32_t const radix_bits;
+  const unsigned long long *const __restrict__ partition_offsets;
 
   // State
-  ScanState<unsigned long long> *const prefix_scan_state;
-  unsigned long long *const __restrict__ tmp_partition_offsets;
   char *const __restrict__ device_memory_buffers;
   uint64_t const device_memory_buffer_bytes;
 
   // Outputs
-  uint64_t *const __restrict__ partition_offsets;
   void *const __restrict__ partitioned_relation;
 };
 

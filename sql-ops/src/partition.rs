@@ -13,6 +13,15 @@ use rustacuda::memory::DeviceCopy;
 pub mod cpu_radix_partition;
 pub mod gpu_radix_partition;
 
+/// Defines the padding bytes between partitions.
+///
+/// Padding is necessary for partitioning algorithms to align writes. Aligned writes have fixed
+/// length and may overwrite the padding space in front of their partition.  For this reason,
+/// also the first partition includes padding in front.
+///
+/// Note that the padding length must be equal to or larger than the alignment.
+const GPU_PADDING_BYTES: u32 = 128;
+
 /// Compute the fanout (i.e., the number of partitions) from the number of radix
 /// bits.
 fn fanout(radix_bits: u32) -> usize {

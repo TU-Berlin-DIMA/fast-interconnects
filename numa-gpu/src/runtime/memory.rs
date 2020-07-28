@@ -14,6 +14,7 @@ use rustacuda::memory::{
 };
 
 use std::convert::{TryFrom, TryInto};
+use std::ffi;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::ptr;
@@ -390,13 +391,26 @@ impl<'a, T: DeviceCopy> LaunchableMem for UnifiedBuffer<T> {
 /// representation to a raw pointer. Thus, it can be safely reinterpreted or
 /// transmuted to `*const T`.
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Copy, Debug, Eq, Hash, PartialEq)]
 pub struct LaunchablePtr<T>(*const T);
 
 impl<T: DeviceCopy> LaunchablePtr<T> {
     /// Creates a null launchable pointer.
     pub fn null() -> Self {
         Self(ptr::null())
+    }
+
+    /// Cast internal pointer to void pointer.
+    pub fn as_void(&self) -> LaunchablePtr<ffi::c_void> {
+        LaunchablePtr(self.0 as *const ffi::c_void)
+    }
+}
+
+/// Implement Clone trait to support cloning `std::ffi::c_void` pointers.
+/// `c_void` doesn't implement Clone, thus can't be derived automatically.
+impl<T> Clone for LaunchablePtr<T> {
+    fn clone(&self) -> Self {
+        Self(self.0)
     }
 }
 
@@ -426,13 +440,26 @@ impl<T> From<DevicePointer<T>> for LaunchablePtr<T> {
 /// representation to a raw pointer. Thus, it can be safely reinterpreted or
 /// transmuted to `*mut T`.
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Copy, Debug, Eq, Hash, PartialEq)]
 pub struct LaunchableMutPtr<T>(*mut T);
 
 impl<T: DeviceCopy> LaunchableMutPtr<T> {
     /// Creates a null launchable mutable pointer.
     pub fn null_mut() -> Self {
         Self(ptr::null_mut())
+    }
+
+    /// Cast internal pointer to void pointer.
+    pub fn as_void(&self) -> LaunchableMutPtr<ffi::c_void> {
+        LaunchableMutPtr(self.0 as *mut ffi::c_void)
+    }
+}
+
+/// Implement Clone trait to support cloning `std::ffi::c_void` pointers.
+/// `c_void` doesn't implement Clone, thus can't be derived automatically.
+impl<T> Clone for LaunchableMutPtr<T> {
+    fn clone(&self) -> Self {
+        Self(self.0)
     }
 }
 

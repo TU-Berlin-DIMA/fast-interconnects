@@ -23,7 +23,7 @@ use rustacuda::memory::DeviceCopy;
 
 #[repr(C)]
 #[allow(unused)]
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct GpuPrefixScanState<T>
 where
     T: Clone + DeviceCopy + Default + Sized,

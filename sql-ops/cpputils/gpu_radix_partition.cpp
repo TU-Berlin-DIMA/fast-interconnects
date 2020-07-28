@@ -22,8 +22,7 @@ using namespace std;
 //
 // Used for GPU radix partitioning.
 template <typename K>
-void cpu_chunked_histogram(RadixPartitionArgs &args,
-                           uint32_t const num_chunks) {
+void cpu_chunked_prefix_sum(PrefixSumArgs &args, uint32_t const num_chunks) {
   const size_t fanout = 1UL << args.radix_bits;
   const size_t mask = fanout - 1;
   constexpr size_t input_align_mask =
@@ -45,8 +44,8 @@ void cpu_chunked_histogram(RadixPartitionArgs &args,
       data_length = args.data_length - data_offset;
     }
 
-    auto join_attr_data =
-        static_cast<const K *const __restrict__>(args.join_attr_data) +
+    auto partition_attr =
+        static_cast<const K *const __restrict__>(args.partition_attr) +
         data_offset;
 
     // Ensure counters are all zeroed
@@ -56,7 +55,7 @@ void cpu_chunked_histogram(RadixPartitionArgs &args,
 
     // Compute local histograms per partition for chunk
     for (size_t i = 0; i < data_length; ++i) {
-      auto key = join_attr_data[i];
+      auto key = partition_attr[i];
       auto p_index = key_to_partition(key, mask, 0);
       tmp_partition_offsets[p_index] += 1;
     }
@@ -64,10 +63,6 @@ void cpu_chunked_histogram(RadixPartitionArgs &args,
     // Compute offsets with exclusive prefix sum
     uint64_t offset = partitioned_data_offset + args.padding_length;
     for (uint32_t i = 0; i < fanout; ++i) {
-      // Write the temporary offsets used during the partition phase out to
-      // device memory.
-      args.tmp_partition_offsets[num_chunks * i + chunk_id] = offset;
-
       // Add data offset onto partitions offsets and write out the final offsets
       // to device memory.
       args.partition_offsets[chunk_id * fanout + i] = offset;
@@ -80,13 +75,13 @@ void cpu_chunked_histogram(RadixPartitionArgs &args,
 }
 
 // Exports the histogram function for 4-byte keys.
-extern "C" void cpu_chunked_histogram_int32(RadixPartitionArgs *const args,
-                                            uint32_t const num_chunks) {
-  cpu_chunked_histogram<int>(*args, num_chunks);
+extern "C" void cpu_chunked_prefix_sum_int32(PrefixSumArgs *const args,
+                                             uint32_t const num_chunks) {
+  cpu_chunked_prefix_sum<int>(*args, num_chunks);
 }
 
 // Exports the histogram function for 8-byte keys.
-extern "C" void cpu_chunked_histogram_int64(RadixPartitionArgs *const args,
-                                            uint32_t const num_chunks) {
-  cpu_chunked_histogram<long long>(*args, num_chunks);
+extern "C" void cpu_chunked_prefix_sum_int64(PrefixSumArgs *const args,
+                                             uint32_t const num_chunks) {
+  cpu_chunked_prefix_sum<long long>(*args, num_chunks);
 }

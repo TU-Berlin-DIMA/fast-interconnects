@@ -25,7 +25,7 @@ use serde_derive::Serialize;
 use serde_repr::Serialize_repr;
 use sql_ops::partition::gpu_radix_partition::{
     GpuHistogramAlgorithm, GpuRadixPartitionAlgorithm, GpuRadixPartitionable, GpuRadixPartitioner,
-    PartitionedRelation,
+    PartitionOffsets, PartitionedRelation,
 };
 use std::convert::TryInto;
 use std::error::Error;
@@ -272,7 +272,8 @@ struct DataPoint {
     pub data_distribution: Option<ArgDataDistribution>,
     pub zipf_exponent: Option<f64>,
     pub radix_bits: Option<u32>,
-    pub ns: Option<u128>,
+    pub prefix_sum_ns: Option<u128>,
+    pub partition_ns: Option<u128>,
 }
 
 fn gpu_radix_partition_benchmark<T, W>(
@@ -323,7 +324,6 @@ where
                 histogram_algorithm,
                 partition_algorithm,
                 radix_bits,
-                Allocator::mem_alloc_fn(MemType::CudaDevMem),
                 &grid_size,
                 &block_size,
                 dmem_buffer_bytes,
@@ -333,29 +333,48 @@ where
                 input_data.0.len(),
                 histogram_algorithm,
                 radix_bits,
-                &grid_size,
+                grid_size.x,
                 Allocator::mem_alloc_fn(output_mem_type.clone()),
                 Allocator::mem_alloc_fn(output_mem_type.clone()),
             );
 
             let result: Result<(), Box<dyn Error>> = (0..repeat).into_iter().try_for_each(|_| {
-                let timer = Instant::now();
+                let mut partition_offsets = PartitionOffsets::new(
+                    histogram_algorithm,
+                    grid_size.x,
+                    radix_bits,
+                    Allocator::mem_alloc_fn(MemType::CudaDevMem),
+                );
+
+                let prefix_sum_timer = Instant::now();
+
+                radix_prnr.prefix_sum(
+                    input_data.0.as_launchable_slice(),
+                    &mut partition_offsets,
+                    &stream,
+                )?;
+                stream.synchronize()?;
+
+                let prefix_sum_time = prefix_sum_timer.elapsed();
+                let partition_timer = Instant::now();
 
                 radix_prnr.partition(
                     input_data.0.as_launchable_slice(),
                     input_data.1.as_launchable_slice(),
+                    partition_offsets,
                     &mut partitioned_relation,
                     &stream,
                 )?;
                 stream.synchronize()?;
 
-                let time = timer.elapsed();
+                let partition_time = partition_timer.elapsed();
 
                 let dp = DataPoint {
                     radix_bits: Some(radix_bits),
                     grid_size: Some(grid_size.x),
                     block_size: Some(block_size.x),
-                    ns: Some(time.as_nanos()),
+                    prefix_sum_ns: Some(prefix_sum_time.as_nanos()),
+                    partition_ns: Some(partition_time.as_nanos()),
                     ..template.clone()
                 };
 
