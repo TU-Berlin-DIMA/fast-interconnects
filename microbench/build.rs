@@ -15,8 +15,6 @@ fn main() {
         .flag("-cudart=shared")
         .pic(true)
         .flag("-gencode")
-        .flag("arch=compute_30,code=sm_30") // Tesla K40
-        .flag("-gencode")
         .flag("arch=compute_50,code=sm_50") // GTX 940M
         .flag("-gencode")
         .flag("arch=compute_52,code=sm_52") // GTX 980

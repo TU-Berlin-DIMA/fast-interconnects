@@ -50,8 +50,6 @@ fn main() {
     // For gencodes, see: http://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/
     let gpu_archs = vec![
         "-gencode",
-        "arch=compute_30,code=sm_30", // Tesla K40
-        "-gencode",
         "arch=compute_50,code=sm_50", // GTX 940M
         "-gencode",
         "arch=compute_52,code=sm_52", // GTX 980
