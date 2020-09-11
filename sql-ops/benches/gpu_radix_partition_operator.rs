@@ -13,6 +13,7 @@ use itertools::iproduct;
 use num_rational::Ratio;
 use num_traits::cast::FromPrimitive;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
+use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::memory::Mem;
 use numa_gpu::runtime::numa::NodeRatio;
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
@@ -25,7 +26,7 @@ use serde_derive::Serialize;
 use serde_repr::Serialize_repr;
 use sql_ops::partition::gpu_radix_partition::{
     GpuHistogramAlgorithm, GpuRadixPartitionAlgorithm, GpuRadixPartitionable, GpuRadixPartitioner,
-    PartitionOffsets, PartitionedRelation,
+    PartitionOffsets, PartitionedRelation, RadixPartitionInputChunkable,
 };
 use std::convert::TryInto;
 use std::error::Error;
@@ -33,6 +34,7 @@ use std::fs;
 use std::io::Write;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 use structopt::clap::arg_enum;
 use structopt::StructOpt;
@@ -202,6 +204,13 @@ struct Options {
     #[structopt(long, default_value = "2048", require_delimiter = true)]
     dmem_buffer_sizes: Vec<usize>,
 
+    #[structopt(long = "threads")]
+    threads: Option<usize>,
+
+    /// Path to CPU affinity map file for CPU workers
+    #[structopt(long = "cpu-affinity", parse(from_os_str))]
+    cpu_affinity: Option<PathBuf>,
+
     /// Memory type with which to allocate input relation
     #[structopt(
         long = "input-mem-type",
@@ -286,12 +295,14 @@ fn gpu_radix_partition_benchmark<T, W>(
     output_mem_type: &MemType,
     grid_size_hint: &Option<GridSize>,
     dmem_buffer_bytes: usize,
+    threads: usize,
+    cpu_affinity: &CpuAffinity,
     repeat: u32,
     template: &DataPoint,
     csv_writer: &mut csv::Writer<W>,
 ) -> Result<(), Box<dyn Error>>
 where
-    T: Clone + Default + Send + DeviceCopy + FromPrimitive + GpuRadixPartitionable,
+    T: Clone + Default + Send + Sync + DeviceCopy + FromPrimitive + GpuRadixPartitionable,
     W: Write,
 {
     CurrentContext::set_cache_config(CacheConfig::PreferShared)?;
@@ -316,6 +327,17 @@ where
         dmem_buffer_bytes: Some(dmem_buffer_bytes),
         ..template.clone()
     };
+
+    let boxed_cpu_affinity = Arc::new(cpu_affinity.clone());
+    let thread_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .start_handler(move |tid| {
+            boxed_cpu_affinity
+                .clone()
+                .set_affinity(tid as u16)
+                .expect("Couldn't set CPU core affinity")
+        })
+        .build()?;
 
     radix_bits_list
         .iter()
@@ -343,16 +365,38 @@ where
                     histogram_algorithm,
                     grid_size.x,
                     radix_bits,
-                    Allocator::mem_alloc_fn(MemType::CudaDevMem),
+                    Allocator::mem_alloc_fn(MemType::CudaPinnedMem),
                 );
 
                 let prefix_sum_timer = Instant::now();
 
-                radix_prnr.prefix_sum(
-                    input_data.0.as_launchable_slice(),
-                    &mut partition_offsets,
-                    &stream,
-                )?;
+                match histogram_algorithm {
+                    GpuHistogramAlgorithm::CpuChunked => {
+                        let key_slice: &[T] = (&input_data.0)
+                            .try_into()
+                            .map_err(|_| "Failed to run CPU prefix sum on device memory")?;
+                        let key_chunks = key_slice.input_chunks::<T>(&radix_prnr)?;
+                        let out_chunks = partition_offsets.chunks_mut();
+
+                        thread_pool.scope(|s| {
+                            for (input, mut output) in key_chunks.iter().zip(out_chunks) {
+                                let radix_prnr_ref = &radix_prnr;
+                                s.spawn(move |_| {
+                                    radix_prnr_ref
+                                        .cpu_prefix_sum(input, &mut output)
+                                        .expect("Failed to run CPU prefix sum");
+                                })
+                            }
+                        });
+                    }
+                    _ => {
+                        radix_prnr.prefix_sum(
+                            input_data.0.as_launchable_slice(),
+                            &mut partition_offsets,
+                            &stream,
+                        )?;
+                    }
+                }
                 stream.synchronize()?;
 
                 let prefix_sum_time = prefix_sum_timer.elapsed();
@@ -445,6 +489,18 @@ where
 fn main() -> Result<(), Box<dyn Error>> {
     let options = Options::from_args();
 
+    let threads = if let Some(threads) = options.threads {
+        threads
+    } else {
+        num_cpus::get_physical()
+    };
+
+    let cpu_affinity = if let Some(ref cpu_affinity_file) = options.cpu_affinity {
+        CpuAffinity::from_file(cpu_affinity_file.as_path())?
+    } else {
+        CpuAffinity::default()
+    };
+
     let _context = rustacuda::quick_init()?;
 
     if let Some(parent) = options.csv.parent() {
@@ -515,6 +571,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     &output_mem_type,
                     &grid_size_hint,
                     dmem_buffer_size * 1024,
+                    threads,
+                    &cpu_affinity,
                     options.repeat,
                     &template,
                     &mut csv_writer,
@@ -543,6 +601,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     &output_mem_type,
                     &grid_size_hint,
                     dmem_buffer_size * 1024,
+                    threads,
+                    &cpu_affinity,
                     options.repeat,
                     &template,
                     &mut csv_writer,

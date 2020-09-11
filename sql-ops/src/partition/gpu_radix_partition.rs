@@ -19,11 +19,13 @@ use super::{fanout, Tuple};
 use crate::error::{ErrorKind, Result};
 use crate::prefix_scan::{GpuPrefixScanState, GpuPrefixSum};
 use numa_gpu::runtime::allocator::{Allocator, MemAllocFn, MemType};
-use numa_gpu::runtime::memory::{LaunchableMutPtr, LaunchablePtr, LaunchableSlice, Mem};
+use numa_gpu::runtime::memory::{
+    LaunchableMem, LaunchableMutPtr, LaunchableMutSlice, LaunchablePtr, LaunchableSlice, Mem,
+};
 use rustacuda::context::CurrentContext;
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
-use rustacuda::memory::{DeviceBox, DeviceBuffer, DeviceCopy};
+use rustacuda::memory::{DeviceBuffer, DeviceCopy};
 use rustacuda::module::Module;
 use rustacuda::stream::Stream;
 use rustacuda::{launch, launch_cooperative};
@@ -32,10 +34,11 @@ use std::convert::TryInto;
 use std::ffi::{self, CString};
 use std::mem;
 use std::ops::{Index, IndexMut};
+use std::slice::{Chunks, ChunksMut};
 
 extern "C" {
-    fn cpu_chunked_prefix_sum_int32(args: *mut PrefixSumArgs, num_chunks: u32);
-    fn cpu_chunked_prefix_sum_int64(args: *mut PrefixSumArgs, num_chunks: u32);
+    fn cpu_chunked_prefix_sum_int32(args: *mut PrefixSumArgs, chunk_id: u32, num_chunks: u32);
+    fn cpu_chunked_prefix_sum_int64(args: *mut PrefixSumArgs, chunk_id: u32, num_chunks: u32);
 }
 
 /// Arguments to the C/C++ prefix sum function.
@@ -48,6 +51,7 @@ struct PrefixSumArgs {
     // Inputs
     partition_attr: LaunchablePtr<ffi::c_void>,
     data_len: usize,
+    canonical_chunk_len: usize,
     padding_len: u32,
     radix_bits: u32,
 
@@ -86,7 +90,22 @@ struct RadixPartitionArgs {
 
 unsafe impl DeviceCopy for RadixPartitionArgs {}
 
+pub trait RadixPartitionInputChunkable: Sized {
+    type Out;
+
+    fn input_chunks<'a, Key>(
+        &'a self,
+        radix_partitioner: &GpuRadixPartitioner,
+    ) -> Result<Vec<RadixPartitionInputChunk<'a, Self::Out>>>;
+}
+
 pub trait GpuRadixPartitionable: Sized + DeviceCopy {
+    fn cpu_prefix_sum_impl(
+        rp: &GpuRadixPartitioner,
+        partition_attr: &RadixPartitionInputChunk<Self>,
+        partition_offsets: &mut PartitionOffsetsMutSlice<Tuple<Self, Self>>,
+    ) -> Result<()>;
+
     fn prefix_sum_impl(
         rp: &mut GpuRadixPartitioner,
         partition_attr: LaunchableSlice<'_, Self>,
@@ -102,6 +121,50 @@ pub trait GpuRadixPartitionable: Sized + DeviceCopy {
         partitioned_relation: &mut PartitionedRelation<Tuple<Self, Self>>,
         stream: &Stream,
     ) -> Result<()>;
+}
+
+/// A reference to a chunk of input data.
+///
+/// Effectively a slice with additional metadata specifying the referenced chunk.
+#[derive(Debug)]
+pub struct RadixPartitionInputChunk<'a, T: 'a + Sized> {
+    data: &'a [T],
+    canonical_chunk_len: usize,
+    chunk_id: u32,
+    num_chunks: u32,
+}
+
+impl<T> RadixPartitionInputChunkable for &[T] {
+    type Out = T;
+
+    fn input_chunks<Key>(
+        &self,
+        radix_partitioner: &GpuRadixPartitioner,
+    ) -> Result<Vec<RadixPartitionInputChunk<Self::Out>>> {
+        let num_chunks = radix_partitioner.grid_size.x;
+        let canonical_chunk_len = radix_partitioner.input_chunk_size::<Key>(self.len())?;
+
+        let chunks = (0..num_chunks)
+            .map(|chunk_id| {
+                let offset = canonical_chunk_len * chunk_id as usize;
+                let actual_chunk_len = if chunk_id + 1 == num_chunks {
+                    self.len() - offset
+                } else {
+                    canonical_chunk_len
+                };
+                let data = &self[offset..(offset + actual_chunk_len)];
+
+                RadixPartitionInputChunk {
+                    data,
+                    canonical_chunk_len,
+                    chunk_id,
+                    num_chunks,
+                }
+            })
+            .collect();
+
+        Ok(chunks)
+    }
 }
 
 /// Partition offsets for an array of chunked partitions.
@@ -163,11 +226,91 @@ impl<T: DeviceCopy> PartitionOffsets<T> {
         self.chunks
     }
 
+    /// Returns an iterator over the chunks contained inside the offsets.
+    ///
+    /// Chunks are non-overlapping and can safely be used for parallel
+    /// processing.
+    pub fn chunks_mut(&mut self) -> PartitionOffsetsChunksMut<T> {
+        PartitionOffsetsChunksMut::new(self)
+    }
+
     /// Returns the number of partitions.
     pub fn partitions(&self) -> usize {
         fanout(self.radix_bits)
     }
 
+    /// Returns the number of padding elements per partition.
+    pub fn padding_len(&self) -> u32 {
+        super::GPU_PADDING_BYTES / mem::size_of::<T>() as u32
+    }
+}
+
+/// An iterator that generates `PartitionOffsetsMutSlice`.
+#[derive(Debug)]
+pub struct PartitionOffsetsChunksMut<'a, T: DeviceCopy> {
+    // Note: unsafe slices, must convert back to LaunchableSlice
+    offsets_chunks: ChunksMut<'a, u64>,
+    chunk_id: u32,
+    chunks: u32,
+    radix_bits: u32,
+    phantom_data: std::marker::PhantomData<T>,
+}
+
+impl<'a, T: DeviceCopy> PartitionOffsetsChunksMut<'a, T> {
+    fn new(offsets: &'a mut PartitionOffsets<T>) -> Self {
+        unsafe {
+            let num_partitions = fanout(offsets.radix_bits) as usize;
+            let offsets_chunks = offsets
+                .offsets
+                .as_launchable_mut_slice()
+                .as_mut_slice()
+                .chunks_mut(num_partitions);
+
+            Self {
+                offsets_chunks,
+                chunk_id: 0,
+                chunks: offsets.chunks,
+                radix_bits: offsets.radix_bits,
+                phantom_data: std::marker::PhantomData,
+            }
+        }
+    }
+}
+
+impl<'a, T: DeviceCopy> Iterator for PartitionOffsetsChunksMut<'a, T> {
+    type Item = PartitionOffsetsMutSlice<'a, T>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.offsets_chunks.next().and_then(|o| {
+            let chunk_id = self.chunk_id;
+            self.chunk_id = self.chunk_id + 1;
+
+            Some(PartitionOffsetsMutSlice {
+                offsets: o.as_launchable_mut_slice(),
+                chunk_id,
+                chunks: self.chunks,
+                radix_bits: self.radix_bits,
+                phantom_data: std::marker::PhantomData,
+            })
+        })
+    }
+}
+
+/// A mutable slice that references the `PartitionOffsets` of one partition.
+///
+/// Effectively a mutable slice containing additional metadata about the chunk.
+/// The purpose is to allow thread-safe writes to `PartitionOffsets`.
+#[derive(Debug)]
+pub struct PartitionOffsetsMutSlice<'a, T: DeviceCopy> {
+    pub offsets: LaunchableMutSlice<'a, u64>,
+    pub chunk_id: u32,
+    pub chunks: u32,
+    pub radix_bits: u32,
+    phantom_data: std::marker::PhantomData<T>,
+}
+
+impl<'a, T: DeviceCopy> PartitionOffsetsMutSlice<'a, T> {
     /// Returns the number of padding elements per partition.
     pub fn padding_len(&self) -> u32 {
         super::GPU_PADDING_BYTES / mem::size_of::<T>() as u32
@@ -239,6 +382,14 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
         self.chunks
     }
 
+    /// Returns an iterator over the chunks contained inside the relation.
+    ///
+    /// Chunks are non-overlapping and can safely be used for parallel
+    /// processing.
+    pub fn chunks_mut(&mut self) -> PartitionedRelationChunksMut<T> {
+        PartitionedRelationChunksMut::new(self)
+    }
+
     /// Returns the number of partitions.
     pub fn partitions(&self) -> usize {
         fanout(self.radix_bits)
@@ -299,6 +450,85 @@ impl<T: DeviceCopy> IndexMut<(usize, usize)> for PartitionedRelation<T> {
 
         &mut relation[begin..end]
     }
+}
+
+/// An iterator that generates `PartitionedRelationMutSlice`.
+#[derive(Debug)]
+pub struct PartitionedRelationChunksMut<'a, T: 'a + DeviceCopy> {
+    // Note: unsafe slices, must convert back to LaunchableMutSlice
+    relation_chunks: ChunksMut<'a, T>,
+    // Note: unsafe slices, must convert back to LaunchableSlice
+    offsets_chunks: Chunks<'a, u64>,
+    chunk_id: u32,
+    chunks: u32,
+    radix_bits: u32,
+}
+
+impl<'a, T: DeviceCopy> PartitionedRelationChunksMut<'a, T> {
+    /// Creates a new chunk iterator for a `PartitionedRelation`.
+    fn new(rel: &'a mut PartitionedRelation<T>) -> Self {
+        unsafe {
+            let rel_chunks = rel.chunks as usize;
+            let rel_chunk_size = (rel.relation.len() + rel_chunks - 1) / rel_chunks;
+            let off_chunk_size = rel.offsets.len() / rel_chunks;
+
+            let relation_chunks = rel
+                .relation
+                .as_launchable_mut_slice()
+                .as_mut_slice()
+                .chunks_mut(rel_chunk_size);
+            let offsets_chunks = rel
+                .offsets
+                .as_launchable_slice()
+                .as_slice()
+                .chunks(off_chunk_size);
+
+            Self {
+                relation_chunks,
+                offsets_chunks,
+                chunk_id: 0,
+                chunks: rel.chunks,
+                radix_bits: rel.radix_bits,
+            }
+        }
+    }
+}
+
+impl<'a, T: DeviceCopy> Iterator for PartitionedRelationChunksMut<'a, T> {
+    type Item = PartitionedRelationMutSlice<'a, T>;
+
+    #[inline]
+    fn next(&mut self) -> Option<PartitionedRelationMutSlice<'a, T>> {
+        let zipped = self
+            .relation_chunks
+            .next()
+            .and_then(|rel| self.offsets_chunks.next().and_then(|off| Some((rel, off))));
+        zipped.and_then(|(r, o)| {
+            let chunk_id = self.chunk_id;
+            self.chunk_id = self.chunk_id + 1;
+
+            Some(PartitionedRelationMutSlice {
+                relation: r.as_launchable_mut_slice(),
+                offsets: o.as_launchable_slice(),
+                chunk_id,
+                chunks: self.chunks,
+                radix_bits: self.radix_bits,
+            })
+        })
+    }
+}
+
+/// A mutable slice that references part of a `PartitionedRelation`.
+///
+/// Effectively a mutable slice containing additional metadata about the chunk.
+/// The purpose is to allow thread-safe writes to a `PartitionedRelation`.
+#[derive(Debug)]
+pub struct PartitionedRelationMutSlice<'a, T> {
+    pub relation: LaunchableMutSlice<'a, T>,
+    pub offsets: LaunchableSlice<'a, u64>,
+    pub chunk_id: u32,
+    pub chunks: u32,
+    pub radix_bits: u32,
 }
 
 /// Specifies the histogram algorithm that computes the partition offsets.
@@ -441,8 +671,6 @@ pub struct GpuRadixPartitioner {
     grid_size: GridSize,
     block_size: BlockSize,
     dmem_buffer_bytes: usize,
-    prefix_sum_args: Option<DeviceBox<PrefixSumArgs>>,
-    radix_partition_args: Option<DeviceBox<RadixPartitionArgs>>,
 }
 
 impl GpuRadixPartitioner {
@@ -489,8 +717,6 @@ impl GpuRadixPartitioner {
             grid_size: grid_size.clone(),
             block_size: block_size.clone(),
             dmem_buffer_bytes,
-            prefix_sum_args: None,
-            radix_partition_args: None,
         })
     }
 
@@ -507,9 +733,8 @@ impl GpuRadixPartitioner {
     ///
     /// ## Parallelism
     ///
-    /// The parallelism of this function depends on the `GpuHistogramAlgorithm`.
-    /// GPU algorithms are internally parallelized. CPU algorithms are sequential
-    /// and can be externally parallelized by the caller.
+    /// The function is internally parallelized by the GPU. The function is
+    /// *not* thread-safe for multiple callers.
     pub fn prefix_sum<T: DeviceCopy + GpuRadixPartitionable>(
         &mut self,
         partition_attr: LaunchableSlice<'_, T>,
@@ -517,6 +742,32 @@ impl GpuRadixPartitioner {
         stream: &Stream,
     ) -> Result<()> {
         T::prefix_sum_impl(self, partition_attr, partition_offsets, stream)
+    }
+
+    /// Computes the prefix sum on the CPU.
+    ///
+    /// The purpose is to avoid transferring the key attribute twice the GPU
+    /// across the interconnect. Although the CPU may be slower at shuffling the
+    /// data, computing a histogram is light-weight and should be close to the
+    /// memory bandwidth. See Polychroniou et al. "A comprehensive study of
+    /// main-memory partitioning and its application to large-scale comparison-
+    /// and radix-sort:
+    ///
+    /// ## Result
+    ///
+    /// The result is identical to `prefix_sum` on the GPU.
+    ///
+    /// ## Parallelism
+    ///
+    /// The function is sequential and is meant to be externally parallelized by
+    /// the caller. Parallel calls to the function are thread-safe. One
+    /// `GpuRadixPartitioner` instance should be shared among all threads.
+    pub fn cpu_prefix_sum<T: DeviceCopy + GpuRadixPartitionable>(
+        &self,
+        partition_attr: &RadixPartitionInputChunk<T>,
+        partition_offsets: &mut PartitionOffsetsMutSlice<Tuple<T, T>>,
+    ) -> Result<()> {
+        T::cpu_prefix_sum_impl(self, partition_attr, partition_offsets)
     }
 
     /// Radix-partitions a relation by its key attribute.
@@ -540,15 +791,80 @@ impl GpuRadixPartitioner {
         )
     }
 
-    // FIXME: Add helper function that transforms data and partitioned_relation
-    //        into a slice per chunk. This is needed to parallelize prefix_sum
-    //        on the CPU.
+    /// Returns the reference chunk size with which input should be partitioned.
+    pub fn input_chunk_size<Key>(&self, len: usize) -> Result<usize> {
+        let num_chunks = self.grid_size.x as usize;
+        let input_align_mask = !(super::ALIGN_BYTES as usize / mem::size_of::<Key>() - 1);
+        let chunk_len = ((len + num_chunks - 1) / num_chunks) & input_align_mask;
+
+        if chunk_len >= std::u32::MAX as usize {
+            let msg = "Relation is too large and causes an integer overflow. Try using more chunks by setting a higher CUDA grid size";
+            Err(ErrorKind::IntegerOverflow(msg.to_string()))?
+        };
+
+        Ok(chunk_len)
+    }
 }
 
 macro_rules! impl_gpu_radix_partition_for_type {
     ($Type:ty, $Suffix:expr) => {
         impl GpuRadixPartitionable for $Type {
             paste::item! {
+                fn cpu_prefix_sum_impl(
+                    rp: &GpuRadixPartitioner,
+                    partition_attr: &RadixPartitionInputChunk<$Type>,
+                    partition_offsets: &mut PartitionOffsetsMutSlice<Tuple<$Type, $Type>>,
+                    ) -> Result<()> {
+
+                    if partition_offsets.radix_bits != rp.radix_bits {
+                        Err(ErrorKind::InvalidArgument(
+                                "PartitionedRelation has mismatching radix bits".to_string(),
+                                ))?;
+                    }
+                    if partition_attr.chunk_id != partition_offsets.chunk_id {
+                        Err(ErrorKind::InvalidArgument(
+                                "PartitionOffsets has mismatching chunk ID".to_string(),
+                                ))?;
+                    }
+                    if partition_attr.num_chunks != partition_offsets.chunks {
+                        dbg!(partition_attr.num_chunks);
+                        dbg!(partition_offsets.chunks);
+                        Err(ErrorKind::InvalidArgument(
+                                "PartitionOffsets has mismatching number of chunks".to_string(),
+                                ))?;
+                    }
+                    match rp.prefix_sum_algorithm {
+                        GpuHistogramAlgorithm::CpuChunked => {},
+                        _ => {
+                                Err(ErrorKind::InvalidArgument(
+                                        "Unsuppored option, use prefix_sum() instead".to_string(),
+                                        ))?;
+                            },
+                    }
+
+                    let mut args = PrefixSumArgs {
+                        partition_attr: partition_attr.data.as_launchable_slice().as_launchable_ptr().as_void(),
+                        data_len: partition_attr.data.len(),
+                        canonical_chunk_len: partition_attr.canonical_chunk_len,
+                        padding_len: partition_offsets.padding_len(),
+                        radix_bits: rp.radix_bits,
+                        prefix_scan_state: LaunchableMutPtr::null_mut(),
+                        tmp_partition_offsets: LaunchableMutPtr::null_mut(),
+                        partition_offsets: partition_offsets.offsets.as_launchable_mut_ptr(),
+                    };
+
+                    match rp.prefix_sum_state {
+                        PrefixSumState::CpuChunked => {
+                            unsafe {
+                                [<cpu_chunked_prefix_sum_ $Suffix>](&mut args, partition_offsets.chunk_id, rp.grid_size.x);
+                            }
+                        },
+                        _ => unreachable!(),
+                    }
+
+                    Ok(())
+                }
+
                 fn prefix_sum_impl(
                     rp: &mut GpuRadixPartitioner,
                     partition_attr: LaunchableSlice<'_, $Type>,
@@ -563,9 +879,9 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     }
                     match rp.prefix_sum_algorithm {
                         GpuHistogramAlgorithm::CpuChunked
-                            => if partition_offsets.chunks() != rp.grid_size.x {
+                            => {
                                 Err(ErrorKind::InvalidArgument(
-                                        "PartitionedRelation has mismatching number of chunks".to_string(),
+                                        "Unsupported option, use cpu_prefix_sum() instead".to_string(),
                                         ))?;
                             },
                         GpuHistogramAlgorithm::GpuChunked
@@ -594,10 +910,12 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     let fanout_u32 = fanout(rp.radix_bits) as u32;
                     let grid_size = rp.grid_size.clone();
                     let block_size = rp.block_size.clone();
+                    let canonical_chunk_len = rp.input_chunk_size::<$Type>(partition_attr.len())?;
 
                     let mut args = PrefixSumArgs {
                         partition_attr: partition_attr.as_launchable_ptr().as_void(),
                         data_len: partition_attr.len(),
+                        canonical_chunk_len,
                         padding_len: partition_offsets.padding_len(),
                         radix_bits: rp.radix_bits,
                         prefix_scan_state: LaunchableMutPtr::null_mut(),
@@ -605,13 +923,8 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         partition_offsets: partition_offsets.offsets.as_launchable_mut_ptr(),
                     };
 
-                    // FIXME: Remove internal chunking in CPU prefix_sum function
                     match rp.prefix_sum_state {
-                        PrefixSumState::CpuChunked => {
-                            unsafe {
-                                [<cpu_chunked_prefix_sum_ $Suffix>](&mut args, grid_size.x);
-                            }
-                        },
+                        PrefixSumState::CpuChunked => unreachable!(),
                         PrefixSumState::GpuChunked => {
                             let shared_mem_bytes = (
                                 (block_size.x + (block_size.x >> rp.log2_num_banks)) + fanout_u32
@@ -1025,11 +1338,26 @@ mod tests {
         let data_key = Mem::CudaPinnedMem(data_key);
         let data_pay = Mem::CudaPinnedMem(data_pay);
 
-        partitioner.prefix_sum(
-            data_key.as_launchable_slice(),
-            &mut partition_offsets,
-            &stream,
-        )?;
+        match histogram_algorithm {
+            GpuHistogramAlgorithm::CpuChunked => {
+                let key_slice: &[i32] = (&data_key)
+                    .try_into()
+                    .map_err(|_| "Failed to run CPU prefix sum on device memory")?;
+                let key_chunks = key_slice.input_chunks::<i32>(&partitioner)?;
+                let offset_chunks = partition_offsets.chunks_mut();
+
+                for (key_chunk, mut offset_chunk) in key_chunks.iter().zip(offset_chunks) {
+                    partitioner.cpu_prefix_sum(key_chunk, &mut offset_chunk)?;
+                }
+            }
+            _ => {
+                partitioner.prefix_sum(
+                    data_key.as_launchable_slice(),
+                    &mut partition_offsets,
+                    &stream,
+                )?;
+            }
+        }
 
         partitioner.partition(
             data_key.as_launchable_slice(),
@@ -1129,11 +1457,26 @@ mod tests {
         let data_key = Mem::CudaPinnedMem(data_key);
         let data_pay = Mem::CudaPinnedMem(data_pay);
 
-        partitioner.prefix_sum(
-            data_key.as_launchable_slice(),
-            &mut partition_offsets,
-            &stream,
-        )?;
+        match histogram_algorithm {
+            GpuHistogramAlgorithm::CpuChunked => {
+                let key_slice: &[i32] = (&data_key)
+                    .try_into()
+                    .map_err(|_| "Failed to run CPU prefix sum on device memory")?;
+                let key_chunks = key_slice.input_chunks::<i32>(&partitioner)?;
+                let offset_chunks = partition_offsets.chunks_mut();
+
+                for (key_chunk, mut offset_chunk) in key_chunks.iter().zip(offset_chunks) {
+                    partitioner.cpu_prefix_sum(key_chunk, &mut offset_chunk)?;
+                }
+            }
+            _ => {
+                partitioner.prefix_sum(
+                    data_key.as_launchable_slice(),
+                    &mut partition_offsets,
+                    &stream,
+                )?;
+            }
+        }
 
         partitioner.partition(
             data_key.as_launchable_slice(),

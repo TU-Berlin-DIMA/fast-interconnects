@@ -34,6 +34,7 @@ struct PrefixSumArgs {
   // Inputs
   const void *const __restrict__ partition_attr;
   std::size_t const data_length;
+  std::size_t const canonical_chunk_length;
   uint32_t const padding_length;
   uint32_t const radix_bits;
 

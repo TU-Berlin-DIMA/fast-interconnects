@@ -13,6 +13,16 @@ use rustacuda::memory::DeviceCopy;
 pub mod cpu_radix_partition;
 pub mod gpu_radix_partition;
 
+/// Defines the alignment of each partition in bytes.
+///
+/// Typically, alignment should be a multiple of the cache line size. Reasons
+/// for this size are:
+///
+/// 1. Non-temporal store instructions
+/// 2. Vector load and store intructions
+/// 3. Coalesced loads and stores on GPUs
+const ALIGN_BYTES: u32 = 128;
+
 /// Defines the padding bytes between partitions.
 ///
 /// Padding is necessary for partitioning algorithms to align writes. Aligned writes have fixed
