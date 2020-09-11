@@ -97,6 +97,19 @@ impl<T: DeviceCopy> Mem<T> {
         unsafe { LaunchableSlice(std::slice::from_raw_parts(self.as_ptr(), self.len())) }
     }
 
+    pub fn as_launchable_mut_slice(&mut self) -> LaunchableMutSlice<'_, T> {
+        // Note: This is implementation is a short-cut. The proper way is
+        // implemented in as_launchable_mut_ptr(). The reason we don't do the
+        // proper way here is because RUSTACuda doesn't have a *const T
+        // equivalent for UnifiedPointer and DevicePointer.
+        unsafe {
+            LaunchableMutSlice(std::slice::from_raw_parts_mut(
+                self.as_mut_ptr(),
+                self.len(),
+            ))
+        }
+    }
+
     pub fn as_launchable_ptr(&self) -> LaunchablePtr<T> {
         // Note: This is implementation is a short-cut. The proper way is
         // implemented in as_launchable_mut_ptr(). The reason we don't do the
@@ -247,6 +260,19 @@ impl<T: DeviceCopy> DerefMem<T> {
         unsafe { LaunchableSlice(std::slice::from_raw_parts(self.as_ptr(), self.len())) }
     }
 
+    pub fn as_launchable_mut_slice(&mut self) -> LaunchableMutSlice<'_, T> {
+        // Note: This is implementation is a short-cut. The proper way is
+        // implemented in as_launchable_mut_ptr(). The reason we don't do the
+        // proper way here is because RUSTACuda doesn't have a *const T
+        // equivalent for UnifiedPointer and DevicePointer.
+        unsafe {
+            LaunchableMutSlice(std::slice::from_raw_parts_mut(
+                self.as_mut_ptr(),
+                self.len(),
+            ))
+        }
+    }
+
     pub fn as_launchable_ptr(&self) -> LaunchablePtr<T> {
         // Note: This is implementation is a short-cut. The proper way is
         // implemented in as_launchable_mut_ptr(). The reason we don't do the
@@ -323,6 +349,12 @@ pub trait LaunchableMem {
 
     /// Returns a launchable slice to the entire memory range.
     fn as_launchable_slice(&self) -> LaunchableSlice<'_, Self::Item>;
+
+    /// Returns a launchable mutable pointer to the beginning of the memory range.
+    fn as_launchable_mut_ptr(&mut self) -> LaunchableMutPtr<Self::Item>;
+
+    /// Returns a launchable mutable slice to the entire memory range.
+    fn as_launchable_mut_slice(&mut self) -> LaunchableMutSlice<'_, Self::Item>;
 }
 
 /// Directly derefencing a main-memory slice on the GPU requires that the GPU
@@ -341,6 +373,14 @@ impl<'a, T> LaunchableMem for [T] {
     fn as_launchable_slice(&self) -> LaunchableSlice<'_, T> {
         LaunchableSlice(self)
     }
+
+    fn as_launchable_mut_ptr(&mut self) -> LaunchableMutPtr<T> {
+        LaunchableMutPtr(self.as_mut_ptr())
+    }
+
+    fn as_launchable_mut_slice(&mut self) -> LaunchableMutSlice<'_, T> {
+        LaunchableMutSlice(self)
+    }
 }
 
 impl<'a, T> LaunchableMem for DeviceBuffer<T> {
@@ -352,6 +392,19 @@ impl<'a, T> LaunchableMem for DeviceBuffer<T> {
 
     fn as_launchable_slice(&self) -> LaunchableSlice<'_, T> {
         unsafe { LaunchableSlice(std::slice::from_raw_parts(self.as_ptr(), self.len())) }
+    }
+
+    fn as_launchable_mut_ptr(&mut self) -> LaunchableMutPtr<T> {
+        LaunchableMutPtr(self.as_mut_ptr())
+    }
+
+    fn as_launchable_mut_slice(&mut self) -> LaunchableMutSlice<'_, T> {
+        unsafe {
+            LaunchableMutSlice(std::slice::from_raw_parts_mut(
+                self.as_mut_ptr(),
+                self.len(),
+            ))
+        }
     }
 }
 
@@ -365,6 +418,19 @@ impl<'a, T> LaunchableMem for DeviceSlice<T> {
     fn as_launchable_slice(&self) -> LaunchableSlice<'_, T> {
         unsafe { LaunchableSlice(std::slice::from_raw_parts(self.as_ptr(), self.len())) }
     }
+
+    fn as_launchable_mut_ptr(&mut self) -> LaunchableMutPtr<T> {
+        LaunchableMutPtr(self.as_mut_ptr())
+    }
+
+    fn as_launchable_mut_slice(&mut self) -> LaunchableMutSlice<'_, T> {
+        unsafe {
+            LaunchableMutSlice(std::slice::from_raw_parts_mut(
+                self.as_mut_ptr(),
+                self.len(),
+            ))
+        }
+    }
 }
 
 impl<'a, T: DeviceCopy> LaunchableMem for UnifiedBuffer<T> {
@@ -376,6 +442,19 @@ impl<'a, T: DeviceCopy> LaunchableMem for UnifiedBuffer<T> {
 
     fn as_launchable_slice(&self) -> LaunchableSlice<'_, T> {
         unsafe { LaunchableSlice(std::slice::from_raw_parts(self.as_ptr(), self.len())) }
+    }
+
+    fn as_launchable_mut_ptr(&mut self) -> LaunchableMutPtr<T> {
+        LaunchableMutPtr(self.as_mut_ptr())
+    }
+
+    fn as_launchable_mut_slice(&mut self) -> LaunchableMutSlice<'_, T> {
+        unsafe {
+            LaunchableMutSlice(std::slice::from_raw_parts_mut(
+                self.as_mut_ptr(),
+                self.len(),
+            ))
+        }
     }
 }
 
@@ -403,6 +482,11 @@ impl<T: DeviceCopy> LaunchablePtr<T> {
     /// Cast internal pointer to void pointer.
     pub fn as_void(&self) -> LaunchablePtr<ffi::c_void> {
         LaunchablePtr(self.0 as *const ffi::c_void)
+    }
+
+    /// Calculates the offset from a pointer
+    pub unsafe fn offset(self, count: isize) -> LaunchablePtr<T> {
+        Self(self.0.offset(count))
     }
 }
 
@@ -453,6 +537,11 @@ impl<T: DeviceCopy> LaunchableMutPtr<T> {
     pub fn as_void(&self) -> LaunchableMutPtr<ffi::c_void> {
         LaunchableMutPtr(self.0 as *mut ffi::c_void)
     }
+
+    /// Calculates the offset from a pointer
+    pub unsafe fn offset(self, count: isize) -> LaunchableMutPtr<T> {
+        Self(self.0.offset(count))
+    }
 }
 
 /// Implement Clone trait to support cloning `std::ffi::c_void` pointers.
@@ -495,5 +584,40 @@ impl<'a, T> LaunchableSlice<'a, T> {
     /// Returns a launchable pointer to the beginning of the slice.
     pub fn as_launchable_ptr(&self) -> LaunchablePtr<T> {
         LaunchablePtr(self.0.as_ptr())
+    }
+
+    /// Returns a regular `slice`.
+    ///
+    /// This is unsafe because dereferencing on the CPU might lead to a segfault.
+    pub unsafe fn as_slice(&self) -> &'a [T] {
+        self.0
+    }
+}
+
+/// A slice of mutable memory that can be dereferenced on the GPU.
+///
+/// `LaunchableMutSlice` is intended to be passed to a function that executes a
+/// CUDA kernel with the slice as input parameter.
+#[derive(Debug)]
+pub struct LaunchableMutSlice<'a, T: 'a>(&'a mut [T]);
+
+unsafe impl<'a, T: DeviceCopy> DeviceCopy for LaunchableMutSlice<'a, T> {}
+
+impl<'a, T> LaunchableMutSlice<'a, T> {
+    /// Returns the length of the slice.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns a launchable pointer to the beginning of the slice.
+    pub fn as_launchable_mut_ptr(&mut self) -> LaunchableMutPtr<T> {
+        LaunchableMutPtr(self.0.as_mut_ptr())
+    }
+
+    /// Returns a regular mutable `slice`.
+    ///
+    /// This is unsafe because dereferencing on the CPU might lead to a segfault.
+    pub unsafe fn as_mut_slice(self) -> &'a mut [T] {
+        self.0
     }
 }
