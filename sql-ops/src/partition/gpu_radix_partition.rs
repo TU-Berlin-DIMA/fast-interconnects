@@ -102,8 +102,8 @@ pub trait RadixPartitionInputChunkable: Sized {
 pub trait GpuRadixPartitionable: Sized + DeviceCopy {
     fn cpu_prefix_sum_impl(
         rp: &GpuRadixPartitioner,
-        partition_attr: &RadixPartitionInputChunk<Self>,
-        partition_offsets: &mut PartitionOffsetsMutSlice<Tuple<Self, Self>>,
+        partition_attr: &RadixPartitionInputChunk<'_, Self>,
+        partition_offsets: &mut PartitionOffsetsMutSlice<'_, Tuple<Self, Self>>,
     ) -> Result<()>;
 
     fn prefix_sum_impl(
@@ -127,7 +127,7 @@ pub trait GpuRadixPartitionable: Sized + DeviceCopy {
 ///
 /// Effectively a slice with additional metadata specifying the referenced chunk.
 #[derive(Debug)]
-pub struct RadixPartitionInputChunk<'a, T: 'a + Sized> {
+pub struct RadixPartitionInputChunk<'a, T: Sized> {
     data: &'a [T],
     canonical_chunk_len: usize,
     chunk_id: u32,
@@ -140,7 +140,7 @@ impl<T> RadixPartitionInputChunkable for &[T] {
     fn input_chunks<Key>(
         &self,
         radix_partitioner: &GpuRadixPartitioner,
-    ) -> Result<Vec<RadixPartitionInputChunk<Self::Out>>> {
+    ) -> Result<Vec<RadixPartitionInputChunk<'_, Self::Out>>> {
         let num_chunks = radix_partitioner.grid_size.x;
         let canonical_chunk_len = radix_partitioner.input_chunk_size::<Key>(self.len())?;
 
@@ -230,7 +230,7 @@ impl<T: DeviceCopy> PartitionOffsets<T> {
     ///
     /// Chunks are non-overlapping and can safely be used for parallel
     /// processing.
-    pub fn chunks_mut(&mut self) -> PartitionOffsetsChunksMut<T> {
+    pub fn chunks_mut(&mut self) -> PartitionOffsetsChunksMut<'_, T> {
         PartitionOffsetsChunksMut::new(self)
     }
 
@@ -386,7 +386,7 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
     ///
     /// Chunks are non-overlapping and can safely be used for parallel
     /// processing.
-    pub fn chunks_mut(&mut self) -> PartitionedRelationChunksMut<T> {
+    pub fn chunks_mut(&mut self) -> PartitionedRelationChunksMut<'_, T> {
         PartitionedRelationChunksMut::new(self)
     }
 
@@ -454,7 +454,7 @@ impl<T: DeviceCopy> IndexMut<(usize, usize)> for PartitionedRelation<T> {
 
 /// An iterator that generates `PartitionedRelationMutSlice`.
 #[derive(Debug)]
-pub struct PartitionedRelationChunksMut<'a, T: 'a + DeviceCopy> {
+pub struct PartitionedRelationChunksMut<'a, T: DeviceCopy> {
     // Note: unsafe slices, must convert back to LaunchableMutSlice
     relation_chunks: ChunksMut<'a, T>,
     // Note: unsafe slices, must convert back to LaunchableSlice
@@ -764,8 +764,8 @@ impl GpuRadixPartitioner {
     /// `GpuRadixPartitioner` instance should be shared among all threads.
     pub fn cpu_prefix_sum<T: DeviceCopy + GpuRadixPartitionable>(
         &self,
-        partition_attr: &RadixPartitionInputChunk<T>,
-        partition_offsets: &mut PartitionOffsetsMutSlice<Tuple<T, T>>,
+        partition_attr: &RadixPartitionInputChunk<'_, T>,
+        partition_offsets: &mut PartitionOffsetsMutSlice<'_, Tuple<T, T>>,
     ) -> Result<()> {
         T::cpu_prefix_sum_impl(self, partition_attr, partition_offsets)
     }
@@ -812,8 +812,8 @@ macro_rules! impl_gpu_radix_partition_for_type {
             paste::item! {
                 fn cpu_prefix_sum_impl(
                     rp: &GpuRadixPartitioner,
-                    partition_attr: &RadixPartitionInputChunk<$Type>,
-                    partition_offsets: &mut PartitionOffsetsMutSlice<Tuple<$Type, $Type>>,
+                    partition_attr: &RadixPartitionInputChunk<'_, $Type>,
+                    partition_offsets: &mut PartitionOffsetsMutSlice<'_, Tuple<$Type, $Type>>,
                     ) -> Result<()> {
 
                     if partition_offsets.radix_bits != rp.radix_bits {

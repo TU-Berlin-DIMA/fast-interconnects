@@ -83,7 +83,7 @@ fn main() {
 
     let cuda_object_files: Vec<_> = cuda_files
         .as_slice()
-        .into_iter()
+        .iter()
         .map(|f| {
             let p = Path::new(f);
             let mut obj = PathBuf::new();

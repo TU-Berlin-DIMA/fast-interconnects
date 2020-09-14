@@ -113,26 +113,23 @@ impl UniformRelation {
         let percent = Uniform::from(0..=100);
         let mut shuffled: Vec<(usize, T)> = (1..(attr.len() + 1))
             .into_par_iter()
-            .map_init(
-                || thread_rng(),
-                |mut rng, i| {
-                    T::try_from_usize(i).map(|i| {
-                        let val = if percent.sample(&mut rng) <= selectivity {
-                            i
-                        } else {
-                            T::null_key()
-                        };
-                        (rng.gen(), val)
-                    })
-                },
-            )
+            .map_init(thread_rng, |mut rng, i| {
+                T::try_from_usize(i).map(|i| {
+                    let val = if percent.sample(&mut rng) <= selectivity {
+                        i
+                    } else {
+                        T::null_key()
+                    };
+                    (rng.gen(), val)
+                })
+            })
             .collect::<Result<_>>()?;
 
         shuffled.as_mut_slice().par_sort_unstable_by_key(|x| x.0);
 
         attr.par_iter_mut()
             .zip_eq(shuffled.into_par_iter())
-            .for_each(|(x, t)| *x = t.1.clone());
+            .for_each(|(x, t)| *x = t.1);
 
         Ok(())
     }

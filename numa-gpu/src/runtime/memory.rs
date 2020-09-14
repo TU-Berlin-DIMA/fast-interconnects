@@ -599,7 +599,7 @@ impl<'a, T> LaunchableSlice<'a, T> {
 /// `LaunchableMutSlice` is intended to be passed to a function that executes a
 /// CUDA kernel with the slice as input parameter.
 #[derive(Debug)]
-pub struct LaunchableMutSlice<'a, T: 'a>(&'a mut [T]);
+pub struct LaunchableMutSlice<'a, T>(&'a mut [T]);
 
 unsafe impl<'a, T: DeviceCopy> DeviceCopy for LaunchableMutSlice<'a, T> {}
 
