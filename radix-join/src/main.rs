@@ -9,19 +9,20 @@
  */
 
 mod error;
+mod execution_methods;
 mod measurement;
 mod types;
 
 use crate::error::Result;
+use crate::execution_methods::gpu_radix_join::gpu_radix_join;
 use crate::measurement::data_point::DataPoint;
-use crate::measurement::harness;
-use crate::measurement::radix_join_bench::{RadixJoinBenchBuilder, RadixJoinPoint};
+use crate::measurement::harness::{self, RadixJoinPoint};
 use crate::types::*;
+use data_store::join_data::{JoinDataBuilder, JoinDataGenFn};
 use datagen::relation::KeyAttribute;
 use num_rational::Ratio;
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::numa::NodeRatio;
-use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
@@ -274,17 +275,10 @@ where
         + no_partitioning_join::NullKey
         + no_partitioning_join::CudaHashJoinable
         + no_partitioning_join::CpuHashJoinable
-        + EnsurePhysicallyBacked
         + KeyAttribute
         + num_traits::FromPrimitive
         + DeserializeOwned,
 {
-    // Convert ArgHashingScheme to HashingScheme
-    let (hashing_scheme, hash_table_load_factor) = match cmd.hashing_scheme {
-        ArgHashingScheme::Perfect => (HashingScheme::Perfect, 1),
-        ArgHashingScheme::LinearProbing => (HashingScheme::LinearProbing, 2),
-    };
-
     // Device tuning
     let multiprocessors = device.get_attribute(DeviceAttribute::MultiprocessorCount)? as u32;
     let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
@@ -294,20 +288,28 @@ where
     let block_size = BlockSize::x(warp_size * warp_overcommit_factor);
     let grid_size = GridSize::x(multiprocessors * grid_overcommit_factor);
 
-    let mut hjb_builder = RadixJoinBenchBuilder::default();
-    hjb_builder
-        .hashing_scheme(hashing_scheme)
-        .hash_table_load_factor(hash_table_load_factor)
-        .inner_location(Box::new([NodeRatio {
-            node: cmd.inner_rel_location,
-            ratio: Ratio::from_integer(1),
-        }]))
-        .outer_location(Box::new([NodeRatio {
-            node: cmd.outer_rel_location,
-            ratio: Ratio::from_integer(1),
-        }]))
-        .inner_mem_type(cmd.mem_type)
-        .outer_mem_type(cmd.mem_type);
+    let mut data_builder = JoinDataBuilder::default();
+    data_builder
+        .inner_mem_type(
+            ArgMemTypeHelper {
+                mem_type: cmd.mem_type,
+                node_ratios: Box::new([NodeRatio {
+                    node: cmd.inner_rel_location,
+                    ratio: Ratio::from_integer(1),
+                }]),
+            }
+            .into(),
+        )
+        .outer_mem_type(
+            ArgMemTypeHelper {
+                mem_type: cmd.mem_type,
+                node_ratios: Box::new([NodeRatio {
+                    node: cmd.outer_rel_location,
+                    ratio: Ratio::from_integer(1),
+                }]),
+            }
+            .into(),
+        );
 
     let exec_method = cmd.execution_method;
     let histogram_algorithm = cmd.histogram_algorithm;
@@ -316,6 +318,12 @@ where
     let dmem_buffer_bytes = cmd.dmem_buffer_size * 1024; // convert KiB to bytes
     let mem_type = cmd.partitions_mem_type;
     let threads = cmd.threads;
+
+    // Convert ArgHashingScheme to HashingScheme
+    let hashing_scheme = match cmd.hashing_scheme {
+        ArgHashingScheme::Perfect => HashingScheme::Perfect,
+        ArgHashingScheme::LinearProbing => HashingScheme::LinearProbing,
+    };
 
     let node_ratios: Box<[NodeRatio]> = cmd
         .partitions_location
@@ -328,12 +336,12 @@ where
         .collect();
 
     // Load file or generate data set
-    let (mut hjb, malloc_time, data_gen_time) =
+    let (mut join_data, malloc_time, data_gen_time) =
         if let (Some(inner_rel_path), Some(outer_rel_path)) = (
             cmd.inner_rel_file.as_ref().and_then(|p| p.to_str()),
             cmd.outer_rel_file.as_ref().and_then(|p| p.to_str()),
         ) {
-            hjb_builder.build_with_files::<T>(inner_rel_path, outer_rel_path)?
+            data_builder.build_with_files::<T>(inner_rel_path, outer_rel_path)?
         } else {
             let data_distribution = match cmd.data_distribution {
                 ArgDataDistribution::Uniform => DataDistribution::Uniform,
@@ -347,7 +355,7 @@ where
                 data_distribution,
                 Some(cmd.selectivity),
             );
-            hjb_builder
+            data_builder
                 .inner_len(inner_relation_len)
                 .outer_len(outer_relation_len)
                 .build_with_data_gen(data_gen)?
@@ -356,7 +364,7 @@ where
     // Construct data point template for CSV
     let dp = DataPoint::new()?
         .fill_from_cmd_options(cmd)?
-        .fill_from_hash_join_bench(&hjb)
+        .fill_from_join_data(&join_data)
         .set_init_time(malloc_time, data_gen_time);
 
     let cpu_affinity = if let Some(ref cpu_affinity_file) = cmd.cpu_affinity {
@@ -374,7 +382,9 @@ where
             }
             .into();
 
-            hjb.gpu_radix_join(
+            gpu_radix_join(
+                &mut join_data,
+                hashing_scheme,
                 histogram_algorithm.into(),
                 partition_algorithm.into(),
                 radix_bits,
@@ -392,15 +402,13 @@ where
     Ok((hjc, dp))
 }
 
-type DataGenFn<T> = Box<dyn FnMut(&mut [T], &mut [T]) -> Result<()>>;
-
 fn data_gen_fn<T>(
     description: ArgDataSet,
     inner_rel_tuples: Option<usize>,
     outer_rel_tuples: Option<usize>,
     data_distribution: DataDistribution,
     selectivity: Option<u32>,
-) -> (usize, usize, DataGenFn<T>)
+) -> (usize, usize, JoinDataGenFn<T>)
 where
     T: Copy + Send + KeyAttribute + num_traits::FromPrimitive,
 {
@@ -472,7 +480,7 @@ where
                 Ok(())
             });
 
-            let gen: DataGenFn<T> = match data_distribution {
+            let gen: JoinDataGenFn<T> = match data_distribution {
                 DataDistribution::Uniform => uniform_gen,
                 DataDistribution::Zipf(exp) if !(exp > 0.0) => uniform_gen,
                 DataDistribution::Zipf(exp) => {

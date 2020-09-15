@@ -9,9 +9,16 @@
  */
 
 use super::data_point::DataPoint;
-use super::radix_join_bench::RadixJoinPoint;
 use crate::error::Result;
 use std::path::PathBuf;
+
+#[derive(Debug, Default)]
+pub struct RadixJoinPoint {
+    pub partitions_malloc_ns: Option<f64>,
+    pub prefix_sum_ns: Option<f64>,
+    pub partition_ns: Option<f64>,
+    pub join_ns: Option<f64>,
+}
 
 pub fn measure(
     _name: &str,

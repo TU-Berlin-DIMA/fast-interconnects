@@ -344,6 +344,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "data-store"
+version = "0.1.0"
+dependencies = [
+ "csv 1.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datagen 0.1.0",
+ "flate2 1.0.11 (registry+https://github.com/rust-lang/crates.io-index)",
+ "numa-gpu 0.1.0",
+ "rayon 1.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rustacuda 0.1.1 (git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods)",
+ "serde 1.0.98 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "datagen"
 version = "0.1.0"
 dependencies = [
@@ -861,8 +874,8 @@ name = "radix-join"
 version = "0.1.0"
 dependencies = [
  "csv 1.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "data-store 0.1.0",
  "datagen 0.1.0",
- "flate2 1.0.11 (registry+https://github.com/rust-lang/crates.io-index)",
  "hostname 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "num-rational 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "num-traits 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)",

@@ -8,9 +8,9 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-use super::radix_join_bench::RadixJoinBench;
 use crate::types::*;
 use crate::CmdOpt;
+use data_store::join_data::JoinData;
 use numa_gpu::error::Result;
 use numa_gpu::runtime::hw_info::cpu_codename;
 use rustacuda::device::Device;
@@ -107,15 +107,17 @@ impl DataPoint {
         Ok(dp)
     }
 
-    pub fn fill_from_hash_join_bench<T: DeviceCopy>(&self, hjb: &RadixJoinBench<T>) -> DataPoint {
+    pub fn fill_from_join_data<T: DeviceCopy>(&self, join_data: &JoinData<T>) -> DataPoint {
         DataPoint {
-            build_tuples: Some(hjb.build_relation_key.len()),
+            build_tuples: Some(join_data.build_relation_key.len()),
             build_bytes: Some(
-                (hjb.build_relation_key.len() + hjb.build_relation_payload.len()) * size_of::<T>(),
+                (join_data.build_relation_key.len() + join_data.build_relation_payload.len())
+                    * size_of::<T>(),
             ),
-            probe_tuples: Some(hjb.probe_relation_key.len()),
+            probe_tuples: Some(join_data.probe_relation_key.len()),
             probe_bytes: Some(
-                (hjb.probe_relation_key.len() + hjb.probe_relation_payload.len()) * size_of::<T>(),
+                (join_data.probe_relation_key.len() + join_data.probe_relation_payload.len())
+                    * size_of::<T>(),
             ),
             ..self.clone()
         }

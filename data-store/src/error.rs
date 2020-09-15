@@ -4,25 +4,23 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019-2020, Clemens Lutz <lutzcle@cml.li>
+ * Copyright (c) 2020, Clemens Lutz <lutzcle@cml.li>
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-use data_store::error::Error as DataStoreError;
+use datagen::error::Error as DatagenError;
 use numa_gpu::error::Error as NumaGpuError;
 use rayon::ThreadPoolBuildError;
 use rustacuda::error::CudaError;
-use sql_ops::error::Error as SqlOpsError;
 use std::convert::From;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum ErrorKind {
     CsvError(csv::Error),
     CudaError(CudaError),
-    DataStoreError(DataStoreError),
+    DatagenError(DatagenError),
     IntegerOverflow(String),
     InvalidArgument(String),
     InvalidConversion(String),
@@ -30,7 +28,6 @@ pub enum ErrorKind {
     LogicError(String),
     NumaGpuError(NumaGpuError),
     RuntimeError(String),
-    SqlOpsError(SqlOpsError),
     RayonThreadPoolBuildError(ThreadPoolBuildError),
 }
 
@@ -63,10 +60,10 @@ impl From<CudaError> for Error {
     }
 }
 
-impl From<DataStoreError> for Error {
-    fn from(error: DataStoreError) -> Self {
+impl From<DatagenError> for Error {
+    fn from(error: DatagenError) -> Self {
         Self {
-            kind: ErrorKind::DataStoreError(error),
+            kind: ErrorKind::DatagenError(error),
         }
     }
 }
@@ -83,14 +80,6 @@ impl From<NumaGpuError> for Error {
     fn from(error: NumaGpuError) -> Self {
         Self {
             kind: ErrorKind::NumaGpuError(error),
-        }
-    }
-}
-
-impl From<SqlOpsError> for Error {
-    fn from(error: SqlOpsError) -> Self {
-        Self {
-            kind: ErrorKind::SqlOpsError(error),
         }
     }
 }
@@ -114,7 +103,7 @@ impl std::fmt::Display for ErrorKind {
         match self {
             ErrorKind::CsvError(ref e) => e.fmt(f),
             ErrorKind::CudaError(ref e) => e.fmt(f),
-            ErrorKind::DataStoreError(ref e) => e.fmt(f),
+            ErrorKind::DatagenError(ref e) => e.fmt(f),
             ErrorKind::IntegerOverflow(ref s) => write!(f, "Integer overflow: {}", s),
             ErrorKind::InvalidArgument(ref s) => write!(f, "Invalid argument: {}", s),
             ErrorKind::InvalidConversion(ref s) => write!(f, "Invalid conversion: {}", s),
@@ -122,7 +111,6 @@ impl std::fmt::Display for ErrorKind {
             ErrorKind::LogicError(ref s) => write!(f, "Logic error: {}", s),
             ErrorKind::NumaGpuError(ref e) => e.fmt(f),
             ErrorKind::RuntimeError(ref s) => write!(f, "Runtime error: {}", s),
-            ErrorKind::SqlOpsError(ref e) => e.fmt(f),
             ErrorKind::RayonThreadPoolBuildError(ref e) => e.fmt(f),
         }
     }

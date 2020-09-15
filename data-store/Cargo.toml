@@ -1,33 +1,22 @@
 [package]
-name = "radix-join"
+name = "data-store"
 version = "0.1.0"
 authors = ["Clemens Lutz <lutzcle@cml.li>"]
 license = "MPL-2.0"
 repository = "https://github.com/TU-Berlin-DIMA/numa-gpu"
-description = "A partitioned hash join optimized for large-to-large joins on GPUs with fast interconnects"
+description = "A collection of data stores for SQL operators"
 readme = "../README.md"
 edition = "2018"
 
 [dependencies]
 csv = "~1.1.1"
-hostname = "~0.1.5"
-num-rational = "~0.2.0"
-num-traits = "~0.2.0"
+flate2 = { version = "~1.0.11", features = ["zlib"], default-features = false }
 rayon = "~1.2.0"
 rustacuda = { git = "https://github.com/LutzCle/RustaCUDA", branch = "custom_mods" }
 serde = "~1.0.76"
-serde_derive = "~1.0.76"
-serde_repr = "~0.1"
-structopt = "0.3"
 
 [dependencies.datagen]
 path = "../datagen"
 
-[dependencies.data-store]
-path = "../data-store"
-
 [dependencies.numa-gpu]
 path = "../numa-gpu"
-
-[dependencies.sql-ops]
-path = "../sql-ops"

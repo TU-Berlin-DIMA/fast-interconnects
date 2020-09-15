@@ -1,6 +1,7 @@
 [workspace]
 members = [
         "datagen",
+        "data-store",
         "hashjoin",
         "microbench",
         "numa-gpu",
