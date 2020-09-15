@@ -4,6 +4,7 @@ members = [
         "hashjoin",
         "microbench",
         "numa-gpu",
+        "radix-join",
         "sql-ops",
         "tpch-bench",
 ]
