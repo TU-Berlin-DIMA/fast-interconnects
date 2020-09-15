@@ -111,7 +111,7 @@ impl From<ArgMemTypeHelper> for allocator::MemType {
         match mem_type {
             ArgMemType::System => allocator::MemType::SysMem,
             ArgMemType::Numa => allocator::MemType::NumaMem(node_ratios[0].node),
-            ArgMemType::NumaLazyPinned => allocator::MemType::NumaMem(node_ratios[0].node),
+            ArgMemType::NumaLazyPinned => allocator::MemType::NumaPinnedMem(node_ratios[0].node),
             ArgMemType::DistributedNuma => allocator::MemType::DistributedNumaMem(node_ratios),
             ArgMemType::Pinned => allocator::MemType::CudaPinnedMem,
             ArgMemType::Unified => allocator::MemType::CudaUniMem,
@@ -130,7 +130,9 @@ impl From<ArgMemTypeHelper> for allocator::DerefMemType {
         match mem_type {
             ArgMemType::System => allocator::DerefMemType::SysMem,
             ArgMemType::Numa => allocator::DerefMemType::NumaMem(node_ratios[0].node),
-            ArgMemType::NumaLazyPinned => allocator::DerefMemType::NumaMem(node_ratios[0].node),
+            ArgMemType::NumaLazyPinned => {
+                allocator::DerefMemType::NumaPinnedMem(node_ratios[0].node)
+            }
             ArgMemType::DistributedNuma => allocator::DerefMemType::DistributedNumaMem(node_ratios),
             ArgMemType::Pinned => allocator::DerefMemType::CudaPinnedMem,
             ArgMemType::Unified => allocator::DerefMemType::CudaUniMem,

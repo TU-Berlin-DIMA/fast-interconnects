@@ -163,25 +163,6 @@ impl HashJoinBenchBuilder {
                 len,
             );
 
-            // If user selected NumaLazyPinned, then pin the memory.
-            // If user selected Unified, then ensure that we measure unified memory transfers from CPU memory
-            match (mem_type, &mut mem) {
-                (ArgMemType::NumaLazyPinned, DerefMem::NumaMem(lazy_pinned_mem)) => lazy_pinned_mem
-                    .page_lock()
-                    .expect("Failed to lazily pin memory"),
-                // (ArgMemType::Unified, DerefMem::CudaUniMem(mem)) => {
-                //     mem_advise(
-                //         mem.as_unified_ptr(),
-                //         mem.len(),
-                //         MemAdviseFlags::CU_MEM_ADVISE_SET_READ_MOSTLY,
-                //         0,
-                //         MemAdviseFlags::CU_MEM_ADVISE_SET_PREFERRED_LOCATION,
-                //         CPU_DEVICE_ID,
-                //     )?;
-                // }
-                _ => {}
-            };
-
             // Force the OS to physically allocate the memory
             match mem {
                 DerefMem::SysMem(ref mut mem) => T::ensure_physically_backed(mem.as_mut_slice()),
