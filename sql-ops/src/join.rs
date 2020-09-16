@@ -4,10 +4,11 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018-2019 Clemens Lutz, German Research Center for Artificial Intelligence
+ * Copyright 2018-2020 Clemens Lutz, German Research Center for Artificial Intelligence
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
+pub mod cuda_radix_join;
 mod hashing_scheme;
 pub mod no_partitioning_join;
 

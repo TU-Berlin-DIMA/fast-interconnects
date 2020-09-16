@@ -33,6 +33,7 @@ fn main() {
     let cuda_lib_file = format!("{}/cudautils.fatbin", out_dir);
     let cuda_files = vec![
         "cudautils/no_partitioning_join.cu",
+        "cudautils/radix_join.cu",
         "cudautils/radix_partition.cu",
     ];
     let num_banks_arg = format!("-DLOG2_NUM_BANKS={}", log2_num_banks);

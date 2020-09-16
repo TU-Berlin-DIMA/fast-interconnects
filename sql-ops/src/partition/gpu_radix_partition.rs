@@ -321,10 +321,10 @@ impl<'a, T: DeviceCopy> Iterator for PartitionOffsetsChunksMut<'a, T> {
 /// The purpose is to allow thread-safe writes to `PartitionOffsets`.
 #[derive(Debug)]
 pub struct PartitionOffsetsMutSlice<'a, T: DeviceCopy> {
-    pub offsets: LaunchableMutSlice<'a, u64>,
-    pub chunk_id: u32,
-    pub chunks: u32,
-    pub radix_bits: u32,
+    pub(crate) offsets: LaunchableMutSlice<'a, u64>,
+    pub(crate) chunk_id: u32,
+    pub(crate) chunks: u32,
+    pub(crate) radix_bits: u32,
     phantom_data: std::marker::PhantomData<T>,
 }
 
@@ -349,10 +349,10 @@ impl<'a, T: DeviceCopy> PartitionOffsetsMutSlice<'a, T> {
 ///     (e.g., the grid size).
 #[derive(Debug)]
 pub struct PartitionedRelation<T: DeviceCopy> {
-    pub(super) relation: Mem<T>,
-    pub(super) offsets: Mem<u64>,
-    pub(super) chunks: u32,
-    pub(super) radix_bits: u32,
+    pub(crate) relation: Mem<T>,
+    pub(crate) offsets: Mem<u64>,
+    pub(crate) chunks: u32,
+    pub(crate) radix_bits: u32,
 }
 
 impl<T: DeviceCopy> PartitionedRelation<T> {
@@ -414,7 +414,7 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
     }
 
     /// Returns the number of padding elements per partition.
-    pub(super) fn padding_len(&self) -> u32 {
+    pub(crate) fn padding_len(&self) -> u32 {
         super::GPU_PADDING_BYTES / mem::size_of::<T>() as u32
     }
 }

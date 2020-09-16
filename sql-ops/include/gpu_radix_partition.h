@@ -70,8 +70,10 @@ struct RadixPartitionArgs {
 
 // Computes the partition ID of a given key.
 template <typename T, typename B>
-CUDA_MODIFIER uint32_t key_to_partition(T key, uint64_t mask, B bits) {
-  return static_cast<uint32_t>((static_cast<uint64_t>(key) & mask) >> bits);
+CUDA_MODIFIER unsigned int key_to_partition(T key, unsigned long long mask,
+                                            B bits) {
+  return static_cast<unsigned int>(
+      (static_cast<unsigned long long>(key) & mask) >> bits);
 }
 
 #endif /* GPU_RADIX_PARTITION_H */

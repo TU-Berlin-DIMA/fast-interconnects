@@ -11,6 +11,7 @@
 
 #define CUDA_MODIFIER __device__
 
+#include <gpu_common.h>
 #include <gpu_radix_partition.h>
 #include <prefix_scan.h>
 #include <ptx_memory.h>
@@ -32,38 +33,6 @@ __device__ int log2_floor_power_of_two(int x) { return 32 - __clz(x) - 1; }
 
 // Returns the log2 of the next-higher power of two
 __device__ int log2_ceil_power_of_two(int x) { return 32 - __clz(x - 1); }
-
-// A key-value tuple.
-//
-// Note that the struct's layout must be kept in sync with its counterpart in
-// Rust.
-template <typename K, typename V>
-struct Tuple {
-  K key;
-  V value;
-
-  __device__ __forceinline__ void load(Tuple<int, int> const &src) {
-    int2 tmp = *reinterpret_cast<int2 const *>(&src);
-    this->key = tmp.x;
-    this->value = tmp.y;
-  }
-
-  __device__ __forceinline__ void load(Tuple<long long, long long> const &src) {
-    longlong2 tmp = *reinterpret_cast<longlong2 const *>(&src);
-    this->key = tmp.x;
-    this->value = tmp.y;
-  }
-
-  __device__ __forceinline__ void store(Tuple<int, int> &dst) {
-    int2 tmp = make_int2(this->key, this->value);
-    *reinterpret_cast<int2 *>(&dst) = tmp;
-  }
-
-  __device__ __forceinline__ void store(Tuple<long long, long long> &dst) {
-    longlong2 tmp = make_longlong2(this->key, this->value);
-    *reinterpret_cast<longlong2 *>(&dst) = tmp;
-  }
-};
 
 __device__ __forceinline__ uint32_t write_combine_slot(
     uint32_t tuples_per_buffer, uint32_t p_index, uint32_t slot) {
