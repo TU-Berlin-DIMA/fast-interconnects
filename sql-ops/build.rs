@@ -32,6 +32,7 @@ fn main() {
     // Add CUDA utils
     let cuda_lib_file = format!("{}/cudautils.fatbin", out_dir);
     let cuda_files = vec![
+        "cudautils/gpu_common.cu",
         "cudautils/no_partitioning_join.cu",
         "cudautils/radix_join.cu",
         "cudautils/radix_partition.cu",

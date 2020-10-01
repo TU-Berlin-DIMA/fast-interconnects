@@ -24,4 +24,16 @@ pub enum HashingScheme {
     ///
     /// Linear probing makes no assumptions about the join key distribution.
     LinearProbing,
+
+    /// Bucket chaining scheme.
+    ///
+    /// Bucket chaining makes no assumptions about the join key distribution.
+    ///
+    /// ## Optimizations
+    ///
+    /// - vectorized loads
+    /// - static hash table entry assignment per thread
+    /// - key compression (not implemented)
+    /// - materialization using coalesced writes (not implemented)
+    BucketChaining,
 }

@@ -28,12 +28,6 @@ namespace cg = cooperative_groups;
 
 using namespace std;
 
-// Returns the log2 of the next-lower power of two
-__device__ int log2_floor_power_of_two(int x) { return 32 - __clz(x) - 1; }
-
-// Returns the log2 of the next-higher power of two
-__device__ int log2_ceil_power_of_two(int x) { return 32 - __clz(x - 1); }
-
 __device__ __forceinline__ uint32_t write_combine_slot(
     uint32_t tuples_per_buffer, uint32_t p_index, uint32_t slot) {
   return tuples_per_buffer * p_index + slot;

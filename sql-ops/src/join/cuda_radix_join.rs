@@ -35,7 +35,7 @@ struct JoinAggregateArgs {
     build_rel_partition_offsets: LaunchablePtr<u64>,
     probe_rel: LaunchablePtr<ffi::c_void>,
     probe_rel_partition_offsets: LaunchablePtr<u64>,
-    aggregation_result: LaunchableMutPtr<u64>,
+    aggregation_result: LaunchableMutPtr<i64>,
     task_assignments: LaunchableMutPtr<u32>,
     build_rel_len: u32,
     probe_rel_len: u32,
@@ -64,7 +64,7 @@ pub trait CudaRadixJoinable: DeviceCopy + NullKey {
         radix_bits: u32,
         build_rel: &PartitionedRelation<Tuple<Self, Self>>,
         probe_rel: &PartitionedRelation<Tuple<Self, Self>>,
-        result_set: &mut LaunchableMutSlice<u64>,
+        result_set: &mut LaunchableMutSlice<i64>,
         task_assignments: &mut LaunchableMutSlice<u32>,
         stream: &Stream,
     ) -> Result<()>;
@@ -99,7 +99,7 @@ impl CudaRadixJoin {
         radix_bits: u32,
         build_rel: &PartitionedRelation<Tuple<T, T>>,
         probe_rel: &PartitionedRelation<Tuple<T, T>>,
-        result_set: &mut LaunchableMutSlice<u64>,
+        result_set: &mut LaunchableMutSlice<i64>,
         task_assignments: &mut LaunchableMutSlice<u32>,
         stream: &Stream,
     ) -> Result<()>
@@ -126,7 +126,7 @@ impl CudaRadixJoinable for i32 {
         radix_bits: u32,
         build_rel: &PartitionedRelation<Tuple<Self, Self>>,
         probe_rel: &PartitionedRelation<Tuple<Self, Self>>,
-        result_set: &mut LaunchableMutSlice<u64>,
+        result_set: &mut LaunchableMutSlice<i64>,
         task_assignments: &mut LaunchableMutSlice<u32>,
         stream: &Stream,
     ) -> Result<()> {
@@ -200,6 +200,27 @@ impl CudaRadixJoinable for i32 {
                 }
             }
             HashingScheme::LinearProbing => unimplemented!(),
+            HashingScheme::BucketChaining => {
+                // Tuning parameter for the number of hash table buckets in the bucket-chained
+                // hashing scheme. Must be a power of 2, and at least 1. No further constraints.
+                args.ht_entries = 2048;
+
+                let name = std::ffi::CString::new(stringify!(
+                    gpu_join_aggregate_smem_chaining_i32_i32_i32
+                ))
+                .unwrap();
+                let mut function = module.get_function(&name)?;
+                function.set_max_dynamic_shared_size_bytes(max_shared_mem_bytes)?;
+
+                unsafe {
+                    launch!(
+                    function<<<grid, block, max_shared_mem_bytes, stream>>>(
+                        args.clone(),
+                        max_shared_mem_bytes
+                        )
+                    )?;
+                }
+            }
         };
 
         Ok(())

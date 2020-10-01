@@ -150,7 +150,7 @@ fn gpu_verify_join_aggregate(
     };
 
     assert_eq!(
-        (probe_tuples as u64 * (probe_tuples as u64 + 1)) / 2,
+        (probe_tuples as i64 * (probe_tuples as i64 + 1)) / 2,
         result_sum
     );
 
@@ -283,6 +283,54 @@ fn gpu_verify_join_aggregate_task_assignment_8_bits_80_blocks() -> Result<(), Bo
         6100 * 2_usize.pow(8),
         6100 * 2_usize.pow(8),
         HashingScheme::Perfect,
+        8,
+        GridSize::from(80),
+        BlockSize::from(128),
+    )
+}
+
+#[test]
+fn gpu_verify_join_aggregate_smem_bucketchaining_i32_0_bits() -> Result<(), Box<dyn Error>> {
+    gpu_verify_join_aggregate(
+        4096,
+        4096,
+        HashingScheme::BucketChaining,
+        0,
+        GridSize::from(1),
+        BlockSize::from(128),
+    )
+}
+
+#[test]
+fn gpu_verify_join_aggregate_smem_bucketchaining_i32_2_bits() -> Result<(), Box<dyn Error>> {
+    gpu_verify_join_aggregate(
+        4096 * 2_usize.pow(1),
+        4096 * 2_usize.pow(1),
+        HashingScheme::BucketChaining,
+        1,
+        GridSize::from(1),
+        BlockSize::from(128),
+    )
+}
+
+#[test]
+fn gpu_verify_join_aggregate_smem_bucketchaining_i32_8_bits() -> Result<(), Box<dyn Error>> {
+    gpu_verify_join_aggregate(
+        4096 * 2_usize.pow(8),
+        4096 * 2_usize.pow(8),
+        HashingScheme::BucketChaining,
+        8,
+        GridSize::from(1),
+        BlockSize::from(128),
+    )
+}
+
+#[test]
+fn gpu_verify_join_aggregate_task_assignment_smem_bucketchaining() -> Result<(), Box<dyn Error>> {
+    gpu_verify_join_aggregate(
+        4096 * 2_usize.pow(8),
+        4096 * 2_usize.pow(8),
+        HashingScheme::BucketChaining,
         8,
         GridSize::from(80),
         BlockSize::from(128),

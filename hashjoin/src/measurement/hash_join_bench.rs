@@ -234,6 +234,7 @@ impl HashJoinBenchBuilder {
                 .ok_or_else(|| {
                     ErrorKind::IntegerOverflow("Failed to compute hash table length".to_string())
                 })?,
+            HashingScheme::BucketChaining => unimplemented!(),
         };
 
         Ok(hash_table_len)

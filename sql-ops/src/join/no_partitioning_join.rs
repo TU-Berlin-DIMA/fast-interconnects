@@ -383,6 +383,8 @@ macro_rules! impl_cuda_hash_join_for_type {
                                     )
                                 )? },
                         (HashingScheme::LinearProbing, true) => unimplemented!(),
+			(HashingScheme::BucketChaining, false) => unimplemented!(),
+			(HashingScheme::BucketChaining, true) => unimplemented!(),
                     };
 
                     Ok(())
@@ -439,6 +441,7 @@ macro_rules! impl_cuda_hash_join_for_type {
                                     result_set.as_launchable_ptr()
                                     )
                                 )? },
+                        HashingScheme::BucketChaining => unimplemented!(),
                     };
 
                     Ok(())
@@ -505,6 +508,8 @@ macro_rules! impl_cpu_hash_join_for_type {
                                 )
                         },
                         (HashingScheme::LinearProbing, true) => unimplemented!(),
+			(HashingScheme::BucketChaining, false) => unimplemented!(),
+			(HashingScheme::BucketChaining, true) => unimplemented!(),
                     };
 
                     Ok(())
@@ -550,6 +555,7 @@ macro_rules! impl_cpu_hash_join_for_type {
                                 join_result,
                                 )
                         },
+                        HashingScheme::BucketChaining => unimplemented!(),
                     };
 
                     Ok(())
