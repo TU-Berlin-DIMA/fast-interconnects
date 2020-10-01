@@ -41,7 +41,7 @@ fn main() {
         "-ccbin",
         "/usr/bin/g++-7",
         "--device-c",
-        "-std=c++11",
+        "-std=c++14",
         "--output-directory",
         &out_dir,
     ];
@@ -123,7 +123,7 @@ fn main() {
         .include(include_path)
         .cpp(true)
         // Note: -march not supported by GCC-7 on Power9, use -mcpu instead
-        .flag("-std=c++11")
+        .flag("-std=c++14")
         .debug(true)
         .flag_if_supported("-mcpu=native")
         .flag_if_supported("-march=native")
