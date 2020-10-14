@@ -28,7 +28,7 @@ use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
 use rustacuda::prelude::*;
 use serde::de::DeserializeOwned;
-use sql_ops::join::{no_partitioning_join, HashingScheme};
+use sql_ops::join::{no_partitioning_join, HashingScheme, cuda_radix_join};
 use sql_ops::partition::gpu_radix_partition::GpuRadixPartitionable;
 use std::mem::size_of;
 use std::path::PathBuf;
@@ -50,8 +50,9 @@ fn main() -> Result<()> {
             harness::measure("radix_join", cmd.repeat, cmd.csv, dp, hjc)?;
         }
         ArgTupleBytes::Bytes16 => {
-            let (hjc, dp) = args_to_bench::<i64>(&cmd, device)?;
-            harness::measure("radix_join", cmd.repeat, cmd.csv, dp, hjc)?;
+            unimplemented!();
+            // let (hjc, dp) = args_to_bench::<i64>(&cmd, device)?;
+            // harness::measure("radix_join", cmd.repeat, cmd.csv, dp, hjc)?;
         }
     };
 
@@ -232,8 +233,8 @@ struct CmdOpt {
     /// Execute on GPU (See CUDA device list)
     device_id: u16,
 
-    /// Device memory buffer size for HSSWWC variants (in KiB)
-    #[structopt(long, default_value = "2048")]
+    /// Device memory buffer sizes per partition per thread block for HSSWWC variants (in KiB)
+    #[structopt(long, default_value = "8", require_delimiter = true)]
     dmem_buffer_size: usize,
 
     #[structopt(short = "t", long = "threads", default_value = "1")]
@@ -275,6 +276,7 @@ where
         + no_partitioning_join::NullKey
         + no_partitioning_join::CudaHashJoinable
         + no_partitioning_join::CpuHashJoinable
+        + cuda_radix_join::CudaRadixJoinable
         + KeyAttribute
         + num_traits::FromPrimitive
         + DeserializeOwned,
@@ -320,10 +322,7 @@ where
     let threads = cmd.threads;
 
     // Convert ArgHashingScheme to HashingScheme
-    let hashing_scheme = match cmd.hashing_scheme {
-        ArgHashingScheme::Perfect => HashingScheme::Perfect,
-        ArgHashingScheme::LinearProbing => HashingScheme::LinearProbing,
-    };
+    let hashing_scheme = HashingScheme::from(cmd.hashing_scheme);
 
     let node_ratios: Box<[NodeRatio]> = cmd
         .partitions_location

@@ -92,6 +92,7 @@ arg_enum! {
     pub enum ArgHashingScheme {
         Perfect,
         LinearProbing,
+        BucketChaining,
     }
 }
 
@@ -179,6 +180,7 @@ impl From<ArgHashingScheme> for HashingScheme {
         match ahs {
             ArgHashingScheme::Perfect => HashingScheme::Perfect,
             ArgHashingScheme::LinearProbing => HashingScheme::LinearProbing,
+            ArgHashingScheme::BucketChaining => HashingScheme::BucketChaining,
         }
     }
 }

@@ -18,7 +18,7 @@ use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
 use rustacuda::stream::{Stream, StreamFlags};
-use sql_ops::join::{no_partitioning_join, HashingScheme};
+use sql_ops::join::{no_partitioning_join, HashingScheme, cuda_radix_join};
 use sql_ops::partition::gpu_radix_partition::{
     GpuHistogramAlgorithm, GpuRadixPartitionAlgorithm, GpuRadixPartitionable, GpuRadixPartitioner,
     PartitionOffsets, PartitionedRelation, RadixPartitionInputChunkable,
@@ -29,7 +29,7 @@ use std::time::Instant;
 
 pub fn gpu_radix_join<T>(
     data: &mut JoinData<T>,
-    _hashing_scheme: HashingScheme,
+    hashing_scheme: HashingScheme,
     histogram_algorithm: GpuHistogramAlgorithm,
     partition_algorithm: GpuRadixPartitionAlgorithm,
     radix_bits: u32,
@@ -37,9 +37,9 @@ pub fn gpu_radix_join<T>(
     threads: usize,
     cpu_affinity: CpuAffinity,
     partitions_mem_type: allocator::MemType,
-    partition_dim: (GridSize, BlockSize),
-    _build_dim: (GridSize, BlockSize),
-    probe_dim: (GridSize, BlockSize),
+    partition_fst_dim: (GridSize, BlockSize),
+    _partition_snd_dim: (GridSize, BlockSize),
+    join_dim: (GridSize, BlockSize),
 ) -> Result<RadixJoinPoint>
 where
     T: Default
@@ -49,10 +49,9 @@ where
         + GpuRadixPartitionable
         + no_partitioning_join::NullKey
         + no_partitioning_join::CudaHashJoinable
-        + no_partitioning_join::CpuHashJoinable,
+        + no_partitioning_join::CpuHashJoinable
+        + cuda_radix_join::CudaRadixJoinable,
 {
-    // FIXME: specify hash table load factor as argument
-
     CurrentContext::set_cache_config(CacheConfig::PreferShared)?;
     CurrentContext::set_shared_memory_config(SharedMemoryConfig::FourByteBankSize)?;
     let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
@@ -74,8 +73,8 @@ where
         histogram_algorithm,
         partition_algorithm,
         radix_bits,
-        &partition_dim.0,
-        &partition_dim.1,
+        &partition_fst_dim.0,
+        &partition_fst_dim.1,
         dmem_buffer_bytes,
     )?;
 
@@ -83,7 +82,7 @@ where
         data.build_relation_key.len(),
         histogram_algorithm,
         radix_bits,
-        partition_dim.0.x,
+        partition_fst_dim.0.x,
         Allocator::mem_alloc_fn(partitions_mem_type.clone()),
         Allocator::mem_alloc_fn(partitions_mem_type.clone()),
     );
@@ -92,28 +91,28 @@ where
         data.probe_relation_key.len(),
         histogram_algorithm,
         radix_bits,
-        partition_dim.0.x,
+        partition_fst_dim.0.x,
         Allocator::mem_alloc_fn(partitions_mem_type.clone()),
         Allocator::mem_alloc_fn(partitions_mem_type.clone()),
     );
 
     let mut inner_rel_partition_offsets = PartitionOffsets::new(
         histogram_algorithm,
-        partition_dim.0.x,
+        partition_fst_dim.0.x,
         radix_bits,
         Allocator::mem_alloc_fn(allocator::MemType::CudaUniMem),
     );
 
     let mut outer_rel_partition_offsets = PartitionOffsets::new(
         histogram_algorithm,
-        partition_dim.0.x,
+        partition_fst_dim.0.x,
         radix_bits,
         Allocator::mem_alloc_fn(allocator::MemType::CudaUniMem),
     );
 
     let mut result_sums = allocator::Allocator::alloc_mem(
         allocator::MemType::CudaUniMem,
-        (probe_dim.0.x * probe_dim.1.x) as usize,
+        (join_dim.0.x * join_dim.1.x) as usize,
     );
 
     // Initialize result
@@ -200,9 +199,21 @@ where
     let partition_time = partition_timer.elapsed();
 
     let join_timer = Instant::now();
-    let join_time = join_timer.elapsed();
+
+    let mut join_task_assignments = allocator::Allocator::alloc_mem(allocator::MemType::CudaDevMem, join_dim.0.x as usize);
+    let radix_join = cuda_radix_join::CudaRadixJoin::new(hashing_scheme, join_dim)?;
+    radix_join.join(
+        radix_bits,
+        &inner_rel_partitions,
+        &outer_rel_partitions,
+        &mut result_sums.as_launchable_mut_slice(),
+        &mut join_task_assignments.as_launchable_mut_slice(),
+        &stream,
+        )?;
 
     stream.synchronize()?;
+    let join_time = join_timer.elapsed();
+
     Ok(RadixJoinPoint {
         prefix_sum_ns: Some(prefix_sum_time.as_nanos() as f64),
         partition_ns: Some(partition_time.as_nanos() as f64),
