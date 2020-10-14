@@ -477,13 +477,12 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
   assert(tuples_per_buffer > 0 &&
          "At least one tuple per partition must fit into SWWC buffer");
 
+  Tuple<K, V> *const buffers = reinterpret_cast<Tuple<K, V> *>(shared_mem);
   unsigned int *const tmp_partition_offsets =
-      reinterpret_cast<unsigned int *>(shared_mem);
+      reinterpret_cast<unsigned int *>(&buffers[fanout * tuples_per_buffer]);
   unsigned int *const slots =
       reinterpret_cast<unsigned int *>(&tmp_partition_offsets[fanout]);
   unsigned int *const signal_slots = &slots[fanout];
-  Tuple<K, V> *const buffers =
-      reinterpret_cast<Tuple<K, V> *>(&signal_slots[fanout]);
 
   // Load partition offsets from device memory into shared memory.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
@@ -689,13 +688,12 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
   assert(tuples_per_buffer > 0 &&
          "At least one tuple per partition must fit into SWWC buffer");
 
+  Tuple<K, V> *const buffers = reinterpret_cast<Tuple<K, V> *>(shared_mem);
   unsigned int *const tmp_partition_offsets =
-      reinterpret_cast<unsigned int *>(shared_mem);
+      reinterpret_cast<unsigned int *>(&buffers[fanout * tuples_per_buffer]);
   unsigned int *const slots =
       reinterpret_cast<unsigned int *>(&tmp_partition_offsets[fanout]);
   unsigned int *const signal_slots = &slots[fanout];
-  Tuple<K, V> *const buffers =
-      reinterpret_cast<Tuple<K, V> *>(&signal_slots[fanout]);
 
   // Load partition offsets from device memory into shared memory.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
@@ -898,16 +896,15 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
   assert(tuples_per_dmem_buffer % tuples_per_buffer == 0 &&
          "DMem buffer size must be a multiple of SMem buffer size");
 
+  Tuple<K, V> *const buffers = reinterpret_cast<Tuple<K, V> *>(shared_mem);
   unsigned int *const tmp_partition_offsets =
-      reinterpret_cast<unsigned int *>(shared_mem);
+      reinterpret_cast<unsigned int *>(&buffers[fanout * tuples_per_buffer]);
   unsigned int *const slots =
       reinterpret_cast<unsigned int *>(&tmp_partition_offsets[fanout]);
-  unsigned short int *const dmem_slots =
-      reinterpret_cast<unsigned short int *>(&slots[fanout]);
   unsigned int *const signal_slots =
-      reinterpret_cast<unsigned int *>(&dmem_slots[fanout]);
-  Tuple<K, V> *const buffers =
-      reinterpret_cast<Tuple<K, V> *>(&signal_slots[fanout]);
+      reinterpret_cast<unsigned int *>(&slots[fanout]);
+  unsigned short int *const dmem_slots =
+      reinterpret_cast<unsigned short int *>(&signal_slots[fanout]);
 
   // Load partition offsets from device memory into shared memory,
   // zero shared memory slots and initialize dmem buffer map.
@@ -1169,16 +1166,15 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
   assert(tuples_per_dmem_buffer % tuples_per_buffer == 0 &&
          "DMem buffer size must be a multiple of SMem buffer size");
 
+  Tuple<K, V> *const buffers = reinterpret_cast<Tuple<K, V> *>(shared_mem);
   unsigned int *const tmp_partition_offsets =
-      reinterpret_cast<unsigned int *>(shared_mem);
+      reinterpret_cast<unsigned int *>(&buffers[fanout * tuples_per_buffer]);
   unsigned int *const slots =
       reinterpret_cast<unsigned int *>(&tmp_partition_offsets[fanout]);
-  unsigned short int *const dmem_slots =
-      reinterpret_cast<unsigned short int *>(&slots[fanout]);
   unsigned int *const signal_slots =
-      reinterpret_cast<unsigned int *>(&dmem_slots[fanout]);
-  Tuple<K, V> *const buffers =
-      reinterpret_cast<Tuple<K, V> *>(&signal_slots[fanout]);
+      reinterpret_cast<unsigned int *>(&slots[fanout]);
+  unsigned short int *const dmem_slots =
+      reinterpret_cast<unsigned short int *>(&signal_slots[fanout]);
 
   // Load partition offsets from device memory into shared memory,
   // zero shared memory slots and initialize dmem buffer map.
@@ -1450,18 +1446,17 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
   assert(tuples_per_dmem_buffer % tuples_per_buffer == 0 &&
          "DMem buffer size must be a multiple of SMem buffer size");
 
+  Tuple<K, V> *const buffers = reinterpret_cast<Tuple<K, V> *>(shared_mem);
   unsigned int *const tmp_partition_offsets =
-      reinterpret_cast<unsigned int *>(shared_mem);
+      reinterpret_cast<unsigned int *>(&buffers[fanout * tuples_per_buffer]);
   unsigned int *const slots =
       reinterpret_cast<unsigned int *>(&tmp_partition_offsets[fanout]);
-  unsigned short int *const dmem_slots =
-      reinterpret_cast<unsigned short int *>(&slots[fanout]);
   unsigned int *const signal_slots =
-      reinterpret_cast<unsigned int *>(&dmem_slots[fanout]);
+      reinterpret_cast<unsigned int *>(&slots[fanout]);
   unsigned int *const dmem_locks =
       reinterpret_cast<unsigned int *>(&signal_slots[fanout]);
-  Tuple<K, V> *const buffers =
-      reinterpret_cast<Tuple<K, V> *>(&dmem_locks[fanout]);
+  unsigned short int *const dmem_slots =
+      reinterpret_cast<unsigned short int *>(&dmem_locks[fanout]);
 
   // Load partition offsets from device memory into shared memory,
   // zero shared memory slots and initialize dmem buffer map.
@@ -1765,18 +1760,16 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   assert(tuples_per_dmem_buffer % tuples_per_buffer == 0 &&
          "DMem buffer size must be a multiple of SMem buffer size");
 
+  Tuple<K, V> *const buffers = reinterpret_cast<Tuple<K, V> *>(shared_mem);
   unsigned int *const tmp_partition_offsets =
-      reinterpret_cast<unsigned int *>(shared_mem);
+      reinterpret_cast<unsigned int *>(&buffers[fanout * tuples_per_buffer]);
   unsigned int *const slots =
       reinterpret_cast<unsigned int *>(&tmp_partition_offsets[fanout]);
-  unsigned short int *const dmem_slots =
-      reinterpret_cast<unsigned short int *>(&slots[fanout]);
-  uint32_t *const signal_slots =
-      reinterpret_cast<uint32_t *>(&dmem_slots[fanout]);
+  uint32_t *const signal_slots = reinterpret_cast<uint32_t *>(&slots[fanout]);
   unsigned short int *const dmem_buffer_map =
       reinterpret_cast<unsigned short int *>(&signal_slots[fanout]);
-  Tuple<K, V> *const buffers =
-      reinterpret_cast<Tuple<K, V> *>(&dmem_buffer_map[fanout]);
+  unsigned short int *const dmem_slots =
+      reinterpret_cast<unsigned short int *>(&dmem_buffer_map[fanout]);
 
   // Zero shared memory slots and initialize dmem buffer map.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
