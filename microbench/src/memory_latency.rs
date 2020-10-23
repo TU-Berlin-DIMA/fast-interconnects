@@ -1,3 +1,13 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public License,
+ * v. 2.0. If a copy of the MPL was not distributed with this file, You can
+ * obtain one at http://mozilla.org/MPL/2.0/.
+ *
+ *
+ * Copyright 2018-2020 German Research Center for Artificial Intelligence (DFKI)
+ * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ */
+
 use numa_gpu::runtime::allocator::{Allocator, MemType};
 use numa_gpu::runtime::memory::{DerefMem, Mem};
 use numa_gpu::runtime::nvml::ThrottleReasons;
@@ -83,6 +93,7 @@ impl MemoryLatency {
             cpu_node,
             memory_node: mem_type_description.location,
             memory_type: Some(mem_type_description.bare_mem_type),
+            huge_pages: mem_type_description.huge_pages,
             ..Default::default()
         };
 
@@ -135,6 +146,7 @@ struct DataPoint<'h, 'd, 'c> {
     pub cpu_node: Option<u16>,
     pub memory_type: Option<BareMemType>,
     pub memory_node: Option<u16>,
+    pub huge_pages: Option<bool>,
     pub warm_up: bool,
     pub range_bytes: usize,
     pub stride_bytes: usize,

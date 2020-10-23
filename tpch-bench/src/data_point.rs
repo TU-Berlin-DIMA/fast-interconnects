@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2020, Clemens Lutz <lutzcle@cml.li>
+ * Copyright 2020 German Research Center for Artificial Intelligence (DFKI)
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
@@ -25,6 +25,7 @@ pub struct DataPoint {
     pub threads: Option<usize>,
     pub relation_memory_type: Option<ArgMemType>,
     pub relation_memory_location: Option<u16>,
+    pub huge_pages: Option<bool>,
     pub tuples: Option<usize>,
     pub bytes: Option<usize>,
     pub warm_up: Option<bool>,

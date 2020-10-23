@@ -1,3 +1,13 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public License,
+ * v. 2.0. If a copy of the MPL was not distributed with this file, You can
+ * obtain one at http://mozilla.org/MPL/2.0/.
+ *
+ *
+ * Copyright 2018-2020 Clemens Lutz, German Research Center for Artificial Intelligence
+ * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ */
+
 use numa_gpu::runtime::allocator;
 
 use serde_derive::Serialize;
@@ -26,23 +36,29 @@ pub enum BareMemType {
 pub struct MemTypeDescription {
     pub bare_mem_type: BareMemType,
     pub location: Option<u16>,
+    pub huge_pages: Option<bool>,
 }
 
 impl From<&allocator::MemType> for MemTypeDescription {
     fn from(mem_type: &allocator::MemType) -> Self {
-        let (bare_mem_type, location) = match mem_type {
-            allocator::MemType::SysMem => (BareMemType::System, None),
-            allocator::MemType::NumaMem(loc) => (BareMemType::Numa, Some(*loc)),
-            allocator::MemType::NumaPinnedMem(loc) => (BareMemType::NumaPinned, Some(*loc)),
+        let (bare_mem_type, location, huge_pages) = match mem_type {
+            allocator::MemType::SysMem => (BareMemType::System, None, None),
+            allocator::MemType::NumaMem(loc, huge_pages) => {
+                (BareMemType::Numa, Some(*loc), *huge_pages)
+            }
+            allocator::MemType::NumaPinnedMem(loc, huge_pages) => {
+                (BareMemType::NumaPinned, Some(*loc), *huge_pages)
+            }
             allocator::MemType::DistributedNumaMem(_node_ratios) => unimplemented!(),
-            allocator::MemType::CudaPinnedMem => (BareMemType::Pinned, None),
-            allocator::MemType::CudaUniMem => (BareMemType::Unified, None),
-            allocator::MemType::CudaDevMem => (BareMemType::Device, None),
+            allocator::MemType::CudaPinnedMem => (BareMemType::Pinned, None, None),
+            allocator::MemType::CudaUniMem => (BareMemType::Unified, None, None),
+            allocator::MemType::CudaDevMem => (BareMemType::Device, None, None),
         };
 
         Self {
             bare_mem_type,
             location,
+            huge_pages,
         }
     }
 }

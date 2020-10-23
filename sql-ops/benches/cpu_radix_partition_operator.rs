@@ -117,6 +117,10 @@ struct Options {
     #[structopt(long = "rel-location", default_value = "0")]
     rel_location: u16,
 
+    /// Use small pages (false) or huge pages (true); no selection defaults to the OS configuration
+    #[structopt(long = "huge-pages")]
+    huge_pages: Option<bool>,
+
     /// Relation's data distribution
     #[structopt(
         long = "data-distribution",
@@ -153,6 +157,7 @@ struct DataPoint {
     pub block_size: Option<u32>,
     pub input_location: Option<u16>,
     pub output_location: Option<u16>,
+    pub huge_pages: Option<bool>,
     pub tuple_bytes: Option<ArgTupleBytes>,
     pub tuples: Option<usize>,
     pub data_distribution: Option<ArgDataDistribution>,
@@ -316,8 +321,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         CpuAffinity::default()
     };
 
-    let input_mem_type = DerefMemType::NumaMem(options.rel_location);
-    let output_mem_type = DerefMemType::NumaMem(options.rel_location);
+    let input_mem_type = DerefMemType::NumaMem(options.rel_location, options.huge_pages);
+    let output_mem_type = DerefMemType::NumaMem(options.rel_location, options.huge_pages);
 
     if let Some(parent) = options.csv.parent() {
         if !parent.exists() {
@@ -335,6 +340,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         device_codename: Some(hw_info::cpu_codename()?),
         input_location: Some(options.rel_location),
         output_location: Some(options.rel_location),
+        huge_pages: options.huge_pages,
         tuple_bytes: Some(options.tuple_bytes),
         tuples: Some(options.tuples),
         data_distribution: Some(options.data_distribution),

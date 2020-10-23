@@ -56,6 +56,7 @@ arg_enum! {
 pub struct ArgMemTypeHelper {
     pub mem_type: ArgMemType,
     pub node_ratios: Box<[NodeRatio]>,
+    pub huge_pages: Option<bool>,
 }
 
 impl From<ArgMemTypeHelper> for MemType {
@@ -63,12 +64,13 @@ impl From<ArgMemTypeHelper> for MemType {
         ArgMemTypeHelper {
             mem_type,
             node_ratios,
+            huge_pages,
         }: ArgMemTypeHelper,
     ) -> Self {
         match mem_type {
             ArgMemType::System => MemType::SysMem,
-            ArgMemType::Numa => MemType::NumaMem(node_ratios[0].node),
-            ArgMemType::NumaLazyPinned => MemType::NumaMem(node_ratios[0].node),
+            ArgMemType::Numa => MemType::NumaMem(node_ratios[0].node, huge_pages),
+            ArgMemType::NumaLazyPinned => MemType::NumaMem(node_ratios[0].node, huge_pages),
             ArgMemType::DistributedNuma => MemType::DistributedNumaMem(node_ratios),
             ArgMemType::Pinned => MemType::CudaPinnedMem,
             ArgMemType::Unified => MemType::CudaUniMem,
@@ -237,6 +239,10 @@ struct Options {
     #[structopt(long = "output-location", default_value = "0")]
     output_location: u16,
 
+    /// Use small pages (false) or huge pages (true); no selection defaults to the OS configuration
+    #[structopt(long = "huge-pages")]
+    huge_pages: Option<bool>,
+
     /// Relation's data distribution
     #[structopt(
         long = "data-distribution",
@@ -276,6 +282,7 @@ struct DataPoint {
     pub output_mem_type: Option<ArgMemType>,
     pub input_location: Option<u16>,
     pub output_location: Option<u16>,
+    pub huge_pages: Option<bool>,
     pub tuple_bytes: Option<ArgTupleBytes>,
     pub tuples: Option<usize>,
     pub data_distribution: Option<ArgDataDistribution>,
@@ -518,6 +525,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             node: options.input_location,
             ratio: Ratio::from_integer(0),
         }]),
+        huge_pages: options.huge_pages,
     }
     .into();
 
@@ -527,6 +535,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             node: options.output_location,
             ratio: Ratio::from_integer(0),
         }]),
+        huge_pages: options.huge_pages,
     }
     .into();
 
@@ -541,6 +550,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         output_mem_type: Some(options.output_mem_type),
         input_location: Some(options.input_location),
         output_location: Some(options.output_location),
+        huge_pages: options.huge_pages,
         tuple_bytes: Some(options.tuple_bytes),
         tuples: Some(options.tuples),
         data_distribution: Some(options.data_distribution),

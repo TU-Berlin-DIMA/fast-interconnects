@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019, Clemens Lutz <lutzcle@cml.li>
+ * Copyright 2019-2020 German Research Center for Artificial Intelligence (DFKI)
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
@@ -37,10 +37,10 @@ pub struct Allocator;
 pub enum MemType {
     /// System memory allocated with Rust's global allocator
     SysMem,
-    /// NUMA memory allocated on the specified NUMA node
-    NumaMem(u16),
-    /// NUMA memory allocated on the specified NUMA node and pinned with CUDA
-    NumaPinnedMem(u16),
+    /// NUMA memory allocated on the specified NUMA node and with the specified huge page option
+    NumaMem(u16, Option<bool>),
+    /// NUMA memory allocated on the specified NUMA node, with the specified huge page option, and pinned with CUDA
+    NumaPinnedMem(u16, Option<bool>),
     /// NUMA memory distributed over multiple NUMA nodes
     DistributedNumaMem(Box<[NodeRatio]>),
     /// CUDA pinned memory (using cudaHostAlloc())
@@ -58,10 +58,10 @@ pub enum MemType {
 pub enum DerefMemType {
     /// System memory allocated with Rust's global allocator
     SysMem,
-    /// NUMA memory allocated on the specified NUMA node
-    NumaMem(u16),
-    /// NUMA memory allocated on the specified NUMA node and pinned with CUDA
-    NumaPinnedMem(u16),
+    /// NUMA memory allocated on the specified NUMA node and with the specified huge page option
+    NumaMem(u16, Option<bool>),
+    /// NUMA memory allocated on the specified NUMA node, with the specified huge page option, and pinned with CUDA
+    NumaPinnedMem(u16, Option<bool>),
     /// NUMA memory distributed over multiple NUMA nodes
     DistributedNumaMem(Box<[NodeRatio]>),
     /// CUDA pinned memory (using cudaHostAlloc())
@@ -74,8 +74,10 @@ impl From<DerefMemType> for MemType {
     fn from(dmt: DerefMemType) -> Self {
         match dmt {
             DerefMemType::SysMem => MemType::SysMem,
-            DerefMemType::NumaMem(node) => MemType::NumaMem(node),
-            DerefMemType::NumaPinnedMem(node) => MemType::NumaPinnedMem(node),
+            DerefMemType::NumaMem(node, huge_pages) => MemType::NumaMem(node, huge_pages),
+            DerefMemType::NumaPinnedMem(node, huge_pages) => {
+                MemType::NumaPinnedMem(node, huge_pages)
+            }
             DerefMemType::DistributedNumaMem(nodes) => MemType::DistributedNumaMem(nodes),
             DerefMemType::CudaPinnedMem => MemType::CudaPinnedMem,
             DerefMemType::CudaUniMem => MemType::CudaUniMem,
@@ -89,8 +91,10 @@ impl TryFrom<MemType> for DerefMemType {
     fn try_from(mt: MemType) -> Result<Self> {
         match mt {
             MemType::SysMem => Ok(DerefMemType::SysMem),
-            MemType::NumaMem(node) => Ok(DerefMemType::NumaMem(node)),
-            MemType::NumaPinnedMem(node) => Ok(DerefMemType::NumaPinnedMem(node)),
+            MemType::NumaMem(node, huge_pages) => Ok(DerefMemType::NumaMem(node, huge_pages)),
+            MemType::NumaPinnedMem(node, huge_pages) => {
+                Ok(DerefMemType::NumaPinnedMem(node, huge_pages))
+            }
             MemType::DistributedNumaMem(nodes) => Ok(DerefMemType::DistributedNumaMem(nodes)),
             MemType::CudaPinnedMem => Ok(DerefMemType::CudaPinnedMem),
             MemType::CudaUniMem => Ok(DerefMemType::CudaUniMem),
@@ -121,8 +125,10 @@ impl Allocator {
     pub fn alloc_mem<T: Clone + Default + DeviceCopy>(mem_type: MemType, len: usize) -> Mem<T> {
         match mem_type {
             MemType::SysMem => Self::alloc_system(len).into(),
-            MemType::NumaMem(node) => Self::alloc_numa(len, node).into(),
-            MemType::NumaPinnedMem(node) => Self::alloc_numa_pinned(len, node).into(),
+            MemType::NumaMem(node, huge_pages) => Self::alloc_numa(len, node, huge_pages).into(),
+            MemType::NumaPinnedMem(node, huge_pages) => {
+                Self::alloc_numa_pinned(len, node, huge_pages).into()
+            }
             MemType::DistributedNumaMem(nodes) => Self::alloc_distributed_numa(len, nodes).into(),
             MemType::CudaPinnedMem => Self::alloc_cuda_pinned(len).into(),
             MemType::CudaUniMem => Self::alloc_cuda_unified(len).into(),
@@ -137,8 +143,10 @@ impl Allocator {
     ) -> DerefMem<T> {
         match mem_type {
             DerefMemType::SysMem => Self::alloc_system(len),
-            DerefMemType::NumaMem(node) => Self::alloc_numa(len, node),
-            DerefMemType::NumaPinnedMem(node) => Self::alloc_numa_pinned(len, node).into(),
+            DerefMemType::NumaMem(node, huge_pages) => Self::alloc_numa(len, node, huge_pages),
+            DerefMemType::NumaPinnedMem(node, huge_pages) => {
+                Self::alloc_numa_pinned(len, node, huge_pages).into()
+            }
             DerefMemType::DistributedNumaMem(nodes) => {
                 Self::alloc_distributed_numa(len, nodes).into()
             }
@@ -152,9 +160,11 @@ impl Allocator {
     pub fn mem_alloc_fn<T: Clone + Default + DeviceCopy>(mem_type: MemType) -> MemAllocFn<T> {
         match mem_type {
             MemType::SysMem => Box::new(|len| Self::alloc_system(len).into()),
-            MemType::NumaMem(node) => Box::new(move |len| Self::alloc_numa(len, node).into()),
-            MemType::NumaPinnedMem(node) => {
-                Box::new(move |len| Self::alloc_numa_pinned(len, node).into())
+            MemType::NumaMem(node, huge_pages) => {
+                Box::new(move |len| Self::alloc_numa(len, node, huge_pages).into())
+            }
+            MemType::NumaPinnedMem(node, huge_pages) => {
+                Box::new(move |len| Self::alloc_numa_pinned(len, node, huge_pages).into())
             }
             MemType::DistributedNumaMem(nodes) => {
                 Box::new(move |len| Self::alloc_distributed_numa(len, nodes.clone()).into())
@@ -172,9 +182,11 @@ impl Allocator {
     ) -> DerefMemAllocFn<T> {
         match mem_type {
             DerefMemType::SysMem => Box::new(|len| Self::alloc_system(len)),
-            DerefMemType::NumaMem(node) => Box::new(move |len| Self::alloc_numa(len, node)),
-            DerefMemType::NumaPinnedMem(node) => {
-                Box::new(move |len| Self::alloc_numa_pinned(len, node))
+            DerefMemType::NumaMem(node, huge_pages) => {
+                Box::new(move |len| Self::alloc_numa(len, node, huge_pages))
+            }
+            DerefMemType::NumaPinnedMem(node, huge_pages) => {
+                Box::new(move |len| Self::alloc_numa_pinned(len, node, huge_pages))
             }
             DerefMemType::DistributedNumaMem(nodes) => {
                 Box::new(move |len| Self::alloc_distributed_numa(len, nodes.clone()).into())
@@ -190,13 +202,17 @@ impl Allocator {
     }
 
     /// Allocates memory on the specified NUMA node.
-    fn alloc_numa<T: DeviceCopy>(len: usize, node: u16) -> DerefMem<T> {
-        DerefMem::NumaMem(NumaMemory::new(len, node))
+    fn alloc_numa<T: DeviceCopy>(len: usize, node: u16, huge_pages: Option<bool>) -> DerefMem<T> {
+        DerefMem::NumaMem(NumaMemory::new(len, node, huge_pages))
     }
 
     /// Allocates pinned memory on the specified NUMA node.
-    fn alloc_numa_pinned<T: DeviceCopy>(len: usize, node: u16) -> DerefMem<T> {
-        let mut mem = NumaMemory::new(len, node);
+    fn alloc_numa_pinned<T: DeviceCopy>(
+        len: usize,
+        node: u16,
+        huge_pages: Option<bool>,
+    ) -> DerefMem<T> {
+        let mut mem = NumaMemory::new(len, node, huge_pages);
         mem.page_lock().expect("Failed to pin memory");
         DerefMem::NumaMem(mem)
     }

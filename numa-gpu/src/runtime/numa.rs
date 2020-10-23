@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018 German Research Center for Artificial Intelligence (DFKI)
+ * Copyright 2018-2020 German Research Center for Artificial Intelligence (DFKI)
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
@@ -16,26 +16,15 @@ use super::linux_wrapper::{mbind, CpuSet, MemBindFlags, MemPolicyModes};
 use super::memory::PageLock;
 use crate::error::{ErrorKind, Result, ResultExt};
 
-use libc::{mlock, mmap, munlock, munmap};
+use libc::{madvise, mlock, mmap, munlock, munmap};
 
 use std::io::Error as IoError;
 use std::mem::size_of;
 use std::ops::{Deref, DerefMut};
-use std::os::raw::{c_int, c_void};
 use std::ptr;
 use std::slice;
 
 use num_rational::Ratio;
-
-mod bindings {
-    use super::*;
-
-    #[link(name = "numa")]
-    extern "C" {
-        pub fn numa_alloc_onnode(size: usize, node: c_int) -> *mut c_void;
-        pub fn numa_free(start: *mut c_void, size: usize);
-    }
-}
 
 /// Re-export Linux's NUMA bindings
 pub use super::linux_wrapper::{
@@ -54,26 +43,81 @@ pub struct NumaMemory<T> {
 }
 
 impl<T> NumaMemory<T> {
-    /// Allocates a new memory region with the specified capacity on the
-    /// specified NUMA node.
+    /// Allocates a new memory region with the specified capacity on the specified NUMA node.
     ///
-    /// numa_alloc_onnode is currently (as of 2019-05-09, using libnuma-2.0.11)
-    /// implemented by allocating memory using mmap() followed by NUMA-binding
-    /// it using mbind(). As MMAP_ANONYMOUS allocates pages, it's not necessary
-    /// to do manual page alignment.
-    pub fn new(len: usize, node: u16) -> Self {
+    /// == Transparent Huge Pages ==
+    ///
+    /// Small pages are advised using `madvise` when the `huge_pages` flag is set to `false`. Huge
+    /// pages are advised when the flag is set to `true`. However, the actual behavior depends on
+    /// OS configuration options. Specifying `None` uses the default OS setting.
+    ///
+    /// - `/sys/kernel/mm/transparent_hugepage/enabled` controls the default page size. It can be
+    /// set to `never`, `madvise`, or `always`. The settings `madvise` and `always` set the default
+    /// page size to small pages and huge pages, respectively. Both of these options allow
+    /// `madvise` to override the default. In constrast, the setting `none` specifies small pages
+    /// without an override option.
+    ///
+    /// - `/sys/kernel/mm/transparent_hugepage/defrag` controls huge page reclaimation when not
+    /// enough huge pages are available.  The options `always`, `defer+madvise`, and `madvise`
+    /// stall on the `madvise` syscall until enough huge pages are available. In contrast, `defer`
+    /// and `never` allow small page allocation despite requesting huge pages.
+    ///
+    /// See the [Linux kernel documentation](https://www.kernel.org/doc/Documentation/vm/transhuge.txt)
+    /// for more details.
+    ///
+    /// == Memory Alignment ==
+    ///
+    /// `mmap` with `MMAP_ANONYMOUS` allocates pages. Separate alignment for cacheline alignment is
+    /// not necessary.
+    pub fn new(len: usize, node: u16, huge_pages: Option<bool>) -> Self {
         assert_ne!(len, 0);
 
+        // Allocate memory with mmap
         let size = len * size_of::<T>();
-        let pointer = unsafe { bindings::numa_alloc_onnode(size, node.into()) } as *mut T;
-        if pointer.is_null() {
-            panic!("Couldn't allocate memory on NUMA node {}", node);
+        let pointer = unsafe {
+            mmap(
+                ptr::null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                0,
+                0,
+            )
+        };
+        if pointer == libc::MAP_FAILED {
+            std::result::Result::Err::<(), _>(IoError::last_os_error())
+                .expect("Failed to mmap memory");
+        }
+
+        // Enable or disable transparent huge pages if the option is set
+        if let Some(hp_option) = huge_pages {
+            let advice = if hp_option {
+                libc::MADV_HUGEPAGE
+            } else {
+                libc::MADV_NOHUGEPAGE
+            };
+            unsafe {
+                if madvise(pointer, size, advice) == -1 {
+                    let err = IoError::last_os_error();
+                    std::result::Result::Err::<(), _>(err).expect("Failed to madvise memory");
+                }
+            }
+        }
+
+        // Bind pages to the NUMA node
+        let mut node_set = CpuSet::new();
+        node_set.add(node);
+        unsafe {
+            let slice = slice::from_raw_parts(pointer, size);
+
+            mbind(slice, MemPolicyModes::BIND, node_set, MemBindFlags::STRICT)
+                .expect("Failed to bind memory to NUMA node.");
         }
 
         // Lock pages into memory to prevent swapping to disk or moving to a
         // different NUMA node
         unsafe {
-            if mlock(pointer as *mut libc::c_void, size) == -1 {
+            if mlock(pointer, size) == -1 {
                 let err = IoError::last_os_error();
                 if let Some(code) = err.raw_os_error() {
                     if code == libc::ENOMEM {
@@ -86,7 +130,7 @@ impl<T> NumaMemory<T> {
         }
 
         Self {
-            pointer,
+            pointer: pointer as *mut T,
             len,
             node,
             is_page_locked: false,
@@ -164,7 +208,12 @@ impl<T> Drop for NumaMemory<T> {
             }
         }
 
-        unsafe { bindings::numa_free(self.pointer as *mut c_void, size) };
+        unsafe {
+            if munmap(self.pointer as *mut libc::c_void, size) == -1 {
+                std::result::Result::Err::<(), _>(IoError::last_os_error())
+                    .expect("Failed to munmap memory");
+            }
+        }
     }
 }
 

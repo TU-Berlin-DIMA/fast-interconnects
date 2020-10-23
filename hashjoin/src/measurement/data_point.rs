@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019, Clemens Lutz <lutzcle@cml.li>
+ * Copyright 2019-2020 German Research Center for Artificial Intelligence (DFKI)
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
@@ -41,6 +41,7 @@ pub struct DataPoint {
     pub hash_table_bytes: Option<usize>,
     pub tuple_bytes: Option<ArgTupleBytes>,
     pub relation_memory_type: Option<ArgMemType>,
+    pub huge_pages: Option<bool>,
     pub inner_relation_memory_location: Option<u16>,
     pub outer_relation_memory_location: Option<u16>,
     pub build_tuples: Option<usize>,
@@ -129,6 +130,7 @@ impl DataPoint {
             hash_table_proportions: Some(cmd.hash_table_proportions.clone()),
             tuple_bytes: Some(cmd.tuple_bytes),
             relation_memory_type: Some(cmd.mem_type),
+            huge_pages: cmd.huge_pages,
             inner_relation_memory_location: Some(cmd.inner_rel_location),
             outer_relation_memory_location: Some(cmd.outer_rel_location),
             data_distribution: Some(cmd.data_distribution),

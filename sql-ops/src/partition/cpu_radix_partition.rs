@@ -406,14 +406,14 @@ mod tests {
                     let mut partitioned_relation = PartitionedRelation::new(
                         $tuples,
                         $radix_bits,
-                        Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(NUMA_NODE)),
-                        Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(NUMA_NODE)),
+                        Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(NUMA_NODE, None)),
+                        Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(NUMA_NODE, None)),
                     );
 
                     let mut partitioner = CpuRadixPartitioner::new(
                         $algorithm,
                         $radix_bits,
-                        Allocator::deref_mem_alloc_fn::<u64>(DerefMemType::NumaMem(NUMA_NODE))
+                        Allocator::deref_mem_alloc_fn::<u64>(DerefMemType::NumaMem(NUMA_NODE, None))
                     );
 
                     partitioner.partition(
@@ -475,14 +475,14 @@ mod tests {
                     let mut partitioned_relation = PartitionedRelation::new(
                         $tuples,
                         $radix_bits,
-                        Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(NUMA_NODE)),
-                        Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(NUMA_NODE)),
+                        Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(NUMA_NODE, None)),
+                        Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(NUMA_NODE, None)),
                     );
 
                     let mut partitioner = CpuRadixPartitioner::new(
                         $algorithm,
                         $radix_bits,
-                        Allocator::deref_mem_alloc_fn::<u64>(DerefMemType::NumaMem(NUMA_NODE))
+                        Allocator::deref_mem_alloc_fn::<u64>(DerefMemType::NumaMem(NUMA_NODE, None))
                     );
 
                     partitioner.partition(

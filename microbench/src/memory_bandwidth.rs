@@ -1,3 +1,13 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public License,
+ * v. 2.0. If a copy of the MPL was not distributed with this file, You can
+ * obtain one at http://mozilla.org/MPL/2.0/.
+ *
+ *
+ * Copyright 2018-2020 German Research Center for Artificial Intelligence (DFKI)
+ * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ */
+
 use cuda_sys::cuda::CUstream;
 
 use numa_gpu::runtime::allocator::{Allocator, MemType};
@@ -114,6 +124,7 @@ struct DataPoint<'h, 'd, 'c, 'n> {
     pub cpu_node: Option<u16>,
     pub memory_type: Option<BareMemType>,
     pub memory_node: Option<u16>,
+    pub huge_pages: Option<bool>,
     pub warm_up: bool,
     pub bytes: usize,
     pub threads: Option<ThreadCount>,
@@ -210,6 +221,7 @@ impl MemoryBandwidth {
             cpu_node,
             memory_node: mem_type_description.location,
             memory_type: Some(mem_type_description.bare_mem_type),
+            huge_pages: mem_type_description.huge_pages,
             bytes,
             ..Default::default()
         };

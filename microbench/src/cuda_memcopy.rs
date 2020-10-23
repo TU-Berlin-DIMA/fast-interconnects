@@ -1,3 +1,13 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public License,
+ * v. 2.0. If a copy of the MPL was not distributed with this file, You can
+ * obtain one at http://mozilla.org/MPL/2.0/.
+ *
+ *
+ * Copyright 2018-2020 Clemens Lutz, German Research Center for Artificial Intelligence
+ * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ */
+
 use cuda_sys::cuda::{
     cuEventCreate, cuEventDestroy_v2, cuEventElapsedTime, cuEventRecord, cuMemAllocHost_v2,
     cuMemAlloc_v2, cuMemFreeHost, cuMemFree_v2, cuMemGetInfo_v2, cuMemHostRegister_v2,
@@ -179,7 +189,7 @@ impl<'h, 'c> Measurement<'h, 'c> {
         let (mut hmem, malloc_ns, dynamic_pin_ns) = match alloc_type {
             MemoryAllocationType::Pageable => {
                 let timer = Instant::now();
-                let m = HostMem::NumaMem(NumaMemory::new(buf_len, self.memory_node));
+                let m = HostMem::NumaMem(NumaMemory::new(buf_len, self.memory_node, None));
                 let duration = timer.elapsed();
                 let ns: u64 = duration.as_secs() * 10_u64.pow(9) + duration.subsec_nanos() as u64;
 
@@ -198,7 +208,7 @@ impl<'h, 'c> Measurement<'h, 'c> {
             },
             MemoryAllocationType::DynamicallyPinned => {
                 let alloc_timer = Instant::now();
-                let mut m = NumaMemory::new(buf_len, self.memory_node);
+                let mut m = NumaMemory::new(buf_len, self.memory_node, None);
                 let alloc_duration = alloc_timer.elapsed();
                 let alloc_ns: u64 =
                     alloc_duration.as_secs() * 10_u64.pow(9) + alloc_duration.subsec_nanos() as u64;

@@ -1,3 +1,13 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public License,
+ * v. 2.0. If a copy of the MPL was not distributed with this file, You can
+ * obtain one at http://mozilla.org/MPL/2.0/.
+ *
+ *
+ * Copyright 2018-2020 German Research Center for Artificial Intelligence (DFKI)
+ * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ */
+
 pub mod cuda_memcopy;
 pub mod memory_bandwidth;
 pub mod memory_latency;
@@ -40,13 +50,20 @@ arg_enum! {
 pub struct ArgMemTypeHelper {
     mem_type: ArgMemType,
     location: u16,
+    huge_pages: Option<bool>,
 }
 
 impl From<ArgMemTypeHelper> for allocator::MemType {
-    fn from(ArgMemTypeHelper { mem_type, location }: ArgMemTypeHelper) -> Self {
+    fn from(
+        ArgMemTypeHelper {
+            mem_type,
+            location,
+            huge_pages,
+        }: ArgMemTypeHelper,
+    ) -> Self {
         match mem_type {
             ArgMemType::System => allocator::MemType::SysMem,
-            ArgMemType::Numa => allocator::MemType::NumaMem(location),
+            ArgMemType::Numa => allocator::MemType::NumaMem(location, huge_pages),
             ArgMemType::Pinned => allocator::MemType::CudaPinnedMem,
             ArgMemType::Unified => allocator::MemType::CudaUniMem,
             ArgMemType::Device => allocator::MemType::CudaDevMem,
@@ -124,6 +141,10 @@ struct CmdBandwidth {
     /// Allocate memory on CPU or GPU (See numactl -H and CUDA device list)
     mem_location: u16,
 
+    /// Use small pages (false) or huge pages (true); no selection defaults to the OS configuration
+    #[structopt(long = "huge-pages")]
+    huge_pages: Option<bool>,
+
     #[structopt(long = "threads-lower", default_value = "1")]
     /// Number of CPU threads (lower bound)
     threads_lower: usize,
@@ -194,6 +215,10 @@ struct CmdLatency {
     /// Allocate memory on CPU or GPU (See numactl -H and CUDA device list)
     mem_location: u16,
 
+    /// Use small pages (false) or huge pages (true); no selection defaults to the OS configuration
+    #[structopt(long = "huge-pages")]
+    huge_pages: Option<bool>,
+
     #[structopt(short = "l", long = "range-lower", default_value = "1")]
     /// Smallest buffer size (KB)
     range_lower: usize,
@@ -247,6 +272,10 @@ struct CmdNumaCopy {
     #[structopt(long = "dst-node", default_value = "0")]
     /// Destination NUMA node ID
     dst_node: u16,
+
+    /// Use small pages (false) or huge pages (true); no selection defaults to the OS configuration
+    #[structopt(long = "huge-pages")]
+    huge_pages: Option<bool>,
 }
 
 #[derive(StructOpt)]
@@ -287,6 +316,7 @@ fn main() {
             let mem_type_helper = ArgMemTypeHelper {
                 mem_type: bw.mem_type,
                 location: bw.mem_location,
+                huge_pages: bw.huge_pages,
             };
 
             MemoryBandwidth::measure(
@@ -310,6 +340,7 @@ fn main() {
             let mem_type_helper = ArgMemTypeHelper {
                 mem_type: lat.mem_type,
                 location: lat.mem_location,
+                huge_pages: lat.huge_pages,
             };
 
             MemoryLatency::measure(
@@ -331,6 +362,7 @@ fn main() {
                 ncpy.cpu_node,
                 ncpy.src_node,
                 ncpy.dst_node,
+                ncpy.huge_pages,
                 ncpy.threads,
             );
 

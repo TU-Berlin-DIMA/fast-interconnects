@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018 German Research Center for Artificial Intelligence (DFKI)
+ * Copyright 2018-2020 German Research Center for Artificial Intelligence (DFKI)
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
@@ -125,6 +125,10 @@ struct CmdOpt {
     #[structopt(long = "outer-rel-location", default_value = "0")]
     /// Allocate memory for outer relation on CPU or GPU (See numactl -H and CUDA device list)
     outer_rel_location: u16,
+
+    /// Use small pages (false) or huge pages (true); no selection defaults to the OS configuration
+    #[structopt(long = "huge-pages")]
+    huge_pages: Option<bool>,
 
     /// Use a pre-defined or custom data set.
     //   blanas: Blanas et al. "Main memory hash join algorithms for multi-core CPUs"
@@ -333,7 +337,8 @@ where
             ratio: Ratio::from_integer(1),
         }]))
         .inner_mem_type(cmd.mem_type)
-        .outer_mem_type(cmd.mem_type);
+        .outer_mem_type(cmd.mem_type)
+        .huge_pages(cmd.huge_pages);
 
     // Select the operator to run, depending on the device type
     let exec_method = cmd.execution_method.clone();
@@ -341,6 +346,7 @@ where
     let mem_type = cmd.hash_table_mem_type;
     let threads = cmd.threads.clone();
     let device_id = cmd.device_id;
+    let huge_pages = cmd.huge_pages;
 
     let morsel_spec = MorselSpec {
         cpu_morsel_bytes: cmd.cpu_morsel_bytes,
@@ -413,6 +419,7 @@ where
                 ArgMemTypeHelper {
                     mem_type,
                     node_ratios: node_ratios.clone(),
+                    huge_pages,
                 }
                 .into(),
             );
@@ -423,6 +430,7 @@ where
                 ArgMemTypeHelper {
                     mem_type,
                     node_ratios: node_ratios.clone(),
+                    huge_pages,
                 }
                 .into(),
             );
@@ -438,6 +446,7 @@ where
                     ArgMemTypeHelper {
                         mem_type,
                         node_ratios: node_ratios.clone(),
+                        huge_pages,
                     }
                     .into(),
                 );
@@ -454,6 +463,7 @@ where
                 ArgMemTypeHelper {
                     mem_type,
                     node_ratios: node_ratios.clone(),
+                    huge_pages,
                 }
                 .into(),
             );
@@ -470,6 +480,7 @@ where
                 ArgMemTypeHelper {
                     mem_type,
                     node_ratios: node_ratios.clone(),
+                    huge_pages,
                 }
                 .into(),
             );
@@ -498,6 +509,7 @@ where
                         node: cpu_node,
                         ratio: Ratio::from_integer(0),
                     }]),
+                    huge_pages,
                 }
                 .into(),
             );
@@ -507,6 +519,7 @@ where
                 ArgMemTypeHelper {
                     mem_type,
                     node_ratios: node_ratios.clone(),
+                    huge_pages,
                 }
                 .into(),
             );

@@ -1,3 +1,13 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public License,
+ * v. 2.0. If a copy of the MPL was not distributed with this file, You can
+ * obtain one at http://mozilla.org/MPL/2.0/.
+ *
+ *
+ * Copyright 2018-2020 German Research Center for Artificial Intelligence (DFKI)
+ * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ */
+
 use average::{concatenate, impl_from_iterator, Estimate, Max, Min, Quantile, Variance};
 
 use numa_gpu::runtime::numa::{self, NumaMemory};
@@ -18,12 +28,14 @@ pub struct DataPoint<'h> {
     pub cpu_node: u16,
     pub src_node: u16,
     pub dst_node: u16,
+    pub huge_pages: Option<bool>,
     pub ns: u64,
 }
 
 pub struct NumaMemcopy {
     src: NumaMemory<u8>,
     dst: NumaMemory<u8>,
+    huge_pages: Option<bool>,
     cpu_node: u16,
     thread_pool: rayon::ThreadPool,
 }
@@ -34,14 +46,12 @@ impl NumaMemcopy {
         cpu_node: u16,
         src_node: u16,
         dst_node: u16,
+        huge_pages: Option<bool>,
         num_threads: usize,
     ) -> Self {
-        // Force OS to allocate memory on the NUMA node that we say
-        numa::set_strict(true);
-
         // Allocate NUMA memory
-        let mut src = NumaMemory::new(size, src_node);
-        let mut dst = NumaMemory::new(size, dst_node);
+        let mut src = NumaMemory::new(size, src_node, huge_pages);
+        let mut dst = NumaMemory::new(size, dst_node, huge_pages);
 
         // Ensure that arrays are physically backed by memory
         for (i, x) in src.as_mut_slice().iter_mut().by_ref().enumerate() {
@@ -61,6 +71,7 @@ impl NumaMemcopy {
         Self {
             src,
             dst,
+            huge_pages,
             cpu_node,
             thread_pool,
         }
@@ -136,6 +147,7 @@ impl NumaMemcopy {
                 cpu_node: self.cpu_node,
                 src_node: self.src.node(),
                 dst_node: self.dst.node(),
+                huge_pages: self.huge_pages,
                 ns,
             });
 

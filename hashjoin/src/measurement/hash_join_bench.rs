@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019-2020, Clemens Lutz <lutzcle@cml.li>
+ * Copyright 2019-2020 German Research Center for Artificial Intelligence (DFKI)
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
@@ -57,6 +57,7 @@ pub struct HashJoinBenchBuilder {
     outer_location: Box<[NodeRatio]>,
     inner_mem_type: ArgMemType,
     outer_mem_type: ArgMemType,
+    huge_pages: Option<bool>,
     hashing_scheme: HashingScheme,
 }
 
@@ -92,6 +93,7 @@ impl Default for HashJoinBenchBuilder {
             }]),
             inner_mem_type: ArgMemType::System,
             outer_mem_type: ArgMemType::System,
+            huge_pages: None,
             hashing_scheme: HashingScheme::LinearProbing,
         }
     }
@@ -133,6 +135,11 @@ impl HashJoinBenchBuilder {
         self
     }
 
+    pub fn huge_pages(&mut self, huge_pages: Option<bool>) -> &mut Self {
+        self.huge_pages = huge_pages;
+        self
+    }
+
     pub fn hashing_scheme(&mut self, hashing_scheme: HashingScheme) -> &mut Self {
         self.hashing_scheme = hashing_scheme;
         self
@@ -158,6 +165,7 @@ impl HashJoinBenchBuilder {
                 ArgMemTypeHelper {
                     mem_type,
                     node_ratios: node_ratios.clone(),
+                    huge_pages: self.huge_pages,
                 }
                 .into(),
                 len,
