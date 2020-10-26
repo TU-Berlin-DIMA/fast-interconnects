@@ -193,8 +193,8 @@ __device__ void gpu_contiguous_prefix_sum(PrefixSumArgs &args) {
 #endif
 
   // Compute offsets with exclusive prefix sum for thread block.
-  device_exclusive_prefix_sum(args.tmp_partition_offsets, fanout * gridDim.x,
-                              args.padding_length, args.prefix_scan_state);
+  device_exclusive_prefix_sum(args.tmp_partition_offsets, fanout * gridDim.x, 0,
+                              args.prefix_scan_state);
 
 #if __CUDA_ARCH__ >= 600
   grid.sync();
@@ -202,11 +202,32 @@ __device__ void gpu_contiguous_prefix_sum(PrefixSumArgs &args) {
   __syncthreads();
 #endif
 
+  // Temporarily buffer the prefix sums into shared memory, as we need to
+  // transpose them in memory. Add padding between the contiguous partitions,
+  // but not between the chunks within a partition.
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    tmp_partition_offsets[i] =
+        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x] +
+        (i + 1) * args.padding_length;
+  }
+
+#if __CUDA_ARCH__ >= 600
+  grid.sync();
+#else
+  __syncthreads();
+#endif
+
+  // Write the transposed partition offsets to global memory.
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    args.tmp_partition_offsets[fanout * blockIdx.x + i] =
+        tmp_partition_offsets[i];
+  }
+
   // Write partitions offsets to global memory. As there exists only one chunk
   // only the first block must perform the write.
   if (blockIdx.x == 0) {
     for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-      args.partition_offsets[i] = args.tmp_partition_offsets[gridDim.x * i];
+      args.partition_offsets[i] = tmp_partition_offsets[i];
     }
   }
 }

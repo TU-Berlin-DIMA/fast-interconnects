@@ -183,6 +183,15 @@ impl<T> RadixPartitionInputChunkable for &[T] {
 /// Note that no restrictions are placed on the data layout (i.e., offsets may
 /// be numerically unordered).
 ///
+/// # `offsets` vs. `local_offsets`
+///
+/// Chunked prefix sums inherently have local offsets for each chunk. In
+/// contrast, contiguous histograms only have one set of "global" offsets.
+///
+/// The partitioning operator requires a set of local offsets for each chunk.
+/// Thus, the contiguous prefix sum variants output `local_offsets` in addition
+/// to the normal `offsets`.
+///
 /// # Invariants
 ///
 ///  - `radix_bits` must match in `GpuRadixPartitioner`
@@ -191,6 +200,7 @@ impl<T> RadixPartitionInputChunkable for &[T] {
 #[derive(Debug)]
 pub struct PartitionOffsets<T: DeviceCopy> {
     pub offsets: Mem<u64>,
+    pub local_offsets: Option<Mem<u64>>,
     chunks: u32,
     radix_bits: u32,
     phantom_data: std::marker::PhantomData<T>,
@@ -213,8 +223,16 @@ impl<T: DeviceCopy> PartitionOffsets<T> {
         let num_partitions = fanout(radix_bits);
         let offsets = alloc_fn(num_partitions * chunks as usize);
 
+        let local_offsets = match histogram_algorithm {
+            GpuHistogramAlgorithm::GpuContiguous => {
+                Some(alloc_fn(num_partitions * max_chunks as usize))
+            }
+            _ => None,
+        };
+
         Self {
             offsets,
+            local_offsets,
             chunks,
             radix_bits,
             phantom_data: std::marker::PhantomData,
@@ -657,7 +675,7 @@ pub enum GpuRadixPartitionAlgorithm {
 enum PrefixSumState {
     CpuChunked,
     GpuChunked,
-    GpuContiguous(Mem<GpuPrefixScanState<u64>>, Mem<u64>),
+    GpuContiguous(Mem<GpuPrefixScanState<u64>>),
 }
 
 #[derive(Debug)]
@@ -683,19 +701,16 @@ impl GpuRadixPartitioner {
         block_size: &BlockSize,
         dmem_buffer_bytes: usize,
     ) -> Result<Self> {
-        let num_partitions = fanout(radix_bits);
         let log2_num_banks = env!("LOG2_NUM_BANKS")
             .parse::<u32>()
             .expect("Failed to parse \"log2_num_banks\" string to an integer");
         let prefix_scan_state_len = GpuPrefixSum::state_len(grid_size.clone(), block_size.clone())?;
-        let tmp_partition_offsets_len = num_partitions as usize * grid_size.x as usize;
 
         let prefix_sum_state = match prefix_sum_algorithm {
             GpuHistogramAlgorithm::CpuChunked => PrefixSumState::CpuChunked,
             GpuHistogramAlgorithm::GpuChunked => PrefixSumState::GpuChunked,
             GpuHistogramAlgorithm::GpuContiguous => PrefixSumState::GpuContiguous(
                 Allocator::alloc_mem(MemType::CudaDevMem, prefix_scan_state_len),
-                Allocator::alloc_mem(MemType::CudaDevMem, tmp_partition_offsets_len),
             ),
         };
 
@@ -872,6 +887,9 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     stream: &Stream,
                     ) -> Result<()> {
 
+                    let device = CurrentContext::get_device()?;
+                    let sm_count = device.get_attribute(DeviceAttribute::MultiprocessorCount)? as u32;
+
                     if partition_offsets.radix_bits != rp.radix_bits {
                         Err(ErrorKind::InvalidArgument(
                                 "PartitionedRelation has mismatching radix bits".to_string(),
@@ -891,10 +909,19 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                         ))?;
                             },
                         GpuHistogramAlgorithm::GpuContiguous
-                            => if partition_offsets.chunks() != 1 {
-                                Err(ErrorKind::InvalidArgument(
-                                        "PartitionedRelation has mismatching number of chunks".to_string(),
-                                        ))?;
+                            => {
+                                if partition_offsets.chunks() != 1 {
+                                    Err(ErrorKind::InvalidArgument(
+                                            "PartitionedRelation has mismatching number of chunks".to_string(),
+                                            ))?;
+                                }
+                                if sm_count < partition_offsets.chunks() {
+                                    Err(ErrorKind::InvalidArgument(
+                                            "The GpuContiguous algorithm requires \
+                                            all threads to run simultaneously. Try \
+                                            decreasing the grid size.".to_string(),
+                                            ))?;
+                                }
                             }
                     }
                     if (partition_attr.len() + (rp.grid_size.x as usize) - 1)
@@ -904,13 +931,18 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     }
 
                     let module = &rp.module;
-                    let device = CurrentContext::get_device()?;
                     let max_shared_mem_bytes =
                         device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
                     let fanout_u32 = fanout(rp.radix_bits) as u32;
                     let grid_size = rp.grid_size.clone();
                     let block_size = rp.block_size.clone();
                     let canonical_chunk_len = rp.input_chunk_size::<$Type>(partition_attr.len())?;
+
+                    let tmp_partition_offsets = if let Some(ref mut local_offsets) = partition_offsets.local_offsets {
+                        local_offsets.as_launchable_mut_ptr()
+                    } else {
+                        LaunchableMutPtr::null_mut()
+                    };
 
                     let mut args = PrefixSumArgs {
                         partition_attr: partition_attr.as_launchable_ptr().as_void(),
@@ -919,7 +951,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         padding_len: partition_offsets.padding_len(),
                         radix_bits: rp.radix_bits,
                         prefix_scan_state: LaunchableMutPtr::null_mut(),
-                        tmp_partition_offsets: LaunchableMutPtr::null_mut(),
+                        tmp_partition_offsets,
                         partition_offsets: partition_offsets.offsets.as_launchable_mut_ptr(),
                     };
 
@@ -946,7 +978,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                        ))?;
                             }
                         },
-                        PrefixSumState::GpuContiguous(ref mut prefix_scan_state, ref mut tmp_partition_offsets) => {
+                        PrefixSumState::GpuContiguous(ref mut prefix_scan_state) => {
                             let shared_mem_bytes = (
                                 (block_size.x + (block_size.x >> rp.log2_num_banks)) + fanout_u32
                                 ) * mem::size_of::<u64>() as u32;
@@ -956,7 +988,6 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 );
 
                             args.prefix_scan_state = prefix_scan_state.as_launchable_mut_ptr();
-                            args.tmp_partition_offsets = tmp_partition_offsets.as_launchable_mut_ptr();
 
                             unsafe {
                                 launch_cooperative!(
@@ -1050,13 +1081,19 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         _ => (None, 0)
                     };
 
+                    let partition_offsets_ptr = if let Some(ref local_offsets) = partition_offsets.local_offsets {
+                        local_offsets.as_launchable_ptr()
+                    } else {
+                        partition_offsets.offsets.as_launchable_ptr()
+                    };
+
                     let args = RadixPartitionArgs {
                         partition_attr_data: partition_attr.as_launchable_ptr().as_void(),
                         payload_attr_data: payload_attr.as_launchable_ptr().as_void(),
                         data_len,
                         padding_len: partitioned_relation.padding_len(),
                         radix_bits: rp.radix_bits,
-                        partition_offsets: partition_offsets.offsets.as_launchable_ptr(),
+                        partition_offsets: partition_offsets_ptr,
                         device_memory_buffers: dmem_buffer
                             .as_mut()
                             .map_or(
@@ -1661,7 +1698,7 @@ mod tests {
             GpuHistogramAlgorithm::GpuContiguous,
             GpuRadixPartitionAlgorithm::NC,
             2,
-            GridSize::from(1),
+            GridSize::from(10),
             BlockSize::from(128),
         )
     }
@@ -1673,7 +1710,7 @@ mod tests {
             GpuHistogramAlgorithm::GpuContiguous,
             GpuRadixPartitionAlgorithm::NC,
             10,
-            GridSize::from(1),
+            GridSize::from(10),
             BlockSize::from(128),
         )
     }
@@ -1686,7 +1723,7 @@ mod tests {
             GpuHistogramAlgorithm::GpuContiguous,
             GpuRadixPartitionAlgorithm::NC,
             2,
-            GridSize::from(1),
+            GridSize::from(10),
             BlockSize::from(128),
         )
     }
@@ -1699,7 +1736,7 @@ mod tests {
             GpuHistogramAlgorithm::GpuContiguous,
             GpuRadixPartitionAlgorithm::NC,
             10,
-            GridSize::from(1),
+            GridSize::from(10),
             BlockSize::from(128),
         )
     }
@@ -1711,7 +1748,7 @@ mod tests {
             GpuHistogramAlgorithm::GpuContiguous,
             GpuRadixPartitionAlgorithm::NC,
             12,
-            GridSize::from(1),
+            GridSize::from(10),
             BlockSize::from(128),
         )
     }
@@ -1724,7 +1761,7 @@ mod tests {
             GpuHistogramAlgorithm::GpuContiguous,
             GpuRadixPartitionAlgorithm::NC,
             12,
-            GridSize::from(1),
+            GridSize::from(10),
             BlockSize::from(128),
         )
     }
@@ -1736,7 +1773,7 @@ mod tests {
             GpuHistogramAlgorithm::GpuContiguous,
             GpuRadixPartitionAlgorithm::NC,
             10,
-            GridSize::from(1),
+            GridSize::from(10),
             BlockSize::from(128),
         )
     }
@@ -1749,7 +1786,7 @@ mod tests {
             GpuHistogramAlgorithm::GpuContiguous,
             GpuRadixPartitionAlgorithm::NC,
             10,
-            GridSize::from(1),
+            GridSize::from(10),
             BlockSize::from(128),
         )
     }
