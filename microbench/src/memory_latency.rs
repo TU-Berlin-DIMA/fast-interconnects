@@ -70,7 +70,10 @@ impl MemoryLatency {
         let element_bytes = size_of::<u32>();
         let buffer_len = buffer_bytes / element_bytes;
 
-        let hostname = hostname::get_hostname().expect("Couldn't get hostname");
+        let hostname = hostname::get()
+            .expect("Couldn't get hostname")
+            .into_string()
+            .expect("Couldn't convert hostname into UTF-8 string");
         let device_type = match device_id {
             DeviceId::Cpu(_) => "CPU",
             DeviceId::Gpu(_) => "GPU",

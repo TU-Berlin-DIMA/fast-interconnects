@@ -22,9 +22,9 @@ use crate::numa_memcopy::NumaMemcopy;
 use crate::sync_latency::uvm_sync_latency;
 use crate::types::*;
 
-use clap::arg_enum;
 use numa_gpu::runtime::allocator;
 use rustacuda::prelude::*;
+use structopt::clap::arg_enum;
 use structopt::StructOpt;
 
 arg_enum! {
@@ -115,10 +115,8 @@ struct CmdBandwidth {
         short = "d",
         long = "device-type",
         default_value = "CPU",
-        raw(
-            possible_values = "&ArgDeviceType::variants()",
-            case_insensitive = "true"
-        )
+        possible_values = &ArgDeviceType::variants(),
+        case_insensitive = true
     )]
     device_type: ArgDeviceType,
 
@@ -133,7 +131,8 @@ struct CmdBandwidth {
         short = "t",
         long = "mem-type",
         default_value = "System",
-        raw(possible_values = "&ArgMemType::variants()", case_insensitive = "true")
+        possible_values = &ArgMemType::variants(),
+        case_insensitive = true
     )]
     mem_type: ArgMemType,
 
@@ -189,10 +188,8 @@ struct CmdLatency {
         short = "d",
         long = "device-type",
         default_value = "CPU",
-        raw(
-            possible_values = "&ArgDeviceType::variants()",
-            case_insensitive = "true"
-        )
+        possible_values = &ArgDeviceType::variants(),
+        case_insensitive = true
     )]
     device_type: ArgDeviceType,
 
@@ -207,7 +204,8 @@ struct CmdLatency {
         short = "t",
         long = "mem-type",
         default_value = "System",
-        raw(possible_values = "&ArgMemType::variants()", case_insensitive = "true")
+        possible_values = &ArgMemType::variants(),
+        case_insensitive = true
     )]
     mem_type: ArgMemType,
 

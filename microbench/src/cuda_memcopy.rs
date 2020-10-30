@@ -100,7 +100,10 @@ impl CudaMemcopy {
             .filter(|x: &usize| x.is_power_of_two())
             .collect();
 
-        let hostname = hostname::get_hostname().expect("Couldn't get hostname");
+        let hostname = hostname::get()
+            .expect("Couldn't get hostname")
+            .into_string()
+            .expect("Couldn't convert hostname into UTF-8 string");
         let device_codename = device.name().expect("Couldn't get device code name");
 
         let template = DataPoint {

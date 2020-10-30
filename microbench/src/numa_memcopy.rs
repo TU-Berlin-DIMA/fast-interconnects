@@ -125,7 +125,10 @@ impl NumaMemcopy {
 
     pub fn measure<W: io::Write>(&mut self, parallel: bool, writer: Option<&mut W>) {
         let repeat = 100;
-        let hostname = hostname::get_hostname().expect("Couldn't get hostname");
+        let hostname = hostname::get()
+            .expect("Couldn't get hostname")
+            .into_string()
+            .expect("Couldn't convert hostname into UTF-8 string");
 
         let mut measurements: Vec<DataPoint<'_>> = Vec::new();
         let mut warm_up = true;
