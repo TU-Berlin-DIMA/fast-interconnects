@@ -12,14 +12,12 @@ pub mod cuda_memcopy;
 pub mod memory_bandwidth;
 pub mod memory_latency;
 pub mod numa_memcopy;
-pub mod sync_latency;
 pub mod types;
 
 use crate::cuda_memcopy::CudaMemcopy;
 use crate::memory_bandwidth::MemoryBandwidth;
 use crate::memory_latency::MemoryLatency;
 use crate::numa_memcopy::NumaMemcopy;
-use crate::sync_latency::uvm_sync_latency;
 use crate::types::*;
 
 use numa_gpu::runtime::allocator;
@@ -90,10 +88,6 @@ enum Command {
     #[structopt(name = "latency")]
     /// Memory latency test based on loop over buffer with increasing strides
     Latency(CmdLatency),
-
-    #[structopt(name = "sync")]
-    /// CPU-GPU synchronization test based on value ping-pong
-    Sync(CmdSync),
 
     #[structopt(name = "numacopy")]
     /// NUMA interconnect bandwidth test based on memcpy
@@ -239,17 +233,6 @@ struct CmdLatency {
 }
 
 #[derive(StructOpt)]
-struct CmdSync {
-    #[structopt(short = "d", long = "device", default_value = "0")]
-    /// CUDA device
-    device: u32,
-
-    #[structopt(short = "i", long = "iters", default_value = "10")]
-    /// Number of times to move value back and forth
-    iterations: u32,
-}
-
-#[derive(StructOpt)]
 struct CmdNumaCopy {
     #[structopt(short = "t", long = "threads", default_value = "1")]
     /// Number of threads to run (shouldn't exceed #CPUs of one NUMA node)
@@ -349,10 +332,6 @@ fn main() {
                 lat.repeat,
                 csv_file.as_mut(),
             );
-        }
-        Command::Sync(ref sync) => {
-            let r = uvm_sync_latency(sync.device, sync.iterations);
-            println!("{:?}", r);
         }
         Command::NumaCopy(ref ncpy) => {
             let mut numa_memcopy = NumaMemcopy::new(

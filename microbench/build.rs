@@ -22,7 +22,6 @@ fn main() {
         .flag("arch=compute_61,code=sm_61") // GTX 1080
         .flag("-gencode")
         .flag("arch=compute_70,code=sm_70") // Tesla V100
-        .file("cudautils/sync_latency.cu")
         .file("cudautils/memory_bandwidth.cu")
         .file("cudautils/memory_latency.cu")
         .debug(false) // Debug enabled slows down mem latency by 10x
@@ -42,7 +41,6 @@ fn main() {
         // .flag("-lnuma")
         .pic(true)
         // .file("cpputils/numa_utils.cpp")
-        .file("cpputils/sync_latency.cpp")
         .file("cpputils/memory_bandwidth.cpp")
         .file("cpputils/memory_latency.cpp")
         .compile("libcpputils.a");
