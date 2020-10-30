@@ -4,15 +4,14 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018 German Research Center for Artificial Intelligence (DFKI)
+ * Copyright 2018-2020 German Research Center for Artificial Intelligence (DFKI)
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-use rustacuda::device::{Device, DeviceAttribute};
-
-use std::fmt;
-
 use crate::error::Result;
+use procfs::CpuInfo;
+use rustacuda::device::{Device, DeviceAttribute};
+use std::fmt;
 
 pub struct ProcessorCache {}
 
@@ -63,7 +62,7 @@ impl fmt::Display for ProcessorCache {
 #[cfg(not(target_arch = "powerpc64"))]
 pub fn cpu_codename() -> Result<String> {
     let cpu_id = 0;
-    Ok(procfs::cpuinfo()?
+    Ok(CpuInfo::new()?
         .model_name(cpu_id)
         .expect("Failed to get CPU codename")
         .to_string())
@@ -75,7 +74,7 @@ pub fn cpu_codename() -> Result<String> {
 #[cfg(target_arch = "powerpc64")]
 pub fn cpu_codename() -> Result<String> {
     let cpu_id = 0;
-    Ok(procfs::cpuinfo()?
+    Ok(CpuInfo::new()?
         .get_info(cpu_id)
         .and_then(|mut m| m.remove("cpu"))
         .expect("Failed to get CPU codename")
