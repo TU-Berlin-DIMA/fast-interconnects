@@ -8,33 +8,37 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-pub mod cuda_memcopy;
-pub mod memory_bandwidth;
-pub mod memory_latency;
-pub mod numa_memcopy;
-pub mod types;
+mod cuda_memcopy;
+mod error;
+mod memory_bandwidth;
+mod memory_latency;
+mod numa_memcopy;
+mod tlb_latency;
+mod types;
 
 use crate::cuda_memcopy::CudaMemcopy;
+use crate::error::Result;
 use crate::memory_bandwidth::MemoryBandwidth;
 use crate::memory_latency::MemoryLatency;
 use crate::numa_memcopy::NumaMemcopy;
+use crate::tlb_latency::TlbLatency;
 use crate::types::*;
-
 use numa_gpu::runtime::allocator;
 use rustacuda::prelude::*;
+use serde_derive::Serialize;
 use structopt::clap::arg_enum;
 use structopt::StructOpt;
 
 arg_enum! {
-    #[derive(Copy, Clone, Debug, PartialEq)]
-    enum ArgDeviceType {
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+    pub enum ArgDeviceType {
         CPU,
         GPU,
     }
 }
 
 arg_enum! {
-    #[derive(Copy, Clone, Debug, PartialEq)]
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
     pub enum ArgMemType {
         System,
         Numa,
@@ -88,6 +92,10 @@ enum Command {
     #[structopt(name = "latency")]
     /// Memory latency test based on loop over buffer with increasing strides
     Latency(CmdLatency),
+
+    #[structopt(name = "tlb-latency")]
+    /// TLB latency test based on loop over buffer with increasing strides
+    TlbLatency(CmdTlbLatency),
 
     #[structopt(name = "numacopy")]
     /// NUMA interconnect bandwidth test based on memcpy
@@ -233,6 +241,50 @@ struct CmdLatency {
 }
 
 #[derive(StructOpt)]
+pub struct CmdTlbLatency {
+    #[structopt(short = "i", long = "device-id", default_value = "0")]
+    /// GPU ID to run on (See CUDA device list)
+    device_id: u16,
+
+    /// Memory type with which to allocate data.
+    //   unified: CUDA Unified memory (default)
+    //   system: System memory allocated with std::vec::Vec
+    #[structopt(
+        short = "m",
+        long = "mem-type",
+        default_value = "Device",
+        possible_values = &ArgMemType::variants(),
+        case_insensitive = true
+    )]
+    mem_type: ArgMemType,
+
+    #[structopt(short = "l", long = "mem-location", default_value = "0")]
+    /// Allocate memory on CPU or GPU (See numactl -H and CUDA device list)
+    mem_location: u16,
+
+    /// Use small pages (false) or huge pages (true); no selection defaults to the OS configuration
+    #[structopt(long = "huge-pages")]
+    huge_pages: Option<bool>,
+
+    /// Smallest buffer size (MiB)
+    #[structopt(short = "x", long = "range-lower", default_value = "4")]
+    range_lower: usize,
+
+    /// Largest buffer size (MiB)
+    #[structopt(short = "y", long = "range-upper", default_value = "80")]
+    range_upper: usize,
+
+    /// List of stride lengths (KiB)
+    #[structopt(
+        short = "s",
+        long = "strides",
+        default_value = "32,2048",
+        require_delimiter = true
+    )]
+    strides: Vec<usize>,
+}
+
+#[derive(StructOpt)]
 struct CmdNumaCopy {
     #[structopt(short = "t", long = "threads", default_value = "1")]
     /// Number of threads to run (shouldn't exceed #CPUs of one NUMA node)
@@ -274,7 +326,7 @@ struct CmdCudaCopy {
     repeat: u32,
 }
 
-fn main() {
+fn main() -> Result<()> {
     let options = Options::from_args();
 
     rustacuda::init(CudaFlags::empty()).expect("Couldn't initialize CUDA");
@@ -333,6 +385,24 @@ fn main() {
                 csv_file.as_mut(),
             );
         }
+        Command::TlbLatency(ref tlb) => {
+            let mem_type_helper = ArgMemTypeHelper {
+                mem_type: tlb.mem_type,
+                location: tlb.mem_location,
+                huge_pages: tlb.huge_pages,
+            };
+            let template = tlb_latency::DataPoint::from_cmd_options(tlb)?;
+            let strides: Vec<_> = tlb.strides.iter().map(|&s| s * kb).collect();
+
+            TlbLatency::measure(
+                tlb.device_id,
+                mem_type_helper.into(),
+                (tlb.range_lower * mb)..=(tlb.range_upper * mb),
+                &strides,
+                template,
+                csv_file.as_mut(),
+            )?;
+        }
         Command::NumaCopy(ref ncpy) => {
             let mut numa_memcopy = NumaMemcopy::new(
                 ncpy.size * mb,
@@ -355,4 +425,6 @@ fn main() {
             );
         }
     }
+
+    Ok(())
 }
