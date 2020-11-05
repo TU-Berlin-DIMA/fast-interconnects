@@ -28,7 +28,7 @@ use std::mem;
 use std::ops::RangeInclusive;
 
 #[cfg(not(target_arch = "aarch64"))]
-use numa_gpu::runtime::nvml::ThrottleReasons;
+use numa_gpu::runtime::nvml::{DeviceClocks, ThrottleReasons};
 #[cfg(not(target_arch = "aarch64"))]
 use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
 
@@ -137,8 +137,6 @@ impl GpuTlbLatency {
         let cycle_counter_overhead = self.cycle_counter_overhead()?;
 
         // FIXME: factor into a closure, so that we can measure different GPU kernels
-        // FIXME: set the GPU clock rate to a fixed value, and disable boosting:
-        // https://docs.rs/nvml-wrapper/0.6.0/nvml_wrapper/device/struct.Device.html#method.set_applications_clocks
 
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
 
@@ -170,7 +168,7 @@ impl GpuTlbLatency {
             let clock_rate_mhz = self
                 .nvml
                 .device_by_index(self.device_id as u32)?
-                .clock_info(Clock::SM)?;
+                .clock_info(Clock::Graphics)?;
 
             #[cfg(target_arch = "aarch64")]
             let clock_rate_mhz = CurrentContext::get_device()?.clock_rate()?;
@@ -244,5 +242,16 @@ impl GpuTlbLatency {
         overhead.copy_to(&mut overhead_host)?;
 
         Ok(overhead_host)
+    }
+}
+
+impl Drop for GpuTlbLatency {
+    fn drop(&mut self) {
+        #[cfg(not(target_arch = "aarch64"))]
+        self.nvml
+            .device_by_index(self.device_id as u32)
+            .unwrap()
+            .set_default_gpu_clocks()
+            .expect("Failed to reset default GPU clock rates");
     }
 }

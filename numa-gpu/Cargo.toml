@@ -9,7 +9,7 @@ readme = "../README.md"
 edition = "2018"
 
 [dependencies]
-bitflags = "~1.1.0"
+bitflags = "1.2"
 crossbeam-utils = "~0.6.5"
 cuda-sys = { git = "https://github.com/LutzCle/cuda-sys", branch = "cuda-10.0" }
 error-chain = "~0.12.0"
@@ -23,7 +23,7 @@ rustacuda = { git = "https://github.com/LutzCle/RustaCUDA", branch = "custom_mod
 # NVML enables us to read the actual clock rate of the GPU.
 # Otherwise, we use the GPU's default clock rate.
 [target.'cfg(not(target_arch = "aarch64"))'.dependencies]
-nvml-wrapper = { version = "0.5", features = ["serde"] }
+nvml-wrapper = { version = "0.6", features = ["serde"] }
 
 [dev-dependencies]
 assert_approx_eq = "~1.1.0"

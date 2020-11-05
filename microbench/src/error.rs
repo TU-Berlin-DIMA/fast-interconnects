@@ -15,7 +15,7 @@ use std::convert::From;
 use std::io::Error as IoError;
 
 #[cfg(not(target_arch = "aarch64"))]
-use nvml_wrapper::error::Error as NvmlError;
+use nvml_wrapper::error::NvmlError;
 
 #[cfg(target_arch = "aarch64")]
 type NvmlError = ();

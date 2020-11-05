@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019, Clemens Lutz <lutzcle@cml.li>
+ * Copyright 2019-2020 German Research Center for Artificial Intelligence (DFKI)
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
@@ -25,7 +25,11 @@ mod nvml_impl {
 
 #[cfg(not(target_arch = "aarch64"))]
 mod nvml_impl {
+    use crate::error::{ErrorKind, Result};
     use nvml_wrapper::bitmasks::device::ThrottleReasons as NvmlTR;
+    use nvml_wrapper::device::Device;
+    use nvml_wrapper::enum_wrappers::device::Clock as GpuClock;
+    use nvml_wrapper::error::NvmlError;
     use std::convert::From;
     use std::fmt;
 
@@ -68,6 +72,57 @@ mod nvml_impl {
     impl From<NvmlTR> for ThrottleReasons {
         fn from(other: NvmlTR) -> Self {
             Self(other)
+        }
+    }
+
+    pub trait DeviceClocks {
+        fn set_max_gpu_clocks(&mut self) -> Result<()>;
+        fn set_default_gpu_clocks(&mut self) -> Result<()>;
+    }
+
+    impl DeviceClocks for Device<'_> {
+        fn set_max_gpu_clocks(&mut self) -> Result<()> {
+            let max_graphics_mhz = self
+                .max_clock_info(GpuClock::Graphics)
+                .map_err(|e| ErrorKind::RuntimeError(e.to_string()))?;
+            let max_memory_mhz = self
+                .max_clock_info(GpuClock::Memory)
+                .map_err(|e| ErrorKind::RuntimeError(e.to_string()))?;
+
+            if let Err(error) = self.set_applications_clocks(max_memory_mhz, max_graphics_mhz) {
+                match error {
+                    NvmlError::NotSupported => eprintln!(
+                        "WARNING: Your GPU doesn't support setting the clock \
+                        rate. Measurements may be inaccurate."
+                    ),
+                    NvmlError::NoPermission => {
+                        return Err(ErrorKind::RuntimeError(
+                            "Failed to set GPU clock rate. Setting changes \
+                            might be restricted to root. Try running: sudo \
+                            nvidia-smi --persistence-mode=ENABLED; sudo \
+                            nvidia-smi \
+                            --applications-clocks-permission=UNRESTRICTED"
+                                .to_string(),
+                        )
+                        .into())
+                    }
+                    _ => return Err(ErrorKind::RuntimeError(error.to_string()).into()),
+                }
+            }
+
+            Ok(())
+        }
+
+        fn set_default_gpu_clocks(&mut self) -> Result<()> {
+            if let Err(error) = self.reset_applications_clocks() {
+                match error {
+                    NvmlError::NotSupported => { /* ignore */ }
+                    NvmlError::NoPermission => { /* ignore */ }
+                    _ => return Err(ErrorKind::RuntimeError(error.to_string()).into()),
+                }
+            }
+
+            Ok(())
         }
     }
 }
