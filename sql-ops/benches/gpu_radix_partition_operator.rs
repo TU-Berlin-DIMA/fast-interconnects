@@ -70,7 +70,7 @@ impl From<ArgMemTypeHelper> for MemType {
         match mem_type {
             ArgMemType::System => MemType::SysMem,
             ArgMemType::Numa => MemType::NumaMem(node_ratios[0].node, huge_pages),
-            ArgMemType::NumaLazyPinned => MemType::NumaMem(node_ratios[0].node, huge_pages),
+            ArgMemType::NumaLazyPinned => MemType::NumaPinnedMem(node_ratios[0].node, huge_pages),
             ArgMemType::DistributedNuma => MemType::DistributedNumaMem(node_ratios),
             ArgMemType::Pinned => MemType::CudaPinnedMem,
             ArgMemType::Unified => MemType::CudaUniMem,
