@@ -16,6 +16,8 @@
 #define TLB_DATA_POINTS 256U
 #endif
 
+#define MIN_WARMUP_CYCLES 1000000U
+
 // Initialize the data buffer with strides
 //
 // `start_offset` optimizes initialization when only the data size is changed,
@@ -48,9 +50,11 @@ extern "C" __global__ void tlb_stride_single_thread(
   uint64_t dependency = 0;  // Prevent compiler from optimizing away the loop
 
   // Warm-up the cache
-  for (uint32_t i = 0; i < iterations; ++i) {
-    asm volatile("ld.global.cg.u64 %0, [%1];" : "=l"(pos) : "l"(&data[pos]));
-    dependency += pos;
+  for (uint64_t c = clock64(); clock64() - c < MIN_WARMUP_CYCLES;) {
+    for (uint32_t i = 0; i < iterations; ++i) {
+      asm volatile("ld.global.cg.u64 %0, [%1];" : "=l"(pos) : "l"(&data[pos]));
+      dependency += pos;
+    }
   }
 
   // Note: Don't reset `pos` after warm-up. This avoids cache hits at
