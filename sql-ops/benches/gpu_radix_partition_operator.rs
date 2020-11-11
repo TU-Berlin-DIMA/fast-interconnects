@@ -202,8 +202,8 @@ struct Options {
     #[structopt(long = "grid-size")]
     grid_size: Option<u32>,
 
-    /// Device memory buffer sizes for HSSWWC variants (in KiB)
-    #[structopt(long, default_value = "2048", require_delimiter = true)]
+    /// Device memory buffer sizes per partition per thread block for HSSWWC variants (in KiB)
+    #[structopt(long, default_value = "8", require_delimiter = true)]
     dmem_buffer_sizes: Vec<usize>,
 
     #[structopt(long = "threads")]

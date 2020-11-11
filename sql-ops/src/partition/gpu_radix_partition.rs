@@ -1045,7 +1045,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     let module = &rp.module;
                     let grid_size = rp.grid_size.clone();
                     let device = CurrentContext::get_device()?;
-                    let _warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
+                    let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
                     let max_shared_mem_bytes =
                         device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
                     let fanout_u32 = fanout(rp.radix_bits) as u32;
@@ -1066,19 +1066,24 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             GpuRadixPartitionAlgorithm::HSSWWCv4 => 512,
                         });
 
-                    let (mut dmem_buffer, device_memory_buffer_bytes) = match rp.partition_algorithm {
+                    let dmem_buffer_bytes_per_block = match rp.partition_algorithm {
                         GpuRadixPartitionAlgorithm::HSSWWC
                             | GpuRadixPartitionAlgorithm::HSSWWCv2
-                            | GpuRadixPartitionAlgorithm::HSSWWCv3
-                            | GpuRadixPartitionAlgorithm::HSSWWCv4 => {
-                                let dmem_buffer_bytes: u64 = rp.dmem_buffer_bytes as u64;
-                                let global_dmem_buffer_bytes = dmem_buffer_bytes * grid_size.x as u64;
-                                (
-                                    Some(Mem::CudaDevMem(unsafe { DeviceBuffer::uninitialized(global_dmem_buffer_bytes as usize)? })),
-                                    dmem_buffer_bytes
-                                )
-                            }
-                        _ => (None, 0)
+                            | GpuRadixPartitionAlgorithm::HSSWWCv3 => {
+                                Some(rp.dmem_buffer_bytes as u64 * fanout_u32 as u64)
+                            },
+                        GpuRadixPartitionAlgorithm::HSSWWCv4 => {
+                            let warps_per_block = block_size.x / warp_size;
+                            Some(rp.dmem_buffer_bytes as u64 * (fanout_u32 + warps_per_block) as u64)
+                        },
+                        _ => None
+                    };
+
+                    let mut dmem_buffer = if let Some(b) = dmem_buffer_bytes_per_block {
+                        let global_dmem_buffer_bytes = b * grid_size.x as u64;
+                        Some(Mem::CudaDevMem(unsafe { DeviceBuffer::uninitialized(global_dmem_buffer_bytes as usize)? }))
+                    } else {
+                        None
                     };
 
                     let partition_offsets_ptr = if let Some(ref local_offsets) = partition_offsets.local_offsets {
@@ -1100,7 +1105,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 LaunchableMutPtr::null_mut(),
                                 |b| b.as_launchable_mut_ptr()
                                 ),
-                        device_memory_buffer_bytes,
+                        device_memory_buffer_bytes: dmem_buffer_bytes_per_block.unwrap_or(0),
                         partitioned_relation: partitioned_relation.relation.as_launchable_mut_ptr().as_void(),
                     };
 
@@ -1324,7 +1329,7 @@ mod tests {
         block_size: BlockSize,
     ) -> Result<(), Box<dyn Error>> {
         const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
-        const DMEM_BUFFER_BYTES: usize = 2 * 1024 * 1024;
+        const DMEM_BUFFER_BYTES: usize = 8 * 1024;
         let _context = rustacuda::quick_init()?;
 
         let mut data_key: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
@@ -1455,7 +1460,7 @@ mod tests {
         block_size: BlockSize,
     ) -> Result<(), Box<dyn Error>> {
         const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
-        const DMEM_BUFFER_BYTES: usize = 2 * 1024 * 1024;
+        const DMEM_BUFFER_BYTES: usize = 8 * 1024;
 
         let _context = rustacuda::quick_init()?;
 

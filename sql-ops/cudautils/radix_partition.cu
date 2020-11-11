@@ -903,12 +903,15 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
   const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
                                       fanout * sizeof(uint16_t) -
                                       3 * fanout * sizeof(uint32_t);
-  const uint32_t tuples_per_buffer =
-      1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
-                                    fanout);
   const uint32_t tuples_per_dmem_buffer =
       1U << log2_floor_power_of_two(args.device_memory_buffer_bytes /
                                     sizeof(Tuple<K, V>) / fanout);
+  uint32_t tuples_per_buffer =
+      1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
+                                    fanout);
+  tuples_per_buffer = tuples_per_buffer < tuples_per_dmem_buffer
+                          ? tuples_per_buffer
+                          : tuples_per_dmem_buffer;
   const uint32_t slots_per_dmem_buffer =
       tuples_per_dmem_buffer / tuples_per_buffer;
 
@@ -1173,12 +1176,15 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
   const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
                                       fanout * sizeof(uint16_t) -
                                       3 * fanout * sizeof(uint32_t);
-  const uint32_t tuples_per_buffer =
-      1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
-                                    fanout);
   const uint32_t tuples_per_dmem_buffer =
       1U << log2_floor_power_of_two(args.device_memory_buffer_bytes /
                                     sizeof(Tuple<K, V>) / fanout);
+  uint32_t tuples_per_buffer =
+      1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
+                                    fanout);
+  tuples_per_buffer = tuples_per_buffer < tuples_per_dmem_buffer
+                          ? tuples_per_buffer
+                          : tuples_per_dmem_buffer;
   const uint32_t slots_per_dmem_buffer =
       tuples_per_dmem_buffer / tuples_per_buffer;
 
@@ -1453,12 +1459,15 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
   const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
                                       fanout * sizeof(uint16_t) -
                                       4 * fanout * sizeof(uint32_t);
-  const uint32_t tuples_per_buffer =
-      1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
-                                    fanout);
   const uint32_t tuples_per_dmem_buffer =
       1U << log2_floor_power_of_two(args.device_memory_buffer_bytes /
                                     sizeof(Tuple<K, V>) / fanout);
+  uint32_t tuples_per_buffer =
+      1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
+                                    fanout);
+  tuples_per_buffer = tuples_per_buffer < tuples_per_dmem_buffer
+                          ? tuples_per_buffer
+                          : tuples_per_dmem_buffer;
   const uint32_t slots_per_dmem_buffer =
       tuples_per_dmem_buffer / tuples_per_buffer;
 
@@ -1767,12 +1776,15 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   const uint32_t sswwc_buffer_bytes = shared_mem_bytes -
                                       1 * fanout * sizeof(uint16_t) -
                                       3 * fanout * sizeof(uint32_t);
-  const uint32_t tuples_per_buffer =
-      1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
-                                    fanout);
   const uint32_t tuples_per_dmem_buffer =
       1U << log2_floor_power_of_two(args.device_memory_buffer_bytes /
                                     sizeof(Tuple<K, V>) / (fanout + num_warps));
+  uint32_t tuples_per_buffer =
+      1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
+                                    fanout);
+  tuples_per_buffer = tuples_per_buffer < tuples_per_dmem_buffer
+                          ? tuples_per_buffer
+                          : tuples_per_dmem_buffer;
   const uint32_t slots_per_dmem_buffer =
       tuples_per_dmem_buffer / tuples_per_buffer;
 
