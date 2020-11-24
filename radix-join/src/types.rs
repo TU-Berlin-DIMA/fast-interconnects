@@ -109,6 +109,7 @@ arg_enum! {
 pub struct ArgMemTypeHelper {
     pub mem_type: ArgMemType,
     pub node_ratios: Box<[NodeRatio]>,
+    pub huge_pages: Option<bool>,
 }
 
 impl From<ArgMemTypeHelper> for allocator::MemType {
@@ -116,12 +117,15 @@ impl From<ArgMemTypeHelper> for allocator::MemType {
         ArgMemTypeHelper {
             mem_type,
             node_ratios,
+            huge_pages,
         }: ArgMemTypeHelper,
     ) -> Self {
         match mem_type {
             ArgMemType::System => allocator::MemType::SysMem,
-            ArgMemType::Numa => allocator::MemType::NumaMem(node_ratios[0].node),
-            ArgMemType::NumaPinned => allocator::MemType::NumaPinnedMem(node_ratios[0].node),
+            ArgMemType::Numa => allocator::MemType::NumaMem(node_ratios[0].node, huge_pages),
+            ArgMemType::NumaPinned => {
+                allocator::MemType::NumaPinnedMem(node_ratios[0].node, huge_pages)
+            }
             ArgMemType::DistributedNuma => allocator::MemType::DistributedNumaMem(node_ratios),
             ArgMemType::Pinned => allocator::MemType::CudaPinnedMem,
             ArgMemType::Unified => allocator::MemType::CudaUniMem,
@@ -135,12 +139,15 @@ impl From<ArgMemTypeHelper> for allocator::DerefMemType {
         ArgMemTypeHelper {
             mem_type,
             node_ratios,
+            huge_pages,
         }: ArgMemTypeHelper,
     ) -> Self {
         match mem_type {
             ArgMemType::System => allocator::DerefMemType::SysMem,
-            ArgMemType::Numa => allocator::DerefMemType::NumaMem(node_ratios[0].node),
-            ArgMemType::NumaPinned => allocator::DerefMemType::NumaPinnedMem(node_ratios[0].node),
+            ArgMemType::Numa => allocator::DerefMemType::NumaMem(node_ratios[0].node, huge_pages),
+            ArgMemType::NumaPinned => {
+                allocator::DerefMemType::NumaPinnedMem(node_ratios[0].node, huge_pages)
+            }
             ArgMemType::DistributedNuma => allocator::DerefMemType::DistributedNumaMem(node_ratios),
             ArgMemType::Pinned => allocator::DerefMemType::CudaPinnedMem,
             ArgMemType::Unified => allocator::DerefMemType::CudaUniMem,

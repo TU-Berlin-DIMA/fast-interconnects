@@ -28,7 +28,7 @@ use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
 use rustacuda::prelude::*;
 use serde::de::DeserializeOwned;
-use sql_ops::join::{no_partitioning_join, HashingScheme, cuda_radix_join};
+use sql_ops::join::{cuda_radix_join, no_partitioning_join, HashingScheme};
 use sql_ops::partition::gpu_radix_partition::GpuRadixPartitionable;
 use std::mem::size_of;
 use std::path::PathBuf;
@@ -127,6 +127,10 @@ struct CmdOpt {
     /// Allocate memory for outer relation on CPU or GPU (See numactl -H and CUDA device list)
     #[structopt(long = "outer-rel-location", default_value = "0")]
     outer_rel_location: u16,
+
+    /// Use small pages (false) or huge pages (true); no selection defaults to the OS configuration
+    #[structopt(long = "huge-pages")]
+    huge_pages: Option<bool>,
 
     /// Use a pre-defined or custom data set.
     //   blanas: Blanas et al. "Main memory hash join algorithms for multi-core CPUs"
@@ -290,6 +294,8 @@ where
     let block_size = BlockSize::x(warp_size * warp_overcommit_factor);
     let grid_size = GridSize::x(multiprocessors * grid_overcommit_factor);
 
+    let huge_pages = cmd.huge_pages;
+
     let mut data_builder = JoinDataBuilder::default();
     data_builder
         .inner_mem_type(
@@ -299,6 +305,7 @@ where
                     node: cmd.inner_rel_location,
                     ratio: Ratio::from_integer(1),
                 }]),
+                huge_pages,
             }
             .into(),
         )
@@ -309,6 +316,7 @@ where
                     node: cmd.outer_rel_location,
                     ratio: Ratio::from_integer(1),
                 }]),
+                huge_pages,
             }
             .into(),
         );
@@ -378,6 +386,7 @@ where
             let partitions_mem_type = ArgMemTypeHelper {
                 mem_type,
                 node_ratios: node_ratios.clone(),
+                huge_pages,
             }
             .into();
 

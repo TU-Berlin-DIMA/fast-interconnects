@@ -18,7 +18,7 @@ use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
 use rustacuda::stream::{Stream, StreamFlags};
-use sql_ops::join::{no_partitioning_join, HashingScheme, cuda_radix_join};
+use sql_ops::join::{cuda_radix_join, no_partitioning_join, HashingScheme};
 use sql_ops::partition::gpu_radix_partition::{
     GpuHistogramAlgorithm, GpuRadixPartitionAlgorithm, GpuRadixPartitionable, GpuRadixPartitioner,
     PartitionOffsets, PartitionedRelation, RadixPartitionInputChunkable,
@@ -200,7 +200,8 @@ where
 
     let join_timer = Instant::now();
 
-    let mut join_task_assignments = allocator::Allocator::alloc_mem(allocator::MemType::CudaDevMem, join_dim.0.x as usize);
+    let mut join_task_assignments =
+        allocator::Allocator::alloc_mem(allocator::MemType::CudaDevMem, join_dim.0.x as usize);
     let radix_join = cuda_radix_join::CudaRadixJoin::new(hashing_scheme, join_dim)?;
     radix_join.join(
         radix_bits,
@@ -209,7 +210,7 @@ where
         &mut result_sums.as_launchable_mut_slice(),
         &mut join_task_assignments.as_launchable_mut_slice(),
         &stream,
-        )?;
+    )?;
 
     stream.synchronize()?;
     let join_time = join_timer.elapsed();
