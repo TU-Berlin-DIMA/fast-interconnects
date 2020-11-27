@@ -626,8 +626,20 @@ impl<'a, T> LaunchableMutSlice<'a, T> {
     }
 
     /// Returns a launchable pointer to the beginning of the slice.
+    pub fn as_launchable_ptr(&self) -> LaunchablePtr<T> {
+        LaunchablePtr(self.0.as_ptr())
+    }
+
+    /// Returns a launchable pointer to the beginning of the slice.
     pub fn as_launchable_mut_ptr(&mut self) -> LaunchableMutPtr<T> {
         LaunchableMutPtr(self.0.as_mut_ptr())
+    }
+
+    /// Returns a regular `slice`.
+    ///
+    /// This is unsafe because dereferencing on the CPU might lead to a segfault.
+    pub unsafe fn as_slice(&'a self) -> &'a [T] {
+        self.0
     }
 
     /// Returns a regular mutable `slice`.

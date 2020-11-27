@@ -39,7 +39,7 @@ __device__ void gpu_chunked_prefix_sum(PrefixSumArgs &args) {
   extern __shared__ uint32_t shared_mem[];
 
   const uint32_t fanout = 1U << args.radix_bits;
-  const uint64_t mask = static_cast<uint64_t>(fanout - 1U);
+  const uint64_t mask = static_cast<uint64_t>(fanout - 1U) << args.ignore_bits;
   constexpr size_t input_align_mask =
       ~(static_cast<size_t>(ALIGN_BYTES / sizeof(K)) - 1ULL);
 
@@ -70,7 +70,7 @@ __device__ void gpu_chunked_prefix_sum(PrefixSumArgs &args) {
   // 1. Compute local histograms per partition for thread block.
   for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
     auto key = partition_attr[i];
-    auto p_index = key_to_partition(key, mask, 0);
+    auto p_index = key_to_partition(key, mask, args.ignore_bits);
     atomicAdd(&tmp_partition_offsets[p_index], 1U);
   }
 
@@ -106,7 +106,7 @@ __device__ void gpu_contiguous_prefix_sum(PrefixSumArgs &args) {
   cg::grid_group grid = cg::this_grid();
 #endif
   const uint32_t fanout = 1U << args.radix_bits;
-  const uint64_t mask = static_cast<uint64_t>(fanout - 1U);
+  const uint64_t mask = static_cast<uint64_t>(fanout - 1U) << args.ignore_bits;
   constexpr size_t input_align_mask =
       ~(static_cast<size_t>(ALIGN_BYTES / sizeof(K)) - 1ULL);
 
@@ -134,7 +134,7 @@ __device__ void gpu_contiguous_prefix_sum(PrefixSumArgs &args) {
   // Compute local histograms per partition for thread block.
   for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
     auto key = partition_attr[i];
-    auto p_index = key_to_partition(key, mask, 0);
+    auto p_index = key_to_partition(key, mask, args.ignore_bits);
     atomicAdd(&tmp_partition_offsets[p_index], 1U);
   }
 
@@ -203,7 +203,7 @@ __device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
   extern __shared__ uint32_t shared_mem[];
 
   const uint32_t fanout = 1U << args.radix_bits;
-  const uint64_t mask = static_cast<uint64_t>(fanout - 1U);
+  const uint64_t mask = static_cast<uint64_t>(fanout - 1U) << args.ignore_bits;
   constexpr size_t input_align_mask =
       ~(static_cast<size_t>(ALIGN_BYTES / sizeof(K)) - 1ULL);
 
@@ -247,7 +247,7 @@ __device__ void gpu_chunked_radix_partition(RadixPartitionArgs &args) {
     tuple.key = join_attr_data[i];
     tuple.value = payload_attr_data[i];
 
-    auto p_index = key_to_partition(tuple.key, mask, 0);
+    auto p_index = key_to_partition(tuple.key, mask, args.ignore_bits);
     auto offset = atomicAdd(&tmp_partition_offsets[p_index], 1U);
     tuple.store(partitioned_relation[offset]);
   }
@@ -259,7 +259,7 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
   extern __shared__ uint32_t shared_mem[];
 
   const uint32_t fanout = 1U << args.radix_bits;
-  const uint64_t mask = static_cast<uint64_t>(fanout - 1);
+  const uint64_t mask = static_cast<uint64_t>(fanout - 1) << args.ignore_bits;
   constexpr size_t input_align_mask =
       ~(static_cast<size_t>(ALIGN_BYTES / sizeof(K)) - 1ULL);
 
@@ -336,7 +336,7 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
 #pragma unroll
     for (uint32_t k = 0; k < TUPLES_PER_THREAD; ++k) {
       // Hash keys to partition IDs
-      auto p_index = key_to_partition(tuple[k].key, mask, 0);
+      auto p_index = key_to_partition(tuple[k].key, mask, args.ignore_bits);
 
       // Build histogram of cached tuples
       atomicAdd(&cache_offsets[p_index], 1U);
@@ -361,7 +361,7 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
     // Allocate space per tuple for tuple reordering and then do reordering
 #pragma unroll
     for (uint32_t k = 0; k < TUPLES_PER_THREAD; ++k) {
-      auto p_index = key_to_partition(tuple[k].key, mask, 0);
+      auto p_index = key_to_partition(tuple[k].key, mask, args.ignore_bits);
       auto pos = atomicAdd(&cache_offsets[p_index], 1U);
       cached_keys[pos] = tuple[k].key;
       cached_vals[pos] = tuple[k].value;
@@ -376,7 +376,7 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
       Tuple<K, V> tuple;
       tuple.key = cached_keys[k];
       tuple.value = cached_vals[k];
-      auto p_index = key_to_partition(tuple.key, mask, 0);
+      auto p_index = key_to_partition(tuple.key, mask, args.ignore_bits);
 
       unsigned int offset = cache_offsets[p_index] - (k + 1);
       offset += tmp_partition_offsets[p_index];
@@ -391,7 +391,7 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
     for (uint32_t k = threadIdx.x; k < blockDim.x * TUPLES_PER_THREAD;
          k += blockDim.x) {
       auto key = cached_keys[k];
-      auto p_index = key_to_partition(key, mask, 0);
+      auto p_index = key_to_partition(key, mask, args.ignore_bits);
       atomicAdd(&tmp_partition_offsets[p_index], 1);
     }
   }
@@ -404,7 +404,7 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
     tuple.key = join_attr_data[i];
     tuple.value = payload_attr_data[i];
 
-    auto p_index = key_to_partition(tuple.key, mask, 0);
+    auto p_index = key_to_partition(tuple.key, mask, args.ignore_bits);
     auto offset = atomicAdd(&tmp_partition_offsets[p_index], 1U);
     partitioned_relation[offset] = tuple;
   }
@@ -416,7 +416,7 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
   extern __shared__ uint32_t shared_mem[];
 
   const uint32_t fanout = 1U << args.radix_bits;
-  const uint64_t mask = static_cast<uint64_t>(fanout - 1);
+  const uint64_t mask = static_cast<uint64_t>(fanout - 1) << args.ignore_bits;
   const int lane_id = threadIdx.x % warpSize;
   constexpr uint32_t warp_mask = 0xFFFFFFFFu;
   constexpr size_t input_align_mask =
@@ -507,7 +507,7 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
       tuple.value = payload_attr_data[i];
     }
 
-    uint32_t p_index = key_to_partition(tuple.key, mask, 0);
+    uint32_t p_index = key_to_partition(tuple.key, mask, args.ignore_bits);
     uint32_t pos = 0;
     bool done = false;
     do {
@@ -613,7 +613,7 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
     tuple.key = join_attr_data[i];
     tuple.value = payload_attr_data[i];
 
-    auto p_index = key_to_partition(tuple.key, mask, 0);
+    auto p_index = key_to_partition(tuple.key, mask, args.ignore_bits);
     auto offset = atomicAdd(&tmp_partition_offsets[p_index], 1U);
     partitioned_relation[offset] = tuple;
   }
@@ -628,7 +628,7 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
   extern __shared__ uint32_t shared_mem[];
 
   const uint32_t fanout = 1U << args.radix_bits;
-  const uint64_t mask = static_cast<uint64_t>(fanout - 1);
+  const uint64_t mask = static_cast<uint64_t>(fanout - 1) << args.ignore_bits;
   const int lane_id = threadIdx.x % warpSize;
   constexpr uint32_t warp_mask = 0xFFFFFFFFu;
   constexpr size_t input_align_mask =
@@ -713,7 +713,7 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
     tuple.key = join_attr_data[i];
     tuple.value = payload_attr_data[i];
 
-    uint32_t p_index = key_to_partition(tuple.key, mask, 0);
+    uint32_t p_index = key_to_partition(tuple.key, mask, args.ignore_bits);
     uint32_t pos = 0;
     bool done = false;
     do {
@@ -811,7 +811,7 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
     tuple.key = join_attr_data[i];
     tuple.value = payload_attr_data[i];
 
-    auto p_index = key_to_partition(tuple.key, mask, 0);
+    auto p_index = key_to_partition(tuple.key, mask, args.ignore_bits);
     auto offset = atomicAdd(&tmp_partition_offsets[p_index], 1U);
     partitioned_relation[offset] = tuple;
   }
@@ -823,7 +823,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
   extern __shared__ uint32_t shared_mem[];
 
   const uint32_t fanout = 1U << args.radix_bits;
-  const uint64_t mask = static_cast<uint64_t>(fanout - 1);
+  const uint64_t mask = static_cast<uint64_t>(fanout - 1) << args.ignore_bits;
   const int lane_id = threadIdx.x % warpSize;
   const int warp_id = threadIdx.x / warpSize;
   const int num_warps = blockDim.x / warpSize;
@@ -933,7 +933,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
     tuple.key = join_attr_data[i];
     tuple.value = payload_attr_data[i];
 
-    uint32_t p_index = key_to_partition(tuple.key, mask, 0);
+    uint32_t p_index = key_to_partition(tuple.key, mask, args.ignore_bits);
     uint32_t pos = 0;
     bool done = false;
     do {
@@ -1081,7 +1081,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
     tuple.key = join_attr_data[i];
     tuple.value = payload_attr_data[i];
 
-    auto p_index = key_to_partition(tuple.key, mask, 0);
+    auto p_index = key_to_partition(tuple.key, mask, args.ignore_bits);
     auto offset = atomicAdd(&tmp_partition_offsets[p_index], 1U);
     partitioned_relation[offset] = tuple;
   }
@@ -1096,7 +1096,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
   extern __shared__ uint32_t shared_mem[];
 
   const uint32_t fanout = 1U << args.radix_bits;
-  const uint64_t mask = static_cast<uint64_t>(fanout - 1);
+  const uint64_t mask = static_cast<uint64_t>(fanout - 1) << args.ignore_bits;
   const int lane_id = threadIdx.x % warpSize;
   const int warp_id = threadIdx.x / warpSize;
   const int num_warps = blockDim.x / warpSize;
@@ -1206,7 +1206,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
     tuple.key = join_attr_data[i];
     tuple.value = payload_attr_data[i];
 
-    uint32_t p_index = key_to_partition(tuple.key, mask, 0);
+    uint32_t p_index = key_to_partition(tuple.key, mask, args.ignore_bits);
     uint32_t pos = 0;
     bool done = false;
     do {
@@ -1363,7 +1363,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
     tuple.key = join_attr_data[i];
     tuple.value = payload_attr_data[i];
 
-    auto p_index = key_to_partition(tuple.key, mask, 0);
+    auto p_index = key_to_partition(tuple.key, mask, args.ignore_bits);
     auto offset = atomicAdd(&tmp_partition_offsets[p_index], 1U);
     partitioned_relation[offset] = tuple;
   }
@@ -1379,7 +1379,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
   extern __shared__ uint32_t shared_mem[];
 
   const uint32_t fanout = 1U << args.radix_bits;
-  const uint64_t mask = static_cast<uint64_t>(fanout - 1);
+  const uint64_t mask = static_cast<uint64_t>(fanout - 1) << args.ignore_bits;
   const int lane_id = threadIdx.x % warpSize;
   const int warp_id = threadIdx.x / warpSize;
   const int num_warps = blockDim.x / warpSize;
@@ -1492,7 +1492,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
     tuple.key = join_attr_data[i];
     tuple.value = payload_attr_data[i];
 
-    uint32_t p_index = key_to_partition(tuple.key, mask, 0);
+    uint32_t p_index = key_to_partition(tuple.key, mask, args.ignore_bits);
     uint32_t pos = 0;
     bool done = false;
     do {
@@ -1681,7 +1681,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
     tuple.key = join_attr_data[i];
     tuple.value = payload_attr_data[i];
 
-    auto p_index = key_to_partition(tuple.key, mask, 0);
+    auto p_index = key_to_partition(tuple.key, mask, args.ignore_bits);
     auto offset = atomicAdd(&tmp_partition_offsets[p_index], 1U);
     partitioned_relation[offset] = tuple;
   }
@@ -1696,7 +1696,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   extern __shared__ uint32_t shared_mem[];
 
   const uint32_t fanout = 1U << args.radix_bits;
-  const uint64_t mask = static_cast<uint64_t>(fanout - 1);
+  const uint64_t mask = static_cast<uint64_t>(fanout - 1) << args.ignore_bits;
   const int lane_id = threadIdx.x % warpSize;
   const int warp_id = threadIdx.x / warpSize;
   const int num_warps = blockDim.x / warpSize;
@@ -1818,7 +1818,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
     tuple.key = join_attr_data[i];
     tuple.value = payload_attr_data[i];
 
-    uint32_t p_index = key_to_partition(tuple.key, mask, 0);
+    uint32_t p_index = key_to_partition(tuple.key, mask, args.ignore_bits);
     uint32_t pos = 0;
     bool done = false;
     do {
@@ -1993,7 +1993,7 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
     tuple.key = join_attr_data[i];
     tuple.value = payload_attr_data[i];
 
-    auto p_index = key_to_partition(tuple.key, mask, 0);
+    auto p_index = key_to_partition(tuple.key, mask, args.ignore_bits);
     auto offset = atomicAdd(&tmp_partition_offsets[p_index], 1U);
     partitioned_relation[offset] = tuple;
   }

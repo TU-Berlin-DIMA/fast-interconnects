@@ -28,6 +28,7 @@ use sql_ops::partition::gpu_radix_partition::{
     GpuHistogramAlgorithm, GpuRadixPartitionAlgorithm, GpuRadixPartitionable, GpuRadixPartitioner,
     PartitionOffsets, PartitionedRelation, RadixPartitionInputChunkable,
 };
+use sql_ops::partition::RadixPass;
 use std::convert::TryInto;
 use std::error::Error;
 use std::fs;
@@ -352,7 +353,7 @@ where
             let mut radix_prnr = GpuRadixPartitioner::new(
                 histogram_algorithm,
                 partition_algorithm,
-                radix_bits,
+                radix_bits.into(),
                 &grid_size,
                 &block_size,
                 dmem_buffer_bytes,
@@ -361,7 +362,7 @@ where
             let mut partitioned_relation = PartitionedRelation::new(
                 input_data.0.len(),
                 histogram_algorithm,
-                radix_bits,
+                radix_bits.into(),
                 grid_size.x,
                 Allocator::mem_alloc_fn(output_mem_type.clone()),
                 Allocator::mem_alloc_fn(output_mem_type.clone()),
@@ -390,7 +391,7 @@ where
                                 let radix_prnr_ref = &radix_prnr;
                                 s.spawn(move |_| {
                                     radix_prnr_ref
-                                        .cpu_prefix_sum(input, &mut output)
+                                        .cpu_prefix_sum(RadixPass::First, input, &mut output)
                                         .expect("Failed to run CPU prefix sum");
                                 })
                             }
@@ -398,6 +399,7 @@ where
                     }
                     _ => {
                         radix_prnr.prefix_sum(
+                            RadixPass::First,
                             input_data.0.as_launchable_slice(),
                             &mut partition_offsets,
                             &stream,
@@ -410,6 +412,7 @@ where
                 let partition_timer = Instant::now();
 
                 radix_prnr.partition(
+                    RadixPass::First,
                     input_data.0.as_launchable_slice(),
                     input_data.1.as_launchable_slice(),
                     partition_offsets,

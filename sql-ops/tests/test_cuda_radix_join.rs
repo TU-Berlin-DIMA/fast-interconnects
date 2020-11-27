@@ -20,6 +20,7 @@ use sql_ops::partition::gpu_radix_partition::{
     GpuHistogramAlgorithm, GpuRadixPartitionAlgorithm, GpuRadixPartitioner, PartitionOffsets,
     PartitionedRelation,
 };
+use sql_ops::partition::RadixPass;
 use std::error::Error;
 use std::result::Result;
 
@@ -59,21 +60,21 @@ fn gpu_verify_join_aggregate(
     let mut inner_rel_partition_offsets = PartitionOffsets::new(
         histogram_algorithm,
         num_chunks.x,
-        radix_bits,
+        radix_bits.into(),
         Allocator::mem_alloc_fn(MemType::CudaUniMem),
     );
 
     let mut outer_rel_partition_offsets = PartitionOffsets::new(
         histogram_algorithm,
         num_chunks.x,
-        radix_bits,
+        radix_bits.into(),
         Allocator::mem_alloc_fn(MemType::CudaUniMem),
     );
 
     let mut inner_rel_partitions = PartitionedRelation::new(
         inner_rel_key.len(),
         histogram_algorithm,
-        radix_bits,
+        radix_bits.into(),
         num_chunks.x,
         Allocator::mem_alloc_fn(MemType::CudaUniMem),
         Allocator::mem_alloc_fn(MemType::CudaUniMem),
@@ -82,7 +83,7 @@ fn gpu_verify_join_aggregate(
     let mut outer_rel_partitions = PartitionedRelation::new(
         outer_rel_key.len(),
         histogram_algorithm,
-        radix_bits,
+        radix_bits.into(),
         num_chunks.x,
         Allocator::mem_alloc_fn(MemType::CudaUniMem),
         Allocator::mem_alloc_fn(MemType::CudaUniMem),
@@ -101,7 +102,7 @@ fn gpu_verify_join_aggregate(
     let mut radix_partitioner = GpuRadixPartitioner::new(
         histogram_algorithm,
         partition_algorithm,
-        radix_bits,
+        radix_bits.into(),
         &num_chunks,
         &block_size,
         0,
@@ -110,16 +111,19 @@ fn gpu_verify_join_aggregate(
     let radix_join = CudaRadixJoin::new(hashing_scheme, (grid_size.clone(), block_size.clone()))?;
 
     radix_partitioner.prefix_sum(
+        RadixPass::First,
         inner_rel_key.as_launchable_slice(),
         &mut inner_rel_partition_offsets,
         &stream,
     )?;
     radix_partitioner.prefix_sum(
+        RadixPass::First,
         outer_rel_key.as_launchable_slice(),
         &mut outer_rel_partition_offsets,
         &stream,
     )?;
     radix_partitioner.partition(
+        RadixPass::First,
         inner_rel_key.as_launchable_slice(),
         inner_rel_pay.as_launchable_slice(),
         inner_rel_partition_offsets,
@@ -127,6 +131,7 @@ fn gpu_verify_join_aggregate(
         &stream,
     )?;
     radix_partitioner.partition(
+        RadixPass::First,
         outer_rel_key.as_launchable_slice(),
         outer_rel_pay.as_launchable_slice(),
         outer_rel_partition_offsets,

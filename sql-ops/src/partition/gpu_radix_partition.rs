@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-use super::{fanout, Tuple};
+use super::{fanout, RadixBits, RadixPass, Tuple};
 use crate::error::{ErrorKind, Result};
 use crate::prefix_scan::{GpuPrefixScanState, GpuPrefixSum};
 use numa_gpu::runtime::allocator::{Allocator, MemAllocFn, MemType};
@@ -54,6 +54,7 @@ struct PrefixSumArgs {
     canonical_chunk_len: usize,
     padding_len: u32,
     radix_bits: u32,
+    ignore_bits: u32,
 
     // State
     prefix_scan_state: LaunchableMutPtr<GpuPrefixScanState<u64>>,
@@ -78,6 +79,7 @@ struct RadixPartitionArgs {
     data_len: usize,
     padding_len: u32,
     radix_bits: u32,
+    ignore_bits: u32,
     partition_offsets: LaunchablePtr<u64>,
 
     // State
@@ -102,12 +104,14 @@ pub trait RadixPartitionInputChunkable: Sized {
 pub trait GpuRadixPartitionable: Sized + DeviceCopy {
     fn cpu_prefix_sum_impl(
         rp: &GpuRadixPartitioner,
+        pass: RadixPass,
         partition_attr: &RadixPartitionInputChunk<'_, Self>,
         partition_offsets: &mut PartitionOffsetsMutSlice<'_, Tuple<Self, Self>>,
     ) -> Result<()>;
 
     fn prefix_sum_impl(
         rp: &mut GpuRadixPartitioner,
+        pass: RadixPass,
         partition_attr: LaunchableSlice<'_, Self>,
         partition_offsets: &mut PartitionOffsets<Tuple<Self, Self>>,
         stream: &Stream,
@@ -115,6 +119,7 @@ pub trait GpuRadixPartitionable: Sized + DeviceCopy {
 
     fn partition_impl(
         rp: &mut GpuRadixPartitioner,
+        pass: RadixPass,
         partition_attr: LaunchableSlice<'_, Self>,
         payload_attr: LaunchableSlice<'_, Self>,
         partition_offsets: PartitionOffsets<Tuple<Self, Self>>,
@@ -680,7 +685,7 @@ enum PrefixSumState {
 
 #[derive(Debug)]
 pub struct GpuRadixPartitioner {
-    radix_bits: u32,
+    radix_bits: RadixBits,
     log2_num_banks: u32,
     prefix_sum_algorithm: GpuHistogramAlgorithm,
     partition_algorithm: GpuRadixPartitionAlgorithm,
@@ -696,7 +701,7 @@ impl GpuRadixPartitioner {
     pub fn new(
         prefix_sum_algorithm: GpuHistogramAlgorithm,
         partition_algorithm: GpuRadixPartitionAlgorithm,
-        radix_bits: u32,
+        radix_bits: RadixBits,
         grid_size: &GridSize,
         block_size: &BlockSize,
         dmem_buffer_bytes: usize,
@@ -752,11 +757,12 @@ impl GpuRadixPartitioner {
     /// *not* thread-safe for multiple callers.
     pub fn prefix_sum<T: DeviceCopy + GpuRadixPartitionable>(
         &mut self,
+        pass: RadixPass,
         partition_attr: LaunchableSlice<'_, T>,
         partition_offsets: &mut PartitionOffsets<Tuple<T, T>>,
         stream: &Stream,
     ) -> Result<()> {
-        T::prefix_sum_impl(self, partition_attr, partition_offsets, stream)
+        T::prefix_sum_impl(self, pass, partition_attr, partition_offsets, stream)
     }
 
     /// Computes the prefix sum on the CPU.
@@ -779,10 +785,11 @@ impl GpuRadixPartitioner {
     /// `GpuRadixPartitioner` instance should be shared among all threads.
     pub fn cpu_prefix_sum<T: DeviceCopy + GpuRadixPartitionable>(
         &self,
+        pass: RadixPass,
         partition_attr: &RadixPartitionInputChunk<'_, T>,
         partition_offsets: &mut PartitionOffsetsMutSlice<'_, Tuple<T, T>>,
     ) -> Result<()> {
-        T::cpu_prefix_sum_impl(self, partition_attr, partition_offsets)
+        T::cpu_prefix_sum_impl(self, pass, partition_attr, partition_offsets)
     }
 
     /// Radix-partitions a relation by its key attribute.
@@ -790,6 +797,7 @@ impl GpuRadixPartitioner {
     /// See the module-level documentation for details on the algorithm.
     pub fn partition<T: DeviceCopy + GpuRadixPartitionable>(
         &mut self,
+        pass: RadixPass,
         partition_attr: LaunchableSlice<'_, T>,
         payload_attr: LaunchableSlice<'_, T>,
         partition_offsets: PartitionOffsets<Tuple<T, T>>,
@@ -798,6 +806,7 @@ impl GpuRadixPartitioner {
     ) -> Result<()> {
         T::partition_impl(
             self,
+            pass,
             partition_attr,
             payload_attr,
             partition_offsets,
@@ -827,11 +836,19 @@ macro_rules! impl_gpu_radix_partition_for_type {
             paste::item! {
                 fn cpu_prefix_sum_impl(
                     rp: &GpuRadixPartitioner,
+                    pass: RadixPass,
                     partition_attr: &RadixPartitionInputChunk<'_, $Type>,
                     partition_offsets: &mut PartitionOffsetsMutSlice<'_, Tuple<$Type, $Type>>,
                     ) -> Result<()> {
 
-                    if partition_offsets.radix_bits != rp.radix_bits {
+                    let radix_bits = rp
+                        .radix_bits
+                        .pass_radix_bits(pass)
+                        .ok_or_else(||
+                                ErrorKind::InvalidArgument(
+                                    "The requested partitioning pass is not specified".to_string()
+                                    ))?;
+                    if partition_offsets.radix_bits != radix_bits {
                         Err(ErrorKind::InvalidArgument(
                                 "PartitionedRelation has mismatching radix bits".to_string(),
                                 ))?;
@@ -862,7 +879,8 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         data_len: partition_attr.data.len(),
                         canonical_chunk_len: partition_attr.canonical_chunk_len,
                         padding_len: partition_offsets.padding_len(),
-                        radix_bits: rp.radix_bits,
+                        radix_bits,
+                        ignore_bits: rp.radix_bits.pass_ignore_bits(pass),
                         prefix_scan_state: LaunchableMutPtr::null_mut(),
                         tmp_partition_offsets: LaunchableMutPtr::null_mut(),
                         partition_offsets: partition_offsets.offsets.as_launchable_mut_ptr(),
@@ -882,6 +900,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
 
                 fn prefix_sum_impl(
                     rp: &mut GpuRadixPartitioner,
+                    pass: RadixPass,
                     partition_attr: LaunchableSlice<'_, $Type>,
                     partition_offsets: &mut PartitionOffsets<Tuple<$Type, $Type>>,
                     stream: &Stream,
@@ -889,8 +908,15 @@ macro_rules! impl_gpu_radix_partition_for_type {
 
                     let device = CurrentContext::get_device()?;
                     let sm_count = device.get_attribute(DeviceAttribute::MultiprocessorCount)? as u32;
+                    let radix_bits = rp
+                        .radix_bits
+                        .pass_radix_bits(pass)
+                        .ok_or_else(||
+                                ErrorKind::InvalidArgument(
+                                    "The requested partitioning pass is not specified".to_string()
+                                    ))?;
 
-                    if partition_offsets.radix_bits != rp.radix_bits {
+                    if partition_offsets.radix_bits != radix_bits {
                         Err(ErrorKind::InvalidArgument(
                                 "PartitionedRelation has mismatching radix bits".to_string(),
                                 ))?;
@@ -933,7 +959,8 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     let module = &rp.module;
                     let max_shared_mem_bytes =
                         device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
-                    let fanout_u32 = fanout(rp.radix_bits) as u32;
+                    let fanout_u32 = rp.radix_bits.pass_fanout(pass).unwrap() as u32;
+                    let ignore_bits = rp.radix_bits.pass_ignore_bits(pass);
                     let grid_size = rp.grid_size.clone();
                     let block_size = rp.block_size.clone();
                     let canonical_chunk_len = rp.input_chunk_size::<$Type>(partition_attr.len())?;
@@ -949,7 +976,8 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         data_len: partition_attr.len(),
                         canonical_chunk_len,
                         padding_len: partition_offsets.padding_len(),
-                        radix_bits: rp.radix_bits,
+                        radix_bits,
+                        ignore_bits,
                         prefix_scan_state: LaunchableMutPtr::null_mut(),
                         tmp_partition_offsets,
                         partition_offsets: partition_offsets.offsets.as_launchable_mut_ptr(),
@@ -1010,18 +1038,27 @@ macro_rules! impl_gpu_radix_partition_for_type {
             paste::item! {
                 fn partition_impl(
                     rp: &mut GpuRadixPartitioner,
+                    pass: RadixPass,
                     partition_attr: LaunchableSlice<'_, $Type>,
                     payload_attr: LaunchableSlice<'_, $Type>,
                     partition_offsets: PartitionOffsets<Tuple<$Type, $Type>>,
                     partitioned_relation: &mut PartitionedRelation<Tuple<$Type, $Type>>,
                     stream: &Stream,
                     ) -> Result<()> {
+
+                    let radix_bits = rp
+                        .radix_bits
+                        .pass_radix_bits(pass)
+                        .ok_or_else(||
+                                ErrorKind::InvalidArgument(
+                                    "The requested partitioning pass is not specified".to_string()
+                                    ))?;
                     if partition_attr.len() != payload_attr.len() {
                         Err(ErrorKind::InvalidArgument(
                                 "Partition and payload attributes have different sizes".to_string(),
                                 ))?;
                     }
-                    if partitioned_relation.radix_bits != rp.radix_bits {
+                    if partitioned_relation.radix_bits != radix_bits {
                         Err(ErrorKind::InvalidArgument(
                                 "PartitionedRelation has mismatching radix bits".to_string(),
                                 ))?;
@@ -1036,7 +1073,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 "PartitionOffsets and PartitionedRelation have mismatching chunks".to_string(),
                                 ))?;
                     }
-                    if (partition_offsets.radix_bits != rp.radix_bits) {
+                    if (partition_offsets.radix_bits != radix_bits) {
                         Err(ErrorKind::InvalidArgument(
                                 "PartitionOffsets has mismatching radix bits".to_string(),
                                 ))?;
@@ -1048,7 +1085,8 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
                     let max_shared_mem_bytes =
                         device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
-                    let fanout_u32 = fanout(rp.radix_bits) as u32;
+                    let fanout_u32 = rp.radix_bits.pass_fanout(pass).unwrap() as u32;
+                    let ignore_bits = rp.radix_bits.pass_ignore_bits(pass);
                     let data_len = partition_attr.len();
 
                     let block_size = rp.block_size.clone();
@@ -1097,7 +1135,8 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         payload_attr_data: payload_attr.as_launchable_ptr().as_void(),
                         data_len,
                         padding_len: partitioned_relation.padding_len(),
-                        radix_bits: rp.radix_bits,
+                        radix_bits,
+                        ignore_bits,
                         partition_offsets: partition_offsets_ptr,
                         device_memory_buffers: dmem_buffer
                             .as_mut()
@@ -1354,14 +1393,14 @@ mod tests {
         let mut partition_offsets = PartitionOffsets::new(
             histogram_algorithm,
             grid_size.x,
-            radix_bits,
+            radix_bits.into(),
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
         );
 
         let mut partitioned_relation = PartitionedRelation::new(
             tuples,
             histogram_algorithm,
-            radix_bits,
+            radix_bits.into(),
             grid_size.x,
             alloc_fn,
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
@@ -1370,7 +1409,7 @@ mod tests {
         let mut partitioner = GpuRadixPartitioner::new(
             histogram_algorithm,
             partition_algorithm,
-            radix_bits,
+            radix_bits.into(),
             &grid_size,
             &block_size,
             DMEM_BUFFER_BYTES,
@@ -1389,11 +1428,12 @@ mod tests {
                 let offset_chunks = partition_offsets.chunks_mut();
 
                 for (key_chunk, mut offset_chunk) in key_chunks.iter().zip(offset_chunks) {
-                    partitioner.cpu_prefix_sum(key_chunk, &mut offset_chunk)?;
+                    partitioner.cpu_prefix_sum(RadixPass::First, key_chunk, &mut offset_chunk)?;
                 }
             }
             _ => {
                 partitioner.prefix_sum(
+                    RadixPass::First,
                     data_key.as_launchable_slice(),
                     &mut partition_offsets,
                     &stream,
@@ -1402,6 +1442,7 @@ mod tests {
         }
 
         partitioner.partition(
+            RadixPass::First,
             data_key.as_launchable_slice(),
             data_pay.as_launchable_slice(),
             partition_offsets,
@@ -1489,7 +1530,7 @@ mod tests {
         let mut partitioner = GpuRadixPartitioner::new(
             histogram_algorithm,
             partition_algorithm,
-            radix_bits,
+            radix_bits.into(),
             &grid_size,
             &block_size,
             DMEM_BUFFER_BYTES,
@@ -1508,11 +1549,12 @@ mod tests {
                 let offset_chunks = partition_offsets.chunks_mut();
 
                 for (key_chunk, mut offset_chunk) in key_chunks.iter().zip(offset_chunks) {
-                    partitioner.cpu_prefix_sum(key_chunk, &mut offset_chunk)?;
+                    partitioner.cpu_prefix_sum(RadixPass::First, key_chunk, &mut offset_chunk)?;
                 }
             }
             _ => {
                 partitioner.prefix_sum(
+                    RadixPass::First,
                     data_key.as_launchable_slice(),
                     &mut partition_offsets,
                     &stream,
@@ -1521,6 +1563,7 @@ mod tests {
         }
 
         partitioner.partition(
+            RadixPass::First,
             data_key.as_launchable_slice(),
             data_pay.as_launchable_slice(),
             partition_offsets,

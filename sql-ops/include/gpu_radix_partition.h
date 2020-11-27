@@ -37,6 +37,7 @@ struct PrefixSumArgs {
   std::size_t const canonical_chunk_length;
   uint32_t const padding_length;
   uint32_t const radix_bits;
+  uint32_t const ignore_bits;
 
   // State
   ScanState<unsigned long long> *const prefix_scan_state;
@@ -58,6 +59,7 @@ struct RadixPartitionArgs {
   std::size_t const data_length;
   uint32_t const padding_length;
   uint32_t const radix_bits;
+  uint32_t const ignore_bits;
   const unsigned long long *const __restrict__ partition_offsets;
 
   // State
