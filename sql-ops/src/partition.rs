@@ -34,7 +34,7 @@ const GPU_PADDING_BYTES: u32 = 128;
 
 /// Compute the fanout (i.e., the number of partitions) from the number of radix
 /// bits.
-fn fanout(radix_bits: u32) -> usize {
+fn fanout(radix_bits: u32) -> u32 {
     1 << radix_bits
 }
 
@@ -68,7 +68,7 @@ impl RadixBits {
     }
 
     /// Total fanout.
-    pub fn fanout(&self) -> usize {
+    pub fn fanout(&self) -> u32 {
         fanout(self.radix_bits())
     }
 
@@ -78,7 +78,7 @@ impl RadixBits {
     }
 
     /// Fanout per pass.
-    pub fn pass_fanout(&self, pass: RadixPass) -> Option<usize> {
+    pub fn pass_fanout(&self, pass: RadixPass) -> Option<u32> {
         let radix_bits = self.pass_bits[pass as usize];
         radix_bits.map(|bits| fanout(bits))
     }

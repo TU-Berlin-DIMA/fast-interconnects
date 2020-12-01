@@ -66,6 +66,64 @@ struct PrefixSumArgs {
 
 unsafe impl DeviceCopy for PrefixSumArgs {}
 
+/// Arguments to the C/C++ prefix sum and transform function.
+///
+/// Note that the struct's layout must be kept in sync with its counterpart in
+/// C/C++.
+#[repr(C)]
+#[derive(Clone, Debug)]
+struct PrefixSumAndCopyWithPayloadArgs {
+    // Inputs
+    src_partition_attr: LaunchablePtr<ffi::c_void>,
+    src_payload_attr: LaunchablePtr<ffi::c_void>,
+    data_len: usize,
+    canonical_chunk_len: usize,
+    padding_len: u32,
+    radix_bits: u32,
+    ignore_bits: u32,
+
+    // State
+    prefix_scan_state: LaunchableMutPtr<GpuPrefixScanState<u64>>,
+    tmp_partition_offsets: LaunchableMutPtr<u64>,
+
+    // Outputs
+    dst_partition_attr: LaunchableMutPtr<ffi::c_void>,
+    dst_payload_attr: LaunchableMutPtr<ffi::c_void>,
+    partition_offsets: LaunchableMutPtr<u64>,
+}
+
+unsafe impl DeviceCopy for PrefixSumAndCopyWithPayloadArgs {}
+
+/// Arguments to the C/C++ prefix sum and transform function.
+///
+/// Note that the struct's layout must be kept in sync with its counterpart in
+/// C/C++.
+#[repr(C)]
+#[derive(Clone, Debug)]
+struct PrefixSumAndTransformArgs {
+    // Inputs
+    partition_id: u32,
+    src_relation: LaunchablePtr<ffi::c_void>,
+    src_offsets: LaunchablePtr<u64>,
+    src_chunks: u32,
+    src_radix_bits: u32,
+    data_len: usize,
+    padding_len: u32,
+    radix_bits: u32,
+    ignore_bits: u32,
+
+    // State
+    prefix_scan_state: LaunchableMutPtr<GpuPrefixScanState<u64>>,
+    tmp_partition_offsets: LaunchableMutPtr<u64>,
+
+    // Outputs
+    dst_partition_attr: LaunchableMutPtr<ffi::c_void>,
+    dst_payload_attr: LaunchableMutPtr<ffi::c_void>,
+    partition_offsets: LaunchableMutPtr<u64>,
+}
+
+unsafe impl DeviceCopy for PrefixSumAndTransformArgs {}
+
 /// Arguments to the C/C++ partitioning function.
 ///
 /// Note that the struct's layout must be kept in sync with its counterpart in
@@ -113,6 +171,28 @@ pub trait GpuRadixPartitionable: Sized + DeviceCopy {
         rp: &mut GpuRadixPartitioner,
         pass: RadixPass,
         partition_attr: LaunchableSlice<'_, Self>,
+        partition_offsets: &mut PartitionOffsets<Tuple<Self, Self>>,
+        stream: &Stream,
+    ) -> Result<()>;
+
+    fn prefix_sum_and_copy_with_payload_impl(
+        rp: &mut GpuRadixPartitioner,
+        pass: RadixPass,
+        src_partition_attr: LaunchableSlice<'_, Self>,
+        src_payload_attr: LaunchableSlice<'_, Self>,
+        dst_partition_attr: LaunchableMutSlice<'_, Self>,
+        dst_payload_attr: LaunchableMutSlice<'_, Self>,
+        partition_offsets: &mut PartitionOffsets<Tuple<Self, Self>>,
+        stream: &Stream,
+    ) -> Result<()>;
+
+    fn prefix_sum_and_transform_impl(
+        rp: &mut GpuRadixPartitioner,
+        pass: RadixPass,
+        partition_id: u32,
+        src_relation: &PartitionedRelation<Tuple<Self, Self>>,
+        dst_partition_attr: LaunchableMutSlice<'_, Self>,
+        dst_payload_attr: LaunchableMutSlice<'_, Self>,
         partition_offsets: &mut PartitionOffsets<Tuple<Self, Self>>,
         stream: &Stream,
     ) -> Result<()>;
@@ -225,7 +305,7 @@ impl<T: DeviceCopy> PartitionOffsets<T> {
             GpuHistogramAlgorithm::GpuContiguous => 1,
         };
 
-        let num_partitions = fanout(radix_bits);
+        let num_partitions = fanout(radix_bits) as usize;
         let offsets = alloc_fn(num_partitions * chunks as usize);
 
         let local_offsets = match histogram_algorithm {
@@ -258,7 +338,7 @@ impl<T: DeviceCopy> PartitionOffsets<T> {
     }
 
     /// Returns the number of partitions.
-    pub fn partitions(&self) -> usize {
+    pub fn partitions(&self) -> u32 {
         fanout(self.radix_bits)
     }
 
@@ -378,7 +458,7 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
         };
 
         let padding_len = super::GPU_PADDING_BYTES / mem::size_of::<T>() as u32;
-        let num_partitions = fanout(radix_bits);
+        let num_partitions = fanout(radix_bits) as usize;
         let relation_len = len + (num_partitions * chunks as usize) * padding_len as usize;
 
         let relation = partition_alloc_fn(relation_len);
@@ -394,7 +474,7 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
 
     /// Returns the total number of elements in the relation (excluding padding).
     pub fn len(&self) -> usize {
-        let num_partitions = fanout(self.radix_bits);
+        let num_partitions = fanout(self.radix_bits) as usize;
 
         self.relation.len()
             - (num_partitions * self.chunks() as usize) * self.padding_len() as usize
@@ -414,8 +494,44 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
     }
 
     /// Returns the number of partitions.
-    pub fn partitions(&self) -> usize {
+    pub fn partitions(&self) -> u32 {
         fanout(self.radix_bits)
+    }
+
+    /// Returns the length of the requested partition.
+    ///
+    /// If the offsets are accessible by the CPU (i.e., in DerefMem), then the
+    /// length is returned. Otherwise, the function returns an error.
+    pub fn partition_len(&self, partition_id: u32) -> Result<usize> {
+        let fanout = self.partitions();
+        if partition_id >= fanout {
+            Err(ErrorKind::InvalidArgument(
+                "Invalid partition ID".to_string(),
+            ))?;
+        }
+
+        let offsets: &[u64] = match (&self.offsets).try_into() {
+            Ok(offsets) => offsets,
+            _ => Err(ErrorKind::RuntimeError(
+                "Trying to dereference device memory!".to_string(),
+            ))?,
+        };
+        let padding_len = self.padding_len() as usize;
+
+        let len = (0..self.chunks)
+            .map(|chunk_id| {
+                let ofi = chunk_id as usize * fanout as usize + partition_id as usize;
+                let begin = offsets[ofi] as usize;
+                let end = if ofi + 1 < offsets.len() {
+                    offsets[ofi + 1] as usize - padding_len
+                } else {
+                    self.relation.len()
+                };
+                end - begin
+            })
+            .sum();
+
+        Ok(len)
     }
 
     /// Returns the number of padding elements per partition.
@@ -425,17 +541,25 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
 }
 
 /// Returns the specified chunk and partition as a subslice of the relation.
-impl<T: DeviceCopy> Index<(usize, usize)> for PartitionedRelation<T> {
+impl<T: DeviceCopy> Index<(u32, u32)> for PartitionedRelation<T> {
     type Output = [T];
 
-    fn index(&self, i: (usize, usize)) -> &Self::Output {
+    fn index(&self, (chunk_id, partition_id): (u32, u32)) -> &Self::Output {
+        let fanout = self.partitions();
+        if partition_id >= fanout {
+            panic!("Invalid partition ID".to_string(),);
+        }
+        if chunk_id >= self.chunks {
+            panic!("Invalid chunk ID".to_string(),);
+        }
+
         let (offsets, relation): (&[u64], &[T]) =
             match ((&self.offsets).try_into(), (&self.relation).try_into()) {
                 (Ok(offsets), Ok(relation)) => (offsets, relation),
                 _ => panic!("Trying to dereference device memory!"),
             };
 
-        let ofi = i.0 * self.partitions() + i.1;
+        let ofi = (chunk_id * fanout + partition_id) as usize;
         let begin = offsets[ofi] as usize;
         let end = if ofi + 1 < self.offsets.len() {
             offsets[ofi + 1] as usize - self.padding_len() as usize
@@ -449,8 +573,8 @@ impl<T: DeviceCopy> Index<(usize, usize)> for PartitionedRelation<T> {
 
 /// Returns the specified chunk and partition as a mutable subslice of the
 /// relation.
-impl<T: DeviceCopy> IndexMut<(usize, usize)> for PartitionedRelation<T> {
-    fn index_mut(&mut self, i: (usize, usize)) -> &mut Self::Output {
+impl<T: DeviceCopy> IndexMut<(u32, u32)> for PartitionedRelation<T> {
+    fn index_mut(&mut self, (chunk_id, partition_id): (u32, u32)) -> &mut Self::Output {
         let padding_len = self.padding_len();
         let offsets_len = self.offsets.len();
         let partitions = self.partitions();
@@ -463,7 +587,7 @@ impl<T: DeviceCopy> IndexMut<(usize, usize)> for PartitionedRelation<T> {
             _ => panic!("Trying to dereference device memory!"),
         };
 
-        let ofi = i.0 * partitions + i.1;
+        let ofi = (chunk_id * partitions + partition_id) as usize;
         let begin = offsets[ofi] as usize;
         let end = if ofi + 1 < offsets_len {
             offsets[ofi + 1] as usize - padding_len as usize
@@ -765,6 +889,98 @@ impl GpuRadixPartitioner {
         T::prefix_sum_impl(self, pass, partition_attr, partition_offsets, stream)
     }
 
+    /// Computes the prefix sum on a partitioned relation, and copies the data.
+    ///
+    /// The typical partitioning workflow first calls `prefix_sum`, and then
+    /// calls `partition`. However, if performed over an interconnect, this
+    /// workflow transfers the data twice.
+    ///
+    /// With `prefix_sum_and_copy_with_payload`, the data can be copied to GPU
+    /// memory and thus the data transfer occurs only once.
+    ///
+    /// ## Parallelism
+    ///
+    /// The function is internally parallelized by the GPU. The function is
+    /// *not* thread-safe for multiple callers.
+    ///
+    /// ## Limitations
+    ///
+    /// Currently only the `GpuContiguous` histogram algorithm is supported.
+    /// The reason is that `prefix_sum_and_copy_with_payload` is typically used
+    /// for small relations that fit into GPU memory. Thus the next step in the
+    /// workflow is a SQL operator (e.g., join), which only takes a contiguous
+    /// relation as input.
+    pub fn prefix_sum_and_copy_with_payload<T: DeviceCopy + GpuRadixPartitionable>(
+        &mut self,
+        pass: RadixPass,
+        src_partition_attr: LaunchableSlice<'_, T>,
+        src_payload_attr: LaunchableSlice<'_, T>,
+        dst_partition_attr: LaunchableMutSlice<'_, T>,
+        dst_payload_attr: LaunchableMutSlice<'_, T>,
+        partition_offsets: &mut PartitionOffsets<Tuple<T, T>>,
+        stream: &Stream,
+    ) -> Result<()> {
+        T::prefix_sum_and_copy_with_payload_impl(
+            self,
+            pass,
+            src_partition_attr,
+            src_payload_attr,
+            dst_partition_attr,
+            dst_payload_attr,
+            partition_offsets,
+            stream,
+        )
+    }
+
+    /// Computes the prefix sum on a partitioned relation, and transforms to a
+    /// columnar format.
+    ///
+    /// ## Layout transformation
+    ///
+    /// Multi-pass partitioning requires the data in a columnar format. However,
+    /// the first partitioning pass stores each partition in a row format.
+    ///
+    /// `prefix_sum_and_transform` transforms the row format into a column
+    /// format, in addition to computing the prefix sum.
+    ///
+    /// ## Chunk concatenation
+    ///
+    /// The transform concatenates chunked partitions into contiguous partitions.
+    /// `partition` and SQL operators (e.g., join) expect contiguous input. This
+    /// design reduces the number of operator variants required from
+    /// (layouts * operators) to (layouts + operators).
+    ///
+    /// ## Parallelism
+    ///
+    /// The function is internally parallelized by the GPU. The function is
+    /// *not* thread-safe for multiple callers.
+    ///
+    /// ## Limitations
+    ///
+    /// Currently only the `GpuContiguous` histogram algorithm is supported. See
+    /// `prefix_sum_and_copy_with_payload` for details.
+    pub fn prefix_sum_and_transform<T: DeviceCopy + GpuRadixPartitionable>(
+        &mut self,
+        pass: RadixPass,
+        partition_id: u32,
+        src_relation: &PartitionedRelation<Tuple<T, T>>,
+        dst_partition_attr: LaunchableMutSlice<'_, T>,
+        dst_payload_attr: LaunchableMutSlice<'_, T>,
+        partition_offsets: &mut PartitionOffsets<Tuple<T, T>>,
+        stream: &Stream,
+    ) -> Result<()> {
+        T::prefix_sum_and_transform_impl(
+            self,
+            pass,
+            partition_id,
+            src_relation,
+            dst_partition_attr,
+            dst_payload_attr,
+            partition_offsets,
+            stream,
+        )
+    }
+
     /// Computes the prefix sum on the CPU.
     ///
     /// The purpose is to avoid transferring the key attribute twice the GPU
@@ -959,7 +1175,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     let module = &rp.module;
                     let max_shared_mem_bytes =
                         device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
-                    let fanout_u32 = rp.radix_bits.pass_fanout(pass).unwrap() as u32;
+                    let fanout_u32 = rp.radix_bits.pass_fanout(pass).unwrap();
                     let ignore_bits = rp.radix_bits.pass_ignore_bits(pass);
                     let grid_size = rp.grid_size.clone();
                     let block_size = rp.block_size.clone();
@@ -1033,6 +1249,250 @@ macro_rules! impl_gpu_radix_partition_for_type {
 
                     Ok(())
                 }
+
+                fn prefix_sum_and_copy_with_payload_impl(
+                    rp: &mut GpuRadixPartitioner,
+                    pass: RadixPass,
+                    src_partition_attr: LaunchableSlice<'_, $Type>,
+                    src_payload_attr: LaunchableSlice<'_, $Type>,
+                    mut dst_partition_attr: LaunchableMutSlice<'_, $Type>,
+                    mut dst_payload_attr: LaunchableMutSlice<'_, $Type>,
+                    partition_offsets: &mut PartitionOffsets<Tuple<$Type, $Type>>,
+                    stream: &Stream,
+                    ) -> Result<()> {
+
+                    let device = CurrentContext::get_device()?;
+                    let sm_count = device.get_attribute(DeviceAttribute::MultiprocessorCount)? as u32;
+                    let radix_bits = rp
+                        .radix_bits
+                        .pass_radix_bits(pass)
+                        .ok_or_else(||
+                                ErrorKind::InvalidArgument(
+                                    "The requested partitioning pass is not specified".to_string()
+                                    ))?;
+
+                    if partition_offsets.radix_bits != radix_bits {
+                        Err(ErrorKind::InvalidArgument(
+                                "PartitionOffsets has mismatching radix bits".to_string(),
+                                ))?;
+                    }
+                    match rp.prefix_sum_algorithm {
+                        GpuHistogramAlgorithm::CpuChunked | GpuHistogramAlgorithm::GpuChunked
+                            => {
+                                Err(ErrorKind::InvalidArgument(
+                                        "Unsupported histogram algorithm, try using GpuContiguous instead".to_string(),
+                                        ))?;
+                            },
+                        GpuHistogramAlgorithm::GpuContiguous
+                            => {
+                                if partition_offsets.chunks() != 1 {
+                                    Err(ErrorKind::InvalidArgument(
+                                            "PartitionOffsets has mismatching number of chunks".to_string(),
+                                            ))?;
+                                }
+                                if sm_count < partition_offsets.chunks() {
+                                    Err(ErrorKind::InvalidArgument(
+                                            "The GpuContiguous algorithm requires \
+                                            all threads to run simultaneously. Try \
+                                            decreasing the grid size.".to_string(),
+                                            ))?;
+                                }
+                            }
+                    }
+
+                    // Only checking for contiguous partitioned relations, as
+                    // chunked aren't supported.
+                    if src_partition_attr.len() >= std::u32::MAX as usize {
+                            let msg = "Relation is too large and causes an integer overflow.";
+                            Err(ErrorKind::IntegerOverflow(msg.to_string(),))?
+                    }
+
+                    let module = &rp.module;
+                    let max_shared_mem_bytes =
+                        device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
+                    let fanout_u32 = rp.radix_bits.pass_fanout(pass).unwrap();
+                    let ignore_bits = rp.radix_bits.pass_ignore_bits(pass);
+                    let grid_size = rp.grid_size.clone();
+                    let block_size = rp.block_size.clone();
+                    let canonical_chunk_len = rp.input_chunk_size::<$Type>(src_partition_attr.len())?;
+
+                    let tmp_partition_offsets = if let Some(ref mut local_offsets) = partition_offsets.local_offsets {
+                        local_offsets.as_launchable_mut_ptr()
+                    } else {
+                        LaunchableMutPtr::null_mut()
+                    };
+
+                    let mut args = PrefixSumAndCopyWithPayloadArgs {
+                        src_partition_attr: src_partition_attr.as_launchable_ptr().as_void(),
+                        src_payload_attr: src_payload_attr.as_launchable_ptr().as_void(),
+                        data_len: src_partition_attr.len(),
+                        canonical_chunk_len,
+                        padding_len: partition_offsets.padding_len(),
+                        radix_bits,
+                        ignore_bits,
+                        prefix_scan_state: LaunchableMutPtr::null_mut(),
+                        tmp_partition_offsets,
+                        dst_partition_attr: dst_partition_attr.as_launchable_mut_ptr().as_void(),
+                        dst_payload_attr: dst_payload_attr.as_launchable_mut_ptr().as_void(),
+                        partition_offsets: partition_offsets.offsets.as_launchable_mut_ptr(),
+                    };
+
+                    match rp.prefix_sum_state {
+                        PrefixSumState::CpuChunked => unreachable!(),
+                        PrefixSumState::GpuChunked => unreachable!(),
+                        PrefixSumState::GpuContiguous(ref mut prefix_scan_state) => {
+                            let shared_mem_bytes = (
+                                (block_size.x + (block_size.x >> rp.log2_num_banks)) + fanout_u32
+                                ) * mem::size_of::<u64>() as u32;
+                            assert!(
+                                shared_mem_bytes <= max_shared_mem_bytes,
+                                "Failed to allocate enough shared memory"
+                                );
+
+                            args.prefix_scan_state = prefix_scan_state.as_launchable_mut_ptr();
+
+                            unsafe {
+                                launch_cooperative!(
+                                    module.[<gpu_contiguous_prefix_sum_and_copy_with_payload_ $Suffix _ $Suffix>]<<<
+                                    grid_size.clone(),
+                                    block_size.clone(),
+                                    shared_mem_bytes,
+                                    stream
+                                    >>>(
+                                        args.clone()
+                                       ))?;
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+
+                fn prefix_sum_and_transform_impl(
+                    rp: &mut GpuRadixPartitioner,
+                    pass: RadixPass,
+                    partition_id: u32,
+                    src_relation: &PartitionedRelation<Tuple<$Type, $Type>>,
+                    mut dst_partition_attr: LaunchableMutSlice<'_, $Type>,
+                    mut dst_payload_attr: LaunchableMutSlice<'_, $Type>,
+                    partition_offsets: &mut PartitionOffsets<Tuple<$Type, $Type>>,
+                    stream: &Stream,
+                    ) -> Result<()> {
+
+                    let device = CurrentContext::get_device()?;
+                    let sm_count = device.get_attribute(DeviceAttribute::MultiprocessorCount)? as u32;
+                    let radix_bits = rp
+                        .radix_bits
+                        .pass_radix_bits(pass)
+                        .ok_or_else(||
+                                ErrorKind::InvalidArgument(
+                                    "The requested partitioning pass is not specified".to_string()
+                                    ))?;
+
+                    if partition_id >= src_relation.partitions() {
+                        Err(ErrorKind::InvalidArgument(
+                                "Invalid partition ID".to_string(),
+                                ))?;
+                    }
+                    if partition_offsets.radix_bits != radix_bits {
+                        Err(ErrorKind::InvalidArgument(
+                                "PartitionedRelation has mismatching radix bits".to_string(),
+                                ))?;
+                    }
+                    match rp.prefix_sum_algorithm {
+                        GpuHistogramAlgorithm::CpuChunked | GpuHistogramAlgorithm::GpuChunked
+                            => {
+                                Err(ErrorKind::InvalidArgument(
+                                        "Unsupported histogram algorithm, try using GpuContiguous instead".to_string(),
+                                        ))?;
+                            },
+                        GpuHistogramAlgorithm::GpuContiguous
+                            => {
+                                if partition_offsets.chunks() != 1 {
+                                    Err(ErrorKind::InvalidArgument(
+                                            "PartitionedRelation has mismatching number of chunks".to_string(),
+                                            ))?;
+                                }
+                                if sm_count < partition_offsets.chunks() {
+                                    Err(ErrorKind::InvalidArgument(
+                                            "The GpuContiguous algorithm requires \
+                                            all threads to run simultaneously. Try \
+                                            decreasing the grid size.".to_string(),
+                                            ))?;
+                                }
+                            }
+                    }
+
+                    // Only checking for contiguous partitioned relations, as
+                    // chunked aren't supported.
+                    if src_relation.relation.len() >= std::u32::MAX as usize {
+                            let msg = "Relation is too large and causes an integer overflow.";
+                            Err(ErrorKind::IntegerOverflow(msg.to_string(),))?
+                    }
+
+                    let module = &rp.module;
+                    let max_shared_mem_bytes =
+                        device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
+                    let fanout_u32 = rp.radix_bits.pass_fanout(pass).unwrap();
+                    let ignore_bits = rp.radix_bits.pass_ignore_bits(pass);
+                    let grid_size = rp.grid_size.clone();
+                    let block_size = rp.block_size.clone();
+
+                    let tmp_partition_offsets = if let Some(ref mut local_offsets) = partition_offsets.local_offsets {
+                        local_offsets.as_launchable_mut_ptr()
+                    } else {
+                        LaunchableMutPtr::null_mut()
+                    };
+
+                    let mut args = PrefixSumAndTransformArgs {
+                        partition_id,
+                        src_relation: src_relation.relation.as_launchable_ptr().as_void(),
+                        src_offsets: src_relation.offsets.as_launchable_ptr(),
+                        src_chunks: src_relation.chunks,
+                        src_radix_bits: src_relation.radix_bits,
+                        data_len: src_relation.relation.len(),
+                        padding_len: partition_offsets.padding_len(),
+                        radix_bits,
+                        ignore_bits,
+                        prefix_scan_state: LaunchableMutPtr::null_mut(),
+                        tmp_partition_offsets,
+                        dst_partition_attr: dst_partition_attr.as_launchable_mut_ptr().as_void(),
+                        dst_payload_attr: dst_payload_attr.as_launchable_mut_ptr().as_void(),
+                        partition_offsets: partition_offsets.offsets.as_launchable_mut_ptr(),
+                    };
+
+                    match rp.prefix_sum_state {
+                        PrefixSumState::CpuChunked => unreachable!(),
+                        PrefixSumState::GpuChunked => unreachable!(),
+                        PrefixSumState::GpuContiguous(ref mut prefix_scan_state) => {
+                            let shared_mem_bytes = (
+                                (block_size.x + (block_size.x >> rp.log2_num_banks))
+                                + fanout_u32
+                                + 2 * src_relation.chunks
+                                ) * mem::size_of::<u64>() as u32;
+                            assert!(
+                                shared_mem_bytes <= max_shared_mem_bytes,
+                                "Failed to allocate enough shared memory"
+                                );
+
+                            args.prefix_scan_state = prefix_scan_state.as_launchable_mut_ptr();
+
+                            unsafe {
+                                launch_cooperative!(
+                                    module.[<gpu_contiguous_prefix_sum_and_transform_ $Suffix _ $Suffix>]<<<
+                                    grid_size.clone(),
+                                    block_size.clone(),
+                                    shared_mem_bytes,
+                                    stream
+                                    >>>(
+                                        args.clone()
+                                       ))?;
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
             }
 
             paste::item! {
@@ -1085,7 +1545,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
                     let max_shared_mem_bytes =
                         device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
-                    let fanout_u32 = rp.radix_bits.pass_fanout(pass).unwrap() as u32;
+                    let fanout_u32 = rp.radix_bits.pass_fanout(pass).unwrap();
                     let ignore_bits = rp.radix_bits.pass_ignore_bits(pass);
                     let data_len = partition_attr.len();
 
@@ -1359,6 +1819,14 @@ mod tests {
     use std::ops::RangeInclusive;
     use std::result::Result;
 
+    fn key_to_partition(key: i32, radix_bits: &RadixBits, radix_pass: RadixPass) -> u32 {
+        let ignore_bits = radix_bits.pass_ignore_bits(radix_pass);
+        let fanout = radix_bits.pass_fanout(radix_pass).unwrap();
+        let mask = (fanout - 1) << ignore_bits;
+        let partition = (key as u32 & mask) >> ignore_bits;
+        partition
+    }
+
     fn gpu_tuple_loss_or_duplicates_i32(
         tuples: usize,
         histogram_algorithm: GpuHistogramAlgorithm,
@@ -1576,13 +2044,458 @@ mod tests {
         let mask = fanout(radix_bits) - 1;
         (0..partitioned_relation.chunks())
             .flat_map(|c| iter::repeat(c).zip(0..partitioned_relation.partitions()))
-            .flat_map(|(c, p)| iter::repeat((c, p)).zip(partitioned_relation[(c as usize, p)].iter()))
+            .flat_map(|(c, p)| iter::repeat((c, p)).zip(partitioned_relation[(c, p)].iter()))
             .for_each(|((c, p), &tuple)| {
-                let dst_partition = (tuple.key) as usize & mask;
+                let dst_partition = tuple.key as u32 & mask;
                 assert_eq!(
                     dst_partition, p,
                     "Wrong partitioning detected in chunk {}: key {} in partition {}; expected partition {}",
                     c, tuple.key, p, dst_partition
+                );
+            });
+
+        Ok(())
+    }
+
+    fn run_gpu_partitioning_and_copy_with_payload<KeyGenFn, PayGenFn, ValidatorFn>(
+        tuples: usize,
+        key_gen: Box<KeyGenFn>,
+        pay_gen: Box<PayGenFn>,
+        histogram_algorithm: GpuHistogramAlgorithm,
+        partition_algorithm: GpuRadixPartitionAlgorithm,
+        radix_bits: RadixBits,
+        grid_size: GridSize,
+        block_size: BlockSize,
+        mut validator: Box<ValidatorFn>,
+    ) -> Result<(), Box<dyn Error>>
+    where
+        KeyGenFn: FnOnce(&mut [i32]) -> Result<(), Box<dyn Error>>,
+        PayGenFn: FnOnce(&mut [i32]) -> Result<(), Box<dyn Error>>,
+        ValidatorFn: FnMut(
+            RadixPass,
+            &RadixBits,
+            &[i32],
+            &[i32],
+            &PartitionedRelation<Tuple<i32, i32>>,
+            &[i32],
+            &[i32],
+        ) -> Result<(), Box<dyn Error>>,
+    {
+        const DMEM_BUFFER_BYTES: usize = 8 * 1024;
+
+        let _context = rustacuda::quick_init()?;
+
+        let mut data_key = Allocator::alloc_deref_mem::<i32>(DerefMemType::CudaPinnedMem, tuples);
+        let mut data_pay = Allocator::alloc_deref_mem::<i32>(DerefMemType::CudaPinnedMem, tuples);
+
+        key_gen(data_key.as_mut_slice())?;
+        pay_gen(data_pay.as_mut_slice())?;
+
+        // Ensure that the allocated memory is zeroed
+        let alloc_fn = Box::new(|len: usize| {
+            let mut mem = Allocator::alloc_deref_mem(DerefMemType::CudaUniMem, len);
+            mem.iter_mut().for_each(|x| *x = Default::default());
+            mem.into()
+        });
+
+        let mut partition_offsets = PartitionOffsets::new(
+            histogram_algorithm,
+            grid_size.x,
+            radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
+            Allocator::mem_alloc_fn(MemType::CudaUniMem),
+        );
+
+        let mut partitioned_relation = PartitionedRelation::new(
+            tuples,
+            histogram_algorithm,
+            radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
+            grid_size.x,
+            alloc_fn,
+            Allocator::mem_alloc_fn(MemType::CudaUniMem),
+        );
+
+        let mut partitioner = GpuRadixPartitioner::new(
+            histogram_algorithm,
+            partition_algorithm,
+            radix_bits,
+            &grid_size,
+            &block_size,
+            DMEM_BUFFER_BYTES,
+        )?;
+
+        let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
+        let mut cached_key: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
+        let mut cached_pay: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
+
+        partitioner.prefix_sum_and_copy_with_payload(
+            RadixPass::First,
+            data_key.as_launchable_slice(),
+            data_pay.as_launchable_slice(),
+            cached_key.as_launchable_mut_slice(),
+            cached_pay.as_launchable_mut_slice(),
+            &mut partition_offsets,
+            &stream,
+        )?;
+
+        partitioner.partition(
+            RadixPass::First,
+            cached_key.as_launchable_slice(),
+            cached_pay.as_launchable_slice(),
+            partition_offsets,
+            &mut partitioned_relation,
+            &stream,
+        )?;
+
+        stream.synchronize()?;
+
+        validator(
+            RadixPass::First,
+            &radix_bits,
+            data_key.as_slice(),
+            data_pay.as_slice(),
+            &partitioned_relation,
+            cached_key.as_slice(),
+            cached_pay.as_slice(),
+        )?;
+
+        Ok(())
+    }
+
+    fn run_gpu_two_pass_partitioning<KeyGenFn, PayGenFn, ValidatorFn>(
+        tuples: usize,
+        key_gen: Box<KeyGenFn>,
+        pay_gen: Box<PayGenFn>,
+        histogram_algorithm: GpuHistogramAlgorithm,
+        partition_algorithm: GpuRadixPartitionAlgorithm,
+        histogram_algorithm_2nd: GpuHistogramAlgorithm,
+        partition_algorithm_2nd: GpuRadixPartitionAlgorithm,
+        radix_bits: RadixBits,
+        grid_size: GridSize,
+        block_size: BlockSize,
+        mut validator: Box<ValidatorFn>,
+    ) -> Result<(), Box<dyn Error>>
+    where
+        KeyGenFn: FnOnce(&mut [i32]) -> Result<(), Box<dyn Error>>,
+        PayGenFn: FnOnce(&mut [i32]) -> Result<(), Box<dyn Error>>,
+        ValidatorFn: FnMut(
+            RadixPass,
+            &RadixBits,
+            &PartitionedRelation<Tuple<i32, i32>>,
+            u32,
+            &PartitionedRelation<Tuple<i32, i32>>,
+            &[i32],
+            &[i32],
+        ) -> Result<(), Box<dyn Error>>,
+    {
+        const DMEM_BUFFER_BYTES: usize = 8 * 1024;
+
+        let _context = rustacuda::quick_init()?;
+
+        let mut data_key: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
+        let mut data_pay: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
+
+        key_gen(data_key.as_mut_slice())?;
+        pay_gen(data_pay.as_mut_slice())?;
+
+        let mut partition_offsets = PartitionOffsets::new(
+            histogram_algorithm,
+            grid_size.x,
+            radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
+            Allocator::mem_alloc_fn(MemType::CudaUniMem),
+        );
+
+        let mut partitioned_relation = PartitionedRelation::new(
+            tuples,
+            histogram_algorithm,
+            radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
+            grid_size.x,
+            Allocator::mem_alloc_fn(MemType::CudaUniMem),
+            Allocator::mem_alloc_fn(MemType::CudaUniMem),
+        );
+
+        let mut partitioner = GpuRadixPartitioner::new(
+            histogram_algorithm,
+            partition_algorithm,
+            radix_bits,
+            &grid_size,
+            &block_size,
+            DMEM_BUFFER_BYTES,
+        )?;
+
+        let mut partitioner_2nd = GpuRadixPartitioner::new(
+            histogram_algorithm_2nd,
+            partition_algorithm_2nd,
+            radix_bits,
+            &grid_size,
+            &block_size,
+            DMEM_BUFFER_BYTES,
+        )?;
+
+        let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
+        let data_key = Mem::CudaPinnedMem(data_key);
+        let data_pay = Mem::CudaPinnedMem(data_pay);
+
+        partitioner.prefix_sum(
+            RadixPass::First,
+            data_key.as_launchable_slice(),
+            &mut partition_offsets,
+            &stream,
+        )?;
+
+        partitioner.partition(
+            RadixPass::First,
+            data_key.as_launchable_slice(),
+            data_pay.as_launchable_slice(),
+            partition_offsets,
+            &mut partitioned_relation,
+            &stream,
+        )?;
+        stream.synchronize()?;
+
+        // TODO: compute size of largest partition from partition_offsets
+        let mut cached_key: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
+        let mut cached_pay: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
+
+        for partition_id in 0..radix_bits.pass_fanout(RadixPass::First).unwrap() {
+            // Ensure that padded entries are zero for testing
+            cached_key.iter_mut().for_each(|x| *x = 0);
+            cached_pay.iter_mut().for_each(|x| *x = 0);
+
+            let mut partition_offsets_2nd = PartitionOffsets::new(
+                histogram_algorithm_2nd,
+                grid_size.x,
+                radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
+                Allocator::mem_alloc_fn(MemType::CudaUniMem),
+            );
+
+            let partition_len = partitioned_relation.partition_len(partition_id)?;
+
+            let mut partitioned_relation_2nd = PartitionedRelation::new(
+                partition_len,
+                histogram_algorithm_2nd,
+                radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
+                grid_size.x,
+                Allocator::mem_alloc_fn(MemType::CudaUniMem),
+                Allocator::mem_alloc_fn(MemType::CudaUniMem),
+            );
+
+            let cached_key_slice = &mut cached_key.as_mut_slice()[0..partition_len];
+            let cached_pay_slice = &mut cached_pay.as_mut_slice()[0..partition_len];
+
+            partitioner_2nd.prefix_sum_and_transform(
+                RadixPass::Second,
+                partition_id,
+                &partitioned_relation,
+                cached_key_slice.as_launchable_mut_slice(),
+                cached_pay_slice.as_launchable_mut_slice(),
+                &mut partition_offsets_2nd,
+                &stream,
+            )?;
+
+            partitioner_2nd.partition(
+                RadixPass::Second,
+                cached_key_slice.as_launchable_slice(),
+                cached_pay_slice.as_launchable_slice(),
+                partition_offsets_2nd,
+                &mut partitioned_relation_2nd,
+                &stream,
+            )?;
+
+            stream.synchronize()?;
+
+            validator(
+                RadixPass::Second,
+                &radix_bits,
+                &partitioned_relation,
+                partition_id,
+                &partitioned_relation_2nd,
+                cached_key_slice,
+                cached_pay_slice,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn gpu_tuple_loss_or_duplicates(
+        _radix_pass: RadixPass,
+        _radix_bits: &RadixBits,
+        data_key: &[i32],
+        data_pay: &[i32],
+        partitioned_relation: &PartitionedRelation<Tuple<i32, i32>>,
+        partition_id: Option<u32>,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut original_tuples: HashMap<_, _> = data_key
+            .iter()
+            .cloned()
+            .zip(data_pay.iter().cloned().zip(std::iter::repeat(0)))
+            .collect();
+
+        let relation: &[_] = (&partitioned_relation.relation)
+            .try_into()
+            .expect("Tried to convert device memory into host slice");
+
+        relation.iter().cloned().for_each(|Tuple { key, value }| {
+            let entry = original_tuples.entry(key);
+            match entry {
+                entry @ Entry::Occupied(_) => {
+                    let key = *entry.key();
+                    entry.and_modify(|(original_value, counter)| {
+                        let id_str = partition_id
+                            .map_or_else(|| "".to_string(), |id| format!(" in partition {}", id));
+                        assert_eq!(
+                            value, *original_value,
+                            "Invalid payload{}: {}; expected: {}",
+                            id_str, value, *original_value
+                        );
+                        assert_eq!(*counter, 0, "Duplicate key: {}", key);
+                        *counter = *counter + 1;
+                    });
+                }
+                entry @ Entry::Vacant(_) => {
+                    // skip padding entries
+                    if *entry.key() != 0 {
+                        assert!(false, "Invalid key: {}", entry.key());
+                    }
+                }
+            };
+        });
+
+        original_tuples.iter().for_each(|(&key, &(_, counter))| {
+            assert_eq!(
+                counter, 1,
+                "Key {} occurs {} times; expected exactly once",
+                key, counter
+            );
+        });
+
+        Ok(())
+    }
+
+    fn gpu_verify_partitions(
+        radix_pass: RadixPass,
+        radix_bits: &RadixBits,
+        _data_key: &[i32],
+        _data_pay: &[i32],
+        partitioned_relation: &PartitionedRelation<Tuple<i32, i32>>,
+        partition_id: Option<u32>,
+    ) -> Result<(), Box<dyn Error>> {
+        (0..partitioned_relation.chunks())
+            .flat_map(|c| iter::repeat(c).zip(0..partitioned_relation.partitions()))
+            .flat_map(|(c, p)| iter::repeat((c, p)).zip(partitioned_relation[(c, p)].iter()))
+            .enumerate()
+            .for_each(|(i, ((c, p), &tuple))| {
+                let dst_partition = key_to_partition(tuple.key, radix_bits, radix_pass);
+                let id_str = partition_id.map_or_else(|| "".to_string(), |id| format!("{}:", id));
+                assert_eq!(
+                    dst_partition, p,
+                    "Wrong partitioning detected in chunk {} at position {}: \
+                    key {} in partition {}{}; expected partition {}{}",
+                    c, i, tuple.key, id_str, p, id_str, dst_partition
+                );
+            });
+
+        Ok(())
+    }
+
+    fn gpu_check_copy_with_payload(
+        _radix_pass: RadixPass,
+        _radix_bits: &RadixBits,
+        data_key: &[i32],
+        data_pay: &[i32],
+        _partitioned_relation: &PartitionedRelation<Tuple<i32, i32>>,
+        cached_key: &[i32],
+        cached_pay: &[i32],
+    ) -> Result<(), Box<dyn Error>> {
+        data_key
+            .iter()
+            .zip(cached_key.iter())
+            .enumerate()
+            .for_each(|(i, (&original, &cached))| {
+                assert_eq!(
+                    original, cached,
+                    "Wrong key detected at position {}: {}",
+                    i, cached
+                );
+            });
+
+        data_pay
+            .iter()
+            .zip(cached_pay.iter())
+            .enumerate()
+            .for_each(|(i, (&original, &cached))| {
+                assert_eq!(
+                    original, cached,
+                    "Wrong payload detected at position {}: {}",
+                    i, cached
+                );
+            });
+
+        Ok(())
+    }
+
+    fn gpu_two_pass_tuple_loss_or_duplicates(
+        radix_pass: RadixPass,
+        radix_bits: &RadixBits,
+        _partitioned_relation_1st: &PartitionedRelation<Tuple<i32, i32>>,
+        partition_id: u32,
+        partitioned_relation_2nd: &PartitionedRelation<Tuple<i32, i32>>,
+        cached_key_slice: &[i32],
+        cached_pay_slice: &[i32],
+    ) -> Result<(), Box<dyn Error>> {
+        gpu_verify_partitions(
+            radix_pass,
+            radix_bits,
+            cached_key_slice,
+            cached_pay_slice,
+            partitioned_relation_2nd,
+            Some(partition_id),
+        )
+    }
+
+    fn gpu_two_pass_verify_partitions(
+        radix_pass: RadixPass,
+        radix_bits: &RadixBits,
+        _partitioned_relation_1st: &PartitionedRelation<Tuple<i32, i32>>,
+        partition_id: u32,
+        partitioned_relation_2nd: &PartitionedRelation<Tuple<i32, i32>>,
+        cached_key_slice: &[i32],
+        cached_pay_slice: &[i32],
+    ) -> Result<(), Box<dyn Error>> {
+        gpu_verify_partitions(
+            radix_pass,
+            radix_bits,
+            cached_key_slice,
+            cached_pay_slice,
+            partitioned_relation_2nd,
+            Some(partition_id),
+        )
+    }
+
+    fn gpu_verify_transformed_input(
+        _radix_pass: RadixPass,
+        _radix_bits: &RadixBits,
+        partitioned_relation_1st: &PartitionedRelation<Tuple<i32, i32>>,
+        partition_id: u32,
+        _partitioned_relation_2nd: &PartitionedRelation<Tuple<i32, i32>>,
+        cached_key_slice: &[i32],
+        cached_pay_slice: &[i32],
+    ) -> Result<(), Box<dyn Error>> {
+        (0..partitioned_relation_1st.chunks())
+            .flat_map(|c| partitioned_relation_1st[(c, partition_id)].iter())
+            .zip(cached_key_slice.iter())
+            .zip(cached_pay_slice.iter())
+            .enumerate()
+            .for_each(|(i, ((&tuple, &key), &pay))| {
+                assert_eq!(
+                    tuple.key, key,
+                    "Wrong key detected in partition {} at position {}: {}",
+                    partition_id, i, key
+                );
+                assert_eq!(
+                    tuple.value, pay,
+                    "Wrong payload detected in partition {} at position {}: {}",
+                    partition_id, i, pay
                 );
             });
 
@@ -2377,6 +3290,316 @@ mod tests {
             10,
             GridSize::from(1),
             BlockSize::from(128),
+        )
+    }
+
+    #[test]
+    fn gpu_tuple_loss_or_duplicates_copy_with_payload_contiguous_i32_2_bits(
+    ) -> Result<(), Box<dyn Error>> {
+        run_gpu_partitioning_and_copy_with_payload(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            RadixBits::from(2),
+            GridSize::from(10),
+            BlockSize::from(128),
+            Box::new(|pass, rb: &_, dk: &_, dp: &_, pr: &_, _: &_, _: &_| {
+                gpu_tuple_loss_or_duplicates(pass, rb, dk, dp, pr, None)
+            }),
+        )
+    }
+
+    #[test]
+    fn gpu_tuple_loss_or_duplicates_copy_with_payload_contiguous_i32_10_bits(
+    ) -> Result<(), Box<dyn Error>> {
+        run_gpu_partitioning_and_copy_with_payload(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            RadixBits::from(10),
+            GridSize::from(10),
+            BlockSize::from(128),
+            Box::new(|pass, rb: &_, dk: &_, dp: &_, pr: &_, _: &_, _: &_| {
+                gpu_tuple_loss_or_duplicates(pass, rb, dk, dp, pr, None)
+            }),
+        )
+    }
+
+    #[test]
+    fn gpu_verify_partitions_copy_with_payload_contiguous_i32_2_bits() -> Result<(), Box<dyn Error>>
+    {
+        run_gpu_partitioning_and_copy_with_payload(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            RadixBits::from(2),
+            GridSize::from(10),
+            BlockSize::from(128),
+            Box::new(|pass, rb: &_, dk: &_, dp: &_, pr: &_, _: &_, _: &_| {
+                gpu_verify_partitions(pass, rb, dk, dp, pr, None)
+            }),
+        )
+    }
+
+    #[test]
+    fn gpu_verify_partitions_copy_with_payload_contiguous_i32_10_bits() -> Result<(), Box<dyn Error>>
+    {
+        run_gpu_partitioning_and_copy_with_payload(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            RadixBits::from(10),
+            GridSize::from(10),
+            BlockSize::from(128),
+            Box::new(|pass, rb: &_, dk: &_, dp: &_, pr: &_, _: &_, _: &_| {
+                gpu_verify_partitions(pass, rb, dk, dp, pr, None)
+            }),
+        )
+    }
+
+    #[test]
+    fn gpu_check_copy_with_payload_contiguous_i32_2_bits() -> Result<(), Box<dyn Error>> {
+        run_gpu_partitioning_and_copy_with_payload(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            RadixBits::from(2),
+            GridSize::from(10),
+            BlockSize::from(128),
+            Box::new(&gpu_check_copy_with_payload),
+        )
+    }
+
+    #[test]
+    fn gpu_check_copy_with_payload_contiguous_i32_10_bits() -> Result<(), Box<dyn Error>> {
+        run_gpu_partitioning_and_copy_with_payload(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            RadixBits::from(10),
+            GridSize::from(10),
+            BlockSize::from(128),
+            Box::new(&gpu_check_copy_with_payload),
+        )
+    }
+
+    #[test]
+    fn gpu_loss_or_duplicates_two_pass_chunked_contiguous_i32_0_0_bits(
+    ) -> Result<(), Box<dyn Error>> {
+        run_gpu_two_pass_partitioning(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuChunked,
+            GpuRadixPartitionAlgorithm::NC,
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            RadixBits::new(Some(0), Some(0), None),
+            GridSize::from(8),
+            BlockSize::from(128),
+            Box::new(&gpu_two_pass_tuple_loss_or_duplicates),
+        )
+    }
+
+    #[test]
+    fn gpu_loss_or_duplicates_two_pass_chunked_contiguous_i32_2_2_bits(
+    ) -> Result<(), Box<dyn Error>> {
+        run_gpu_two_pass_partitioning(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuChunked,
+            GpuRadixPartitionAlgorithm::NC,
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            RadixBits::new(Some(2), Some(2), None),
+            GridSize::from(8),
+            BlockSize::from(128),
+            Box::new(&gpu_two_pass_tuple_loss_or_duplicates),
+        )
+    }
+
+    #[test]
+    fn gpu_loss_or_duplicates_two_pass_chunked_contiguous_i32_10_10_bits(
+    ) -> Result<(), Box<dyn Error>> {
+        run_gpu_two_pass_partitioning(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuChunked,
+            GpuRadixPartitionAlgorithm::NC,
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            RadixBits::new(Some(10), Some(10), None),
+            GridSize::from(8),
+            BlockSize::from(128),
+            Box::new(&gpu_two_pass_tuple_loss_or_duplicates),
+        )
+    }
+
+    #[test]
+    fn gpu_loss_or_duplicates_two_pass_contiguous_contiguous_i32_2_2_bits(
+    ) -> Result<(), Box<dyn Error>> {
+        run_gpu_two_pass_partitioning(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            RadixBits::new(Some(2), Some(2), None),
+            GridSize::from(8),
+            BlockSize::from(128),
+            Box::new(&gpu_two_pass_tuple_loss_or_duplicates),
+        )
+    }
+
+    #[test]
+    fn gpu_verify_two_pass_chunked_contiguous_i32_0_0_bits() -> Result<(), Box<dyn Error>> {
+        run_gpu_two_pass_partitioning(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuChunked,
+            GpuRadixPartitionAlgorithm::NC,
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            RadixBits::new(Some(0), Some(0), None),
+            GridSize::from(8),
+            BlockSize::from(128),
+            Box::new(&gpu_two_pass_verify_partitions),
+        )
+    }
+
+    #[test]
+    fn gpu_verify_two_pass_chunked_contiguous_i32_2_2_bits() -> Result<(), Box<dyn Error>> {
+        run_gpu_two_pass_partitioning(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuChunked,
+            GpuRadixPartitionAlgorithm::NC,
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            RadixBits::new(Some(2), Some(2), None),
+            GridSize::from(8),
+            BlockSize::from(128),
+            Box::new(&gpu_two_pass_verify_partitions),
+        )
+    }
+
+    #[test]
+    fn gpu_verify_two_pass_chunked_contiguous_i32_10_10_bits() -> Result<(), Box<dyn Error>> {
+        run_gpu_two_pass_partitioning(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuChunked,
+            GpuRadixPartitionAlgorithm::NC,
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            RadixBits::new(Some(10), Some(10), None),
+            GridSize::from(8),
+            BlockSize::from(128),
+            Box::new(&gpu_two_pass_verify_partitions),
+        )
+    }
+
+    #[test]
+    fn gpu_verify_two_pass_contiguous_contiguous_i32_2_2_bits() -> Result<(), Box<dyn Error>> {
+        run_gpu_two_pass_partitioning(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            RadixBits::new(Some(2), Some(2), None),
+            GridSize::from(8),
+            BlockSize::from(128),
+            Box::new(&gpu_two_pass_verify_partitions),
+        )
+    }
+
+    #[test]
+    fn gpu_transform_two_pass_chunked_contiguous_i32_0_0_bits() -> Result<(), Box<dyn Error>> {
+        run_gpu_two_pass_partitioning(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuChunked,
+            GpuRadixPartitionAlgorithm::NC,
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            RadixBits::new(Some(0), Some(0), None),
+            GridSize::from(8),
+            BlockSize::from(128),
+            Box::new(&gpu_verify_transformed_input),
+        )
+    }
+
+    #[test]
+    fn gpu_transform_two_pass_chunked_contiguous_i32_2_2_bits() -> Result<(), Box<dyn Error>> {
+        run_gpu_two_pass_partitioning(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuChunked,
+            GpuRadixPartitionAlgorithm::NC,
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            RadixBits::new(Some(2), Some(2), None),
+            GridSize::from(8),
+            BlockSize::from(128),
+            Box::new(&gpu_verify_transformed_input),
+        )
+    }
+
+    #[test]
+    fn gpu_transform_two_pass_chunked_contiguous_i32_10_10_bits() -> Result<(), Box<dyn Error>> {
+        run_gpu_two_pass_partitioning(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuChunked,
+            GpuRadixPartitionAlgorithm::NC,
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            RadixBits::new(Some(10), Some(10), None),
+            GridSize::from(8),
+            BlockSize::from(128),
+            Box::new(&gpu_verify_transformed_input),
+        )
+    }
+
+    #[test]
+    fn gpu_transform_two_pass_contiguous_contiguous_i32_2_2_bits() -> Result<(), Box<dyn Error>> {
+        run_gpu_two_pass_partitioning(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::NC,
+            RadixBits::new(Some(2), Some(2), None),
+            GridSize::from(8),
+            BlockSize::from(128),
+            Box::new(&gpu_verify_transformed_input),
         )
     }
 }

@@ -195,6 +195,274 @@ __device__ void gpu_contiguous_prefix_sum(PrefixSumArgs &args) {
   }
 }
 
+// Contiguous prefix sum and copy with payload
+//
+// Note that this function must be launched with cudaLaunchCooperativeKernel.
+// Cooperative grid synchronization is only supported on Pascal and later GPUs.
+// For testing on pre-Pascal GPUs, the function can be launched with
+// grid_size = 1.
+template <typename K, typename V>
+__device__ void gpu_contiguous_prefix_sum_and_copy_with_payload(
+    PrefixSumAndCopyWithPayloadArgs &args) {
+  extern __shared__ uint32_t shared_mem[];
+
+#if __CUDA_ARCH__ >= 600
+  cg::grid_group grid = cg::this_grid();
+#endif
+  const uint32_t fanout = 1U << args.radix_bits;
+  const uint64_t mask = static_cast<uint64_t>(fanout - 1U) << args.ignore_bits;
+  constexpr size_t input_align_mask =
+      ~(static_cast<size_t>(ALIGN_BYTES / sizeof(K)) - 1ULL);
+
+  // Calculate the data_length per block
+  size_t data_length =
+      ((args.data_length + gridDim.x - 1U) / gridDim.x) & input_align_mask;
+  size_t data_offset = data_length * blockIdx.x;
+  if (blockIdx.x + 1U == gridDim.x) {
+    data_length = args.data_length - data_offset;
+  }
+
+  auto src_partition_attr =
+      reinterpret_cast<const K *>(args.src_partition_attr) + data_offset;
+  auto src_payload_attr =
+      reinterpret_cast<const V *>(args.src_payload_attr) + data_offset;
+  auto dst_partition_attr =
+      reinterpret_cast<K *>(args.dst_partition_attr) + data_offset;
+  auto dst_payload_attr =
+      reinterpret_cast<V *>(args.dst_payload_attr) + data_offset;
+
+  unsigned long long *const tmp_partition_offsets =
+      reinterpret_cast<unsigned long long *>(shared_mem);
+
+  // Ensure counters are all zeroed.
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    tmp_partition_offsets[i] = 0;
+  }
+
+  __syncthreads();
+
+  // Compute local histograms per partition for thread block.
+  for (size_t i = threadIdx.x; i < data_length; i += blockDim.x) {
+    Tuple<K, V> tuple;
+    tuple.key = src_partition_attr[i];
+    tuple.value = src_payload_attr[i];
+
+    dst_partition_attr[i] = tuple.key;
+    dst_payload_attr[i] = tuple.value;
+
+    auto p_index = key_to_partition(tuple.key, mask, args.ignore_bits);
+    atomicAdd(&tmp_partition_offsets[p_index], 1U);
+  }
+
+  __syncthreads();
+
+  // Copy local histograms to device memory.
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    args.tmp_partition_offsets[gridDim.x * i + blockIdx.x] =
+        tmp_partition_offsets[i];
+  }
+
+  // Initialize prefix sum state before synchronizing the grid.
+  device_exclusive_prefix_sum_initialize(args.prefix_scan_state);
+
+#if __CUDA_ARCH__ >= 600
+  grid.sync();
+#else
+  __syncthreads();
+#endif
+
+  // Compute offsets with exclusive prefix sum for thread block.
+  device_exclusive_prefix_sum(args.tmp_partition_offsets, fanout * gridDim.x, 0,
+                              args.prefix_scan_state);
+
+#if __CUDA_ARCH__ >= 600
+  grid.sync();
+#else
+  __syncthreads();
+#endif
+
+  // Temporarily buffer the prefix sums into shared memory, as we need to
+  // transpose them in memory. Add padding between the contiguous partitions,
+  // but not between the chunks within a partition.
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    tmp_partition_offsets[i] =
+        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x] +
+        (i + 1) * args.padding_length;
+  }
+
+#if __CUDA_ARCH__ >= 600
+  grid.sync();
+#else
+  __syncthreads();
+#endif
+
+  // Write the transposed partition offsets to global memory.
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    args.tmp_partition_offsets[fanout * blockIdx.x + i] =
+        tmp_partition_offsets[i];
+  }
+
+  // Write partitions offsets to global memory. As there exists only one chunk
+  // only the first block must perform the write.
+  if (blockIdx.x == 0) {
+    for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+      args.partition_offsets[i] = tmp_partition_offsets[i];
+    }
+  }
+}
+
+// Contiguous prefix sum and transform
+//
+// Note that this function must be launched with cudaLaunchCooperativeKernel.
+// Cooperative grid synchronization is only supported on Pascal and later GPUs.
+// For testing on pre-Pascal GPUs, the function can be launched with
+// grid_size = 1.
+template <typename K, typename V>
+__device__ void gpu_contiguous_prefix_sum_and_transform(
+    PrefixSumAndTransformArgs &args) {
+  extern __shared__ uint32_t shared_mem[];
+
+#if __CUDA_ARCH__ >= 600
+  cg::grid_group grid = cg::this_grid();
+#endif
+  const uint32_t src_fanout = 1U << args.src_radix_bits;
+  const uint32_t fanout = 1U << args.radix_bits;
+  const uint64_t mask = static_cast<uint64_t>(fanout - 1U) << args.ignore_bits;
+  constexpr size_t input_align_mask =
+      ~(static_cast<size_t>(ALIGN_BYTES / sizeof(K)) - 1ULL);
+
+  unsigned long long *const tmp_partition_offsets =
+      reinterpret_cast<unsigned long long *>(shared_mem);
+  unsigned long long *const src_chunks_offset = &tmp_partition_offsets[fanout];
+  unsigned long long *const src_chunks_len =
+      &src_chunks_offset[args.src_chunks];
+
+  // Load chunk offsets
+  size_t src_data_len = 0U;
+  for (uint32_t i = threadIdx.x; i < args.src_chunks; i += blockDim.x) {
+    auto chunk_begin = args.src_offsets[i * src_fanout + args.partition_id];
+    auto chunk_end =
+        (i + 1 == args.src_chunks && args.partition_id + 1 == src_fanout)
+            ? args.data_length
+            : args.src_offsets[i * src_fanout + args.partition_id + 1U] -
+                  args.padding_length;
+    auto len = chunk_end - chunk_begin;
+
+    src_chunks_offset[i] = chunk_begin;
+    src_chunks_len[i] = len;
+    src_data_len += len;
+  }
+
+  // Aggregate length of all chunks
+  if (threadIdx.x == 0) {
+    tmp_partition_offsets[0] = 0;
+  }
+  __syncthreads();
+  atomicAdd(&tmp_partition_offsets[0], src_data_len);
+  __syncthreads();
+  src_data_len = tmp_partition_offsets[0];
+  // Ensure all threads have read src_data_len before initializing
+  // tmp_partition_offsets
+  __syncthreads();
+
+  // Calculate the data_length per block
+  size_t data_length =
+      ((src_data_len + gridDim.x - 1U) / gridDim.x) & input_align_mask;
+  size_t data_offset = data_length * blockIdx.x;
+  if (blockIdx.x + 1U == gridDim.x) {
+    data_length = src_data_len - data_offset;
+  }
+
+  auto src_relation = reinterpret_cast<const Tuple<K, V> *>(args.src_relation);
+  auto dst_partition_attr = reinterpret_cast<K *>(args.dst_partition_attr);
+  auto dst_payload_attr = reinterpret_cast<V *>(args.dst_payload_attr);
+
+  // Ensure counters are all zeroed.
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    tmp_partition_offsets[i] = 0;
+  }
+
+  __syncthreads();
+
+  // Compute local histograms per partition for thread block.
+  uint32_t chunk = -1;
+  size_t chunk_end = 0;
+  for (size_t i = data_offset + threadIdx.x, pos = 0;
+       i < data_offset + data_length; i += blockDim.x, pos += blockDim.x) {
+    while (i >= chunk_end) {
+      chunk += 1;
+      pos = src_chunks_offset[chunk] + (i - chunk_end);
+      chunk_end += src_chunks_len[chunk];
+    }
+
+    // size_t pos = chunk_offset + (i - chunk_begin);
+    Tuple<K, V> tuple;
+    tuple.load(src_relation[pos]);
+
+    dst_partition_attr[i] = tuple.key;
+    dst_payload_attr[i] = tuple.value;
+
+    auto p_index = key_to_partition(tuple.key, mask, args.ignore_bits);
+    atomicAdd(&tmp_partition_offsets[p_index], 1U);
+  }
+
+  __syncthreads();
+
+  // Copy local histograms to device memory.
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    args.tmp_partition_offsets[gridDim.x * i + blockIdx.x] =
+        tmp_partition_offsets[i];
+  }
+
+  // Initialize prefix sum state before synchronizing the grid.
+  device_exclusive_prefix_sum_initialize(args.prefix_scan_state);
+
+#if __CUDA_ARCH__ >= 600
+  grid.sync();
+#else
+  __syncthreads();
+#endif
+
+  // Compute offsets with exclusive prefix sum for thread block.
+  device_exclusive_prefix_sum(args.tmp_partition_offsets, fanout * gridDim.x, 0,
+                              args.prefix_scan_state);
+
+#if __CUDA_ARCH__ >= 600
+  grid.sync();
+#else
+  __syncthreads();
+#endif
+
+  // Temporarily buffer the prefix sums into shared memory, as we need to
+  // transpose them in memory. Add padding between the contiguous partitions,
+  // but not between the chunks within a partition.
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    tmp_partition_offsets[i] =
+        args.tmp_partition_offsets[gridDim.x * i + blockIdx.x] +
+        (i + 1) * args.padding_length;
+  }
+
+#if __CUDA_ARCH__ >= 600
+  grid.sync();
+#else
+  __syncthreads();
+#endif
+
+  // Write the transposed partition offsets to global memory.
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    args.tmp_partition_offsets[fanout * blockIdx.x + i] =
+        tmp_partition_offsets[i];
+  }
+
+  // Write partitions offsets to global memory. As there exists only one chunk
+  // only the first block must perform the write.
+  if (blockIdx.x == 0) {
+    for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+      args.partition_offsets[i] = tmp_partition_offsets[i];
+    }
+  }
+}
+
 // Non-cached radix partitioning.
 //
 // See the Rust module for details.
@@ -2021,6 +2289,34 @@ extern "C" __launch_bounds__(1024, 2) __global__
 extern "C" __launch_bounds__(1024, 2) __global__
     void gpu_contiguous_prefix_sum_int64(PrefixSumArgs args) {
   gpu_contiguous_prefix_sum<long long>(args);
+}
+
+// Exports the histogram function for 8-byte key/value tuples.
+extern "C" __launch_bounds__(1024, 2) __global__
+    void gpu_contiguous_prefix_sum_and_copy_with_payload_int32_int32(
+        PrefixSumAndCopyWithPayloadArgs args) {
+  gpu_contiguous_prefix_sum_and_copy_with_payload<int, int>(args);
+}
+
+// Exports the histogram function for 16-byte key/value tuples.
+extern "C" __launch_bounds__(1024, 2) __global__
+    void gpu_contiguous_prefix_sum_and_copy_with_payload_int64_int64(
+        PrefixSumAndCopyWithPayloadArgs args) {
+  gpu_contiguous_prefix_sum_and_copy_with_payload<long long, long long>(args);
+}
+
+// Exports the histogram function for 8-byte key/value tuples.
+extern "C" __launch_bounds__(1024, 2) __global__
+    void gpu_contiguous_prefix_sum_and_transform_int32_int32(
+        PrefixSumAndTransformArgs args) {
+  gpu_contiguous_prefix_sum_and_transform<int, int>(args);
+}
+
+// Exports the histogram function for 16-byte key/value tuples.
+extern "C" __launch_bounds__(1024, 2) __global__
+    void gpu_contiguous_prefix_sum_and_transform_int64_int64(
+        PrefixSumAndTransformArgs args) {
+  gpu_contiguous_prefix_sum_and_transform<long long, long long>(args);
 }
 
 // Exports the partitioning function for 8-byte key/value tuples.

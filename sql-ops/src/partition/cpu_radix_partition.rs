@@ -122,7 +122,7 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
         offsets_alloc_fn: DerefMemAllocFn<u64>,
     ) -> Self {
         let padding_len = WriteCombineBuffer::tuples_per_buffer::<T>();
-        let num_partitions = fanout(radix_bits);
+        let num_partitions = fanout(radix_bits) as usize;
         let relation_len = len + num_partitions * padding_len;
 
         let relation = partition_alloc_fn(relation_len);
@@ -137,13 +137,13 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
 
     /// Returns the total number of elements in the relation (excluding padding).
     pub fn len(&self) -> usize {
-        let num_partitions = fanout(self.radix_bits);
+        let num_partitions = fanout(self.radix_bits) as usize;
 
         self.relation.len() - num_partitions * self.padding_len()
     }
 
     /// Returns the number of partitions.
-    pub fn partitions(&self) -> usize {
+    pub fn partitions(&self) -> u32 {
         fanout(self.radix_bits)
     }
 
@@ -214,7 +214,7 @@ impl WriteCombineBuffer {
     /// Creates a new set of SWWC buffers.
     fn new(radix_bits: u32, alloc_fn: DerefMemAllocFn<u64>) -> Self {
         let buffer_bytes = unsafe { cpu_swwc_buffer_bytes() };
-        let bytes = buffer_bytes * fanout(radix_bits);
+        let bytes = buffer_bytes * fanout(radix_bits) as usize;
         let buffers = alloc_fn(bytes / mem::size_of::<u64>());
 
         Self { buffers }
@@ -284,7 +284,7 @@ impl CpuRadixPartitioner {
         radix_bits: u32,
         alloc_fn: DerefMemAllocFn<u64>,
     ) -> Self {
-        let num_partitions = fanout(radix_bits);
+        let num_partitions = fanout(radix_bits) as usize;
 
         let state = match algorithm {
             CpuRadixPartitionAlgorithm::Chunked => {
@@ -524,7 +524,7 @@ mod tests {
                     (0..partitioned_relation.partitions())
                         .flat_map(|i| {
                             iter::repeat(i)
-                                .zip(partitioned_relation[i].iter())
+                                .zip(partitioned_relation[i as usize].iter())
                         })
                     .for_each(|(i, &tuple)| {
                         let dst_partition = (tuple.key) & mask as $type;

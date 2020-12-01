@@ -48,6 +48,48 @@ struct PrefixSumArgs {
   unsigned long long *const __restrict__ partition_offsets;
 };
 
+struct PrefixSumAndCopyWithPayloadArgs {
+  // Inputs
+  const void *const __restrict__ src_partition_attr;
+  const void *const __restrict__ src_payload_attr;
+  std::size_t const data_length;
+  std::size_t const canonical_chunk_length;
+  uint32_t const padding_length;
+  uint32_t const radix_bits;
+  uint32_t const ignore_bits;
+
+  // State
+  ScanState<unsigned long long> *const prefix_scan_state;
+  unsigned long long *const __restrict__ tmp_partition_offsets;
+
+  // Outputs
+  void *const __restrict__ dst_partition_attr;
+  void *const __restrict__ dst_payload_attr;
+  unsigned long long *const __restrict__ partition_offsets;
+};
+
+struct PrefixSumAndTransformArgs {
+  // Inputs
+  uint32_t partition_id;
+  const void *const __restrict__ src_relation;
+  const unsigned long long *const __restrict__ src_offsets;
+  uint32_t src_chunks;
+  uint32_t const src_radix_bits;
+  std::size_t const data_length;
+  uint32_t const padding_length;
+  uint32_t const radix_bits;
+  uint32_t const ignore_bits;
+
+  // State
+  ScanState<unsigned long long> *const prefix_scan_state;
+  unsigned long long *const __restrict__ tmp_partition_offsets;
+
+  // Outputs
+  void *const __restrict__ dst_partition_attr;
+  void *const __restrict__ dst_payload_attr;
+  unsigned long long *const __restrict__ partition_offsets;
+};
+
 // Arguments to the partitioning function.
 //
 // Note that the struct's layout must be kept in sync with its counterpart in

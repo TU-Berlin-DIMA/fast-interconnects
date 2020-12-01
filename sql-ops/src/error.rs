@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018-2019 Clemens Lutz, German Research Center for Artificial Intelligence
+ * Copyright 2018-2020 Clemens Lutz, German Research Center for Artificial Intelligence
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
@@ -17,9 +17,10 @@ pub enum ErrorKind {
     CudaError(rustacuda::error::CudaError),
     IntegerOverflow(String),
     InvalidArgument(String),
+    Msg(String),
     NulCharError(String),
     NumaGpuError(numa_gpu::error::Error),
-    Msg(String),
+    RuntimeError(String),
 }
 
 #[derive(Debug)]
@@ -72,6 +73,7 @@ impl std::fmt::Display for ErrorKind {
             ErrorKind::NulCharError(ref s) => write!(f, "NulCharError: {}", s),
             ErrorKind::NumaGpuError(ref e) => e.fmt(f),
             ErrorKind::Msg(ref s) => write!(f, "Msg: {}", s),
+            ErrorKind::RuntimeError(ref s) => write!(f, "Runtime: {}", s),
         }
     }
 }
