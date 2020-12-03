@@ -1827,6 +1827,7 @@ mod tests {
         partition
     }
 
+    // TODO: refactor into fn run_gpu_partitioning()
     fn gpu_tuple_loss_or_duplicates_i32(
         tuples: usize,
         histogram_algorithm: GpuHistogramAlgorithm,
@@ -2443,7 +2444,7 @@ mod tests {
         cached_key_slice: &[i32],
         cached_pay_slice: &[i32],
     ) -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions(
+        gpu_tuple_loss_or_duplicates(
             radix_pass,
             radix_bits,
             cached_key_slice,
@@ -3600,6 +3601,111 @@ mod tests {
             GridSize::from(8),
             BlockSize::from(128),
             Box::new(&gpu_verify_transformed_input),
+        )
+    }
+
+    #[test]
+    fn gpu_loss_or_duplicates_two_pass_laswwc_i32_6_6_bits(
+    ) -> Result<(), Box<dyn Error>> {
+        run_gpu_two_pass_partitioning(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuChunked,
+            GpuRadixPartitionAlgorithm::NC,
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::LASWWC,
+            RadixBits::new(Some(6), Some(6), None),
+            GridSize::from(8),
+            BlockSize::from(128),
+            Box::new(&gpu_two_pass_tuple_loss_or_duplicates),
+        )
+    }
+
+    #[test]
+    fn gpu_verify_partitions_two_pass_laswwc_i32_6_6_bits() -> Result<(), Box<dyn Error>> {
+        run_gpu_two_pass_partitioning(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuChunked,
+            GpuRadixPartitionAlgorithm::NC,
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::LASWWC,
+            RadixBits::new(Some(6), Some(6), None),
+            GridSize::from(8),
+            BlockSize::from(128),
+            Box::new(&gpu_two_pass_verify_partitions),
+        )
+    }
+
+    #[test]
+    fn gpu_loss_or_duplicates_two_pass_sswwc_i32_6_6_bits(
+    ) -> Result<(), Box<dyn Error>> {
+        run_gpu_two_pass_partitioning(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuChunked,
+            GpuRadixPartitionAlgorithm::NC,
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::SSWWC,
+            RadixBits::new(Some(6), Some(6), None),
+            GridSize::from(8),
+            BlockSize::from(128),
+            Box::new(&gpu_two_pass_tuple_loss_or_duplicates),
+        )
+    }
+
+    #[test]
+    fn gpu_verify_partitions_two_pass_sswwc_i32_6_6_bits() -> Result<(), Box<dyn Error>> {
+        run_gpu_two_pass_partitioning(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuChunked,
+            GpuRadixPartitionAlgorithm::NC,
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::SSWWC,
+            RadixBits::new(Some(6), Some(6), None),
+            GridSize::from(8),
+            BlockSize::from(128),
+            Box::new(&gpu_two_pass_verify_partitions),
+        )
+    }
+
+    #[test]
+    fn gpu_loss_or_duplicates_two_pass_sswwc_v2_i32_6_6_bits(
+    ) -> Result<(), Box<dyn Error>> {
+        run_gpu_two_pass_partitioning(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuChunked,
+            GpuRadixPartitionAlgorithm::NC,
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::SSWWCv2,
+            RadixBits::new(Some(6), Some(6), None),
+            GridSize::from(8),
+            BlockSize::from(128),
+            Box::new(&gpu_two_pass_tuple_loss_or_duplicates),
+        )
+    }
+
+    #[test]
+    fn gpu_verify_partitions_two_pass_sswwc_v2_i32_6_6_bits() -> Result<(), Box<dyn Error>> {
+        run_gpu_two_pass_partitioning(
+            10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+            GpuHistogramAlgorithm::GpuChunked,
+            GpuRadixPartitionAlgorithm::NC,
+            GpuHistogramAlgorithm::GpuContiguous,
+            GpuRadixPartitionAlgorithm::SSWWCv2,
+            RadixBits::new(Some(6), Some(6), None),
+            GridSize::from(8),
+            BlockSize::from(128),
+            Box::new(&gpu_two_pass_verify_partitions),
         )
     }
 }
