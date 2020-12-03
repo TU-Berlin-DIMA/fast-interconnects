@@ -261,7 +261,7 @@ impl<T> RadixPartitionInputChunkable for &[T] {
 ///
 /// The layout looks as follows (C = chunk, P = partition):
 ///
-/// ```
+/// ```ignore
 /// C0.P0 | C0.P1 | ... | C0.PN | C1.P0 | C1.P1 | ... | C1.PN | ... | CM.PN
 /// ```
 ///
