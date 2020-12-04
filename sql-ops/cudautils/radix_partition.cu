@@ -860,20 +860,36 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
   // Wait until all warps are done
   __syncthreads();
 
-  // Flush buffers
+  // Flush buffers; retain order of tuples as buffer is aligned and may contain
+  // invalid tuples (i.e., don't use atomicAdd to get a destination slot)
   for (uint32_t i = threadIdx.x; i < fanout * tuples_per_buffer;
        i += blockDim.x) {
     uint32_t p_index = i / tuples_per_buffer;
     uint32_t slot = i % tuples_per_buffer;
 
     if (slot < slots[p_index]) {
-      auto dst = atomicAdd(&tmp_partition_offsets[p_index], 1U);
-      Tuple<K, V> tuple = buffers[i];
-      tuple.store(partitioned_relation[dst]);
+      auto dst = tmp_partition_offsets[p_index] + slot;
+      auto base_offset = static_cast<unsigned int>(
+          args.partition_offsets[blockIdx.x * fanout + p_index] -
+          partitioned_relation_offset);
+
+      // Consider that buffer flush is aligned; don't invalid tuples in front
+      // of the partition
+      if (dst >= base_offset) {
+        Tuple<K, V> tuple = buffers[i];
+        tuple.store(partitioned_relation[dst]);
+      }
     }
   }
 
-  // __syncthreads() not necessary due to atomicAdd() space reservation in flush
+  __syncthreads();
+
+  // Update offsets for partitioning of unbuffered tuples
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    tmp_partition_offsets[i] += slots[i];
+  }
+
+  __syncthreads();
 
   // Handle case when data_length % warpSize != 0
   for (size_t i = loop_length + threadIdx.x; i < data_length; i += blockDim.x) {
@@ -1058,20 +1074,36 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
   // Wait until all warps are done
   __syncthreads();
 
-  // Flush buffers
+  // Flush buffers; retain order of tuples as buffer is aligned and may contain
+  // invalid tuples (i.e., don't use atomicAdd to get a destination slot)
   for (uint32_t i = threadIdx.x; i < fanout * tuples_per_buffer;
        i += blockDim.x) {
     uint32_t p_index = i / tuples_per_buffer;
     uint32_t slot = i % tuples_per_buffer;
 
     if (slot < slots[p_index]) {
-      auto dst = atomicAdd(&tmp_partition_offsets[p_index], 1U);
-      Tuple<K, V> tuple = buffers[i];
-      tuple.store(partitioned_relation[dst]);
+      auto dst = tmp_partition_offsets[p_index] + slot;
+      auto base_offset = static_cast<unsigned int>(
+          args.partition_offsets[blockIdx.x * fanout + p_index] -
+          partitioned_relation_offset);
+
+      // Consider that buffer flush is aligned; don't invalid tuples in front
+      // of the partition
+      if (dst >= base_offset) {
+        Tuple<K, V> tuple = buffers[i];
+        tuple.store(partitioned_relation[dst]);
+      }
     }
   }
 
-  // __syncthreads() not necessary due to atomicAdd() space reservation in flush
+  __syncthreads();
+
+  // Update offsets for partitioning of unbuffered tuples
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    tmp_partition_offsets[i] += slots[i];
+  }
+
+  __syncthreads();
 
   // Handle case when data_length % warpSize != 0
   for (size_t i = loop_length + threadIdx.x; i < data_length; i += blockDim.x) {
