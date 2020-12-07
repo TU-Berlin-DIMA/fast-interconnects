@@ -115,10 +115,10 @@ enum MemoryOperation {
 pub struct MemoryBandwidth;
 
 #[derive(Clone, Debug, Default, Serialize)]
-struct DataPoint<'h, 'd, 'c, 'n> {
+struct DataPoint<'h, 'd, 'n> {
     pub hostname: &'h str,
     pub device_type: &'d str,
-    pub device_codename: &'c str,
+    pub device_codename: Option<String>,
     pub function_name: &'n str,
     pub memory_operation: Option<MemoryOperation>,
     pub cpu_node: Option<u16>,
@@ -138,18 +138,18 @@ struct DataPoint<'h, 'd, 'c, 'n> {
 }
 
 #[allow(dead_code)]
-struct GpuMeasurement<'h, 'd, 'c, 'n> {
+struct GpuMeasurement<'h, 'd, 'n> {
     oversub_ratio: RangeInclusive<OversubRatio>,
     warp_mul: RangeInclusive<WarpMul>,
     warp_size: Warp,
     sm_count: SM,
     ilp: RangeInclusive<Ilp>,
-    template: DataPoint<'h, 'd, 'c, 'n>,
+    template: DataPoint<'h, 'd, 'n>,
 }
 
-struct CpuMeasurement<'h, 'd, 'c, 'n> {
+struct CpuMeasurement<'h, 'd, 'n> {
     threads: RangeInclusive<ThreadCount>,
-    template: DataPoint<'h, 'd, 'c, 'n>,
+    template: DataPoint<'h, 'd, 'n>,
 }
 
 #[allow(dead_code)]
@@ -193,10 +193,21 @@ impl MemoryBandwidth {
             _ => 0,
         };
 
-        let device = Device::get_device(gpu_id).expect("Couldn't set CUDA device");
-        let _context =
-            Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)
+        let (_context, device) = match rustacuda::init(CudaFlags::empty()) {
+            Ok(_) => {
+                let device = Device::get_device(gpu_id).expect("Couldn't set CUDA device");
+                let context = Context::create_and_push(
+                    ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO,
+                    device,
+                )
                 .expect("Couldn't create CUDA context");
+                (Some(context), Some(device))
+            }
+            Err(error) => {
+                eprintln!("Warning: {}", error);
+                (None, None)
+            }
+        };
 
         numa::set_strict(true);
 
@@ -212,15 +223,15 @@ impl MemoryBandwidth {
             DeviceId::Gpu(_) => ("GPU", None),
         };
         let device_codename = match device_id {
-            DeviceId::Cpu(_) => hw_info::cpu_codename().expect("Couldn't get CPU codename"),
-            DeviceId::Gpu(_) => device.name().expect("Couldn't get device codename"),
+            DeviceId::Cpu(_) => Some(hw_info::cpu_codename().expect("Couldn't get CPU codename")),
+            DeviceId::Gpu(_) => device.map(|d| d.name().expect("Couldn't get device codename")),
         };
         let mem_type_description: MemTypeDescription = (&mem_type).into();
 
         let template = DataPoint {
             hostname: hostname.as_str(),
             device_type,
-            device_codename: device_codename.as_str(),
+            device_codename,
             cpu_node,
             memory_node: mem_type_description.location,
             memory_type: Some(mem_type_description.bare_mem_type),
@@ -264,6 +275,7 @@ impl MemoryBandwidth {
                 )
             }
             DeviceId::Gpu(did) => {
+                let device = device.expect("No device found");
                 let warp_size = Warp(
                     device
                         .get_attribute(DeviceAttribute::WarpSize)
@@ -317,14 +329,14 @@ impl MemoryBandwidth {
     }
 }
 
-impl<'h, 'd, 'c, 'n> GpuMeasurement<'h, 'd, 'c, 'n> {
+impl<'h, 'd, 'n> GpuMeasurement<'h, 'd, 'n> {
     fn new(
         oversub_ratio: RangeInclusive<OversubRatio>,
         warp_mul: RangeInclusive<WarpMul>,
         warp_size: Warp,
         sm_count: SM,
         ilp: RangeInclusive<Ilp>,
-        template: DataPoint<'h, 'd, 'c, 'n>,
+        template: DataPoint<'h, 'd, 'n>,
     ) -> Self {
         Self {
             oversub_ratio,
@@ -344,7 +356,7 @@ impl<'h, 'd, 'c, 'n> GpuMeasurement<'h, 'd, 'c, 'n> {
         futs: Vec<GpuNamedBandwidthFn<'n>>,
         ops: Vec<MemoryOperation>,
         repeat: u32,
-    ) -> Vec<DataPoint<'h, 'd, 'c, 'n>>
+    ) -> Vec<DataPoint<'h, 'd, 'n>>
     where
         R: Fn(
             GpuBandwidthFn,
@@ -421,8 +433,8 @@ impl<'h, 'd, 'c, 'n> GpuMeasurement<'h, 'd, 'c, 'n> {
     }
 }
 
-impl<'h, 'd, 'c, 'n> CpuMeasurement<'h, 'd, 'c, 'n> {
-    fn new(threads: RangeInclusive<ThreadCount>, template: DataPoint<'h, 'd, 'c, 'n>) -> Self {
+impl<'h, 'd, 'n> CpuMeasurement<'h, 'd, 'n> {
+    fn new(threads: RangeInclusive<ThreadCount>, template: DataPoint<'h, 'd, 'n>) -> Self {
         Self { threads, template }
     }
 
@@ -434,7 +446,7 @@ impl<'h, 'd, 'c, 'n> CpuMeasurement<'h, 'd, 'c, 'n> {
         futs: Vec<CpuNamedBandwidthFn<'n>>,
         ops: Vec<MemoryOperation>,
         repeat: u32,
-    ) -> Vec<DataPoint<'h, 'd, 'c, 'n>>
+    ) -> Vec<DataPoint<'h, 'd, 'n>>
     where
         R: Fn(
             CpuBandwidthFn,

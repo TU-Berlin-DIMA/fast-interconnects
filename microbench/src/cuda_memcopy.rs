@@ -71,6 +71,7 @@ impl CudaMemcopy {
     where
         W: std::io::Write,
     {
+        rustacuda::init(CudaFlags::empty()).expect("Couldn't initialize CUDA");
         let device = Device::get_device(device_id).expect("Couldn't set CUDA device");
         let _context =
             Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)

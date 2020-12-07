@@ -59,10 +59,21 @@ impl MemoryLatency {
             _ => 0,
         };
 
-        let device = Device::get_device(gpu_id).expect("Couldn't set CUDA device {}");
-        let _context =
-            Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)
+        let (_context, device) = match rustacuda::init(CudaFlags::empty()) {
+            Ok(_) => {
+                let device = Device::get_device(gpu_id).expect("Couldn't set CUDA device");
+                let context = Context::create_and_push(
+                    ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO,
+                    device,
+                )
                 .expect("Couldn't create CUDA context");
+                (Some(context), Some(device))
+            }
+            Err(error) => {
+                eprintln!("Warning: {}", error);
+                (None, None)
+            }
+        };
 
         numa::set_strict(true);
 
@@ -78,21 +89,21 @@ impl MemoryLatency {
             DeviceId::Cpu(_) => "CPU",
             DeviceId::Gpu(_) => "GPU",
         };
-        let device_codename = match device_id {
-            DeviceId::Cpu(_) => hw_info::cpu_codename().expect("Couldn't get CPU codename"),
-            DeviceId::Gpu(_) => device.name().expect("Couldn't get device codename"),
-        };
         let cpu_node = match device_id {
             DeviceId::Cpu(node) => Some(node),
             _ => None,
+        };
+        let device_codename = match device_id {
+            DeviceId::Cpu(_) => Some(hw_info::cpu_codename().expect("Couldn't get CPU codename")),
+            DeviceId::Gpu(_) => device.map(|d| d.name().expect("Couldn't get device codename")),
         };
 
         let mem_type_description: MemTypeDescription = (&mem_type).into();
 
         let template = DataPoint {
-            hostname: hostname.as_str(),
-            device_type,
-            device_codename: device_codename.as_str(),
+            hostname: Some(hostname),
+            device_type: Some(device_type.to_string()),
+            device_codename,
             cpu_node,
             memory_node: mem_type_description.location,
             memory_type: Some(mem_type_description.bare_mem_type),
@@ -141,11 +152,11 @@ impl MemoryLatency {
     }
 }
 
-#[derive(Debug, Default, Serialize)]
-struct DataPoint<'h, 'd, 'c> {
-    pub hostname: &'h str,
-    pub device_type: &'d str,
-    pub device_codename: &'c str,
+#[derive(Clone, Debug, Default, Serialize)]
+struct DataPoint {
+    pub hostname: Option<String>,
+    pub device_type: Option<String>,
+    pub device_codename: Option<String>,
     pub cpu_node: Option<u16>,
     pub memory_type: Option<BareMemType>,
     pub memory_node: Option<u16>,
@@ -161,10 +172,10 @@ struct DataPoint<'h, 'd, 'c> {
 }
 
 #[derive(Debug)]
-struct Measurement<'h, 'd, 'c> {
+struct Measurement {
     stride: RangeInclusive<usize>,
     range: RangeInclusive<usize>,
-    template: DataPoint<'h, 'd, 'c>,
+    template: DataPoint,
 }
 
 #[derive(Debug)]
@@ -187,11 +198,11 @@ struct MeasurementParameters {
     iterations: u32,
 }
 
-impl<'h, 'd, 'c> Measurement<'h, 'd, 'c> {
+impl Measurement {
     fn new(
         range: RangeInclusive<usize>,
         stride: RangeInclusive<usize>,
-        template: DataPoint<'h, 'd, 'c>,
+        template: DataPoint,
     ) -> Self {
         Self {
             stride,
@@ -207,7 +218,7 @@ impl<'h, 'd, 'c> Measurement<'h, 'd, 'c> {
         prepare: P,
         run: R,
         repeat: u32,
-    ) -> Vec<DataPoint<'_, '_, '_>>
+    ) -> Vec<DataPoint>
     where
         P: Fn(&mut S, &mut Mem<u32>, &MeasurementParameters),
         R: Fn(
@@ -230,8 +241,7 @@ impl<'h, 'd, 'c> Measurement<'h, 'd, 'c> {
             })
             .flat_map(|(i, (range, stride))| {
                 let iterations = (range / stride) as u32;
-                let mut data_points: Vec<DataPoint<'_, '_, '_>> =
-                    Vec::with_capacity(repeat as usize + 1);
+                let mut data_points: Vec<DataPoint> = Vec::with_capacity(repeat as usize + 1);
                 let mut warm_up = true;
 
                 let mp = MeasurementParameters {
@@ -256,7 +266,7 @@ impl<'h, 'd, 'c> Measurement<'h, 'd, 'c> {
                         clock_rate_mhz: Some(clock_rate_mhz),
                         cycles,
                         ns,
-                        ..self.template
+                        ..self.template.clone()
                     });
                     warm_up = false;
                 }

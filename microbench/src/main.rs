@@ -24,7 +24,6 @@ use crate::numa_memcopy::NumaMemcopy;
 use crate::tlb_latency::TlbLatency;
 use crate::types::*;
 use numa_gpu::runtime::allocator;
-use rustacuda::prelude::*;
 use serde_derive::Serialize;
 use structopt::clap::arg_enum;
 use structopt::StructOpt;
@@ -328,8 +327,6 @@ struct CmdCudaCopy {
 
 fn main() -> Result<()> {
     let options = Options::from_args();
-
-    rustacuda::init(CudaFlags::empty()).expect("Couldn't initialize CUDA");
 
     let kb = 2_usize.pow(10);
     let mb = 2_usize.pow(20);

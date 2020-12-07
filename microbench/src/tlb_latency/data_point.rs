@@ -10,7 +10,6 @@
 
 use crate::error::Result;
 use crate::{ArgDeviceType, ArgMemType, CmdTlbLatency};
-use rustacuda::device::Device;
 use serde_derive::Serialize;
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -42,13 +41,9 @@ impl DataPoint {
             .into_string()
             .map_err(|_| "Couldn't convert hostname into UTF-8 string")?;
 
-        let device = Device::get_device(cmd.device_id.into())?;
-        let device_codename = device.name().map_err(|_| "Couldn't get device codename")?;
-
         let dp = DataPoint {
             hostname,
             device_type: Some(ArgDeviceType::GPU),
-            device_codename: Some(device_codename),
             device_id: Some(cmd.device_id),
             memory_type: Some(cmd.mem_type),
             memory_location: Some(cmd.mem_location),

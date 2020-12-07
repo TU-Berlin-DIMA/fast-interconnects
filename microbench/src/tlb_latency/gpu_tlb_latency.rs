@@ -16,10 +16,10 @@ use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 use rustacuda::context::{Context, ContextFlags, CurrentContext};
 use rustacuda::device::{Device, DeviceAttribute};
 use rustacuda::function::{BlockSize, GridSize};
-use rustacuda::launch;
 use rustacuda::memory::{CopyDestination, DeviceBox};
 use rustacuda::module::Module;
 use rustacuda::stream::{Stream, StreamFlags};
+use rustacuda::{launch, CudaFlags};
 use std::cmp;
 use std::convert::TryInto;
 use std::ffi::CString;
@@ -54,35 +54,49 @@ pub(super) struct GpuTlbLatency {
 impl GpuTlbLatency {
     #[cfg(not(target_arch = "aarch64"))]
     pub(super) fn new(device_id: u32, template: DataPoint) -> Result<Self> {
+        rustacuda::init(CudaFlags::empty())?;
         let device = Device::get_device(device_id)?;
         let context =
             Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
         let module = Self::load_module()?;
         let nvml = NVML::init()?;
 
+        let device_codename = device.name().map_err(|_| "Couldn't get device codename")?;
+        let gpu_template = DataPoint {
+            device_codename: Some(device_codename),
+            ..template
+        };
+
         Ok(Self {
             context,
             device,
             device_id,
             module,
-            template,
+            template: gpu_template,
             nvml,
         })
     }
 
     #[cfg(target_arch = "aarch64")]
     pub(super) fn new(device_id: u32, template: DataPoint) -> Result<Self> {
+        rustacuda::init(CudaFlags::empty())?;
         let device = Device::get_device(device_id)?;
         let context =
             Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
         let module = Self::load_module()?;
+
+        let device_codename = device.name().map_err(|_| "Couldn't get device codename")?;
+        let gpu_template = DataPoint {
+            device_codename: Some(device_codename),
+            ..template
+        };
 
         Ok(Self {
             context,
             device,
             device_id,
             module,
-            template,
+            template: gpu_template,
         })
     }
 
