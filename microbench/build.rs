@@ -18,6 +18,7 @@ fn main() {
 
     let include_path = Path::new("include");
     let out_dir = env::var("OUT_DIR").unwrap();
+    let cpp_compiler = env::var("CXX");
 
     // Add CUDA utils
     let cuda_lib_file = format!("{}/cudautils.fatbin", out_dir);
@@ -26,14 +27,15 @@ fn main() {
     let nvcc_build_args = vec![
         tlb_data_points_arg.as_str(),
         "-rdc=true",
-        "-ccbin",
-        "/usr/bin/g++-7",
         "--device-c",
         "-std=c++14",
         "--output-directory",
         &out_dir,
     ];
     let nvcc_link_args = vec!["--device-link", "-fatbin", "--output-file", &cuda_lib_file];
+    let nvcc_host_compiler_args: Vec<_> = cpp_compiler
+        .as_ref()
+        .map_or_else(|_| Vec::new(), |cxx| ["-ccbin", cxx.as_str()].into());
 
     // For gencodes, see: http://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/
     let gpu_archs = vec![
@@ -56,6 +58,7 @@ fn main() {
 
     let output = Command::new("nvcc")
         .args(cuda_files.as_slice())
+        .args(nvcc_host_compiler_args.as_slice())
         .args(nvcc_build_args.as_slice())
         .args(gpu_archs.as_slice())
         .arg(nvcc_include)
@@ -107,7 +110,6 @@ fn main() {
 
     // Add remaining CUDA utils with CUDA trampoline-style functions
     // FIXME: Transition to calling CUDA kernels directly from Rust
-    env::set_var("CXX", "g++-7");
     cc::Build::new()
         .include(include_path)
         .cuda(true)
@@ -129,7 +131,6 @@ fn main() {
         .debug(false) // Debug enabled slows down mem latency by 10x
         .compile("libcudautils.a");
 
-    env::remove_var("CXX");
     cc::Build::new()
         .include(include_path)
         // Note: Disable to prevent linking twice with above CUDA

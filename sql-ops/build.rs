@@ -20,6 +20,7 @@ fn main() {
     let include_path = Path::new("include");
 
     let out_dir = env::var("OUT_DIR").unwrap();
+    let cpp_compiler = env::var("CXX");
 
     #[cfg(target_arch = "aarch64")]
     let cache_line_size = 64;
@@ -38,14 +39,15 @@ fn main() {
     let nvcc_build_args = vec![
         num_banks_arg.as_str(),
         "-rdc=true",
-        "-ccbin",
-        "/usr/bin/g++-7",
         "--device-c",
         "-std=c++14",
         "--output-directory",
         &out_dir,
     ];
     let nvcc_link_args = vec!["--device-link", "-fatbin", "--output-file", &cuda_lib_file];
+    let nvcc_host_compiler_args: Vec<_> = cpp_compiler
+        .as_ref()
+        .map_or_else(|_| Vec::new(), |cxx| ["-ccbin", cxx.as_str()].into());
 
     // For gencodes, see: http://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/
     let gpu_archs = vec![
@@ -68,6 +70,7 @@ fn main() {
 
     let output = Command::new("nvcc")
         .args(cuda_files.as_slice())
+        .args(nvcc_host_compiler_args.as_slice())
         .args(nvcc_build_args.as_slice())
         .args(gpu_archs.as_slice())
         .arg(nvcc_include)
@@ -119,7 +122,6 @@ fn main() {
 
     // Add CPP utils
     cc::Build::new()
-        .compiler("gcc-8")
         .include(include_path)
         .cpp(true)
         // Note: -march not supported by GCC-7 on Power9, use -mcpu instead
