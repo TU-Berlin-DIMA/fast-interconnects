@@ -23,7 +23,7 @@ rustacuda = { git = "https://github.com/LutzCle/RustaCUDA", branch = "custom_mod
 # NVML enables us to read the actual clock rate of the GPU.
 # Otherwise, we use the GPU's default clock rate.
 [target.'cfg(not(target_arch = "aarch64"))'.dependencies]
-nvml-wrapper = { version = "0.6", features = ["serde"] }
+nvml-wrapper = { version = "0.7", features = ["serde"] }
 
 [dev-dependencies]
 assert_approx_eq = "~1.1.0"
