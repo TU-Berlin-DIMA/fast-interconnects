@@ -1816,7 +1816,6 @@ mod tests {
     use std::collections::hash_map::{Entry, HashMap};
     use std::error::Error;
     use std::iter;
-    use std::ops::RangeInclusive;
     use std::result::Result;
 
     fn key_to_partition(key: i32, radix_bits: &RadixBits, radix_pass: RadixPass) -> u32 {
@@ -1827,30 +1826,38 @@ mod tests {
         partition
     }
 
-    // TODO: refactor into fn run_gpu_partitioning()
-    fn gpu_tuple_loss_or_duplicates_i32(
+    fn run_gpu_partitioning<KeyGenFn, PayGenFn, ValidatorFn>(
         tuples: usize,
+        key_gen: Box<KeyGenFn>,
+        pay_gen: Box<PayGenFn>,
         histogram_algorithm: GpuHistogramAlgorithm,
         partition_algorithm: GpuRadixPartitionAlgorithm,
-        radix_bits: u32,
+        radix_bits: RadixBits,
         grid_size: GridSize,
         block_size: BlockSize,
-    ) -> Result<(), Box<dyn Error>> {
-        const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
+        mut validator: Box<ValidatorFn>,
+    ) -> Result<(), Box<dyn Error>>
+    where
+        KeyGenFn: FnOnce(&mut [i32]) -> Result<(), Box<dyn Error>>,
+        PayGenFn: FnOnce(&mut [i32]) -> Result<(), Box<dyn Error>>,
+        ValidatorFn: FnMut(
+            RadixPass,
+            &RadixBits,
+            &[i32],
+            &[i32],
+            &PartitionedRelation<Tuple<i32, i32>>,
+            Option<u32>,
+        ) -> Result<(), Box<dyn Error>>,
+    {
         const DMEM_BUFFER_BYTES: usize = 8 * 1024;
+
         let _context = rustacuda::quick_init()?;
 
-        let mut data_key: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
-        let mut data_pay: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
+        let mut data_key = Allocator::alloc_deref_mem::<i32>(DerefMemType::CudaPinnedMem, tuples);
+        let mut data_pay = Allocator::alloc_deref_mem::<i32>(DerefMemType::CudaPinnedMem, tuples);
 
-        UniformRelation::gen_primary_key(&mut data_key, None)?;
-        UniformRelation::gen_attr(&mut data_pay, PAYLOAD_RANGE)?;
-
-        let mut original_tuples: HashMap<_, _> = data_key
-            .iter()
-            .cloned()
-            .zip(data_pay.iter().cloned().zip(std::iter::repeat(0)))
-            .collect();
+        key_gen(data_key.as_mut_slice())?;
+        pay_gen(data_pay.as_mut_slice())?;
 
         // Ensure that the allocated memory is zeroed
         let alloc_fn = Box::new(|len: usize| {
@@ -1862,14 +1869,14 @@ mod tests {
         let mut partition_offsets = PartitionOffsets::new(
             histogram_algorithm,
             grid_size.x,
-            radix_bits.into(),
+            radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
         );
 
         let mut partitioned_relation = PartitionedRelation::new(
             tuples,
             histogram_algorithm,
-            radix_bits.into(),
+            radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
             grid_size.x,
             alloc_fn,
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
@@ -1885,14 +1892,10 @@ mod tests {
         )?;
 
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
-        let data_key = Mem::CudaPinnedMem(data_key);
-        let data_pay = Mem::CudaPinnedMem(data_pay);
 
         match histogram_algorithm {
             GpuHistogramAlgorithm::CpuChunked => {
-                let key_slice: &[i32] = (&data_key)
-                    .try_into()
-                    .map_err(|_| "Failed to run CPU prefix sum on device memory")?;
+                let key_slice = data_key.as_slice();
                 let key_chunks = key_slice.input_chunks::<i32>(&partitioner)?;
                 let offset_chunks = partition_offsets.chunks_mut();
 
@@ -1921,139 +1924,14 @@ mod tests {
 
         stream.synchronize()?;
 
-        let relation: &[_] = (&partitioned_relation.relation)
-            .try_into()
-            .expect("Tried to convert device memory into host slice");
-
-        relation.iter().cloned().for_each(|Tuple { key, value }| {
-            let entry = original_tuples.entry(key);
-            match entry {
-                entry @ Entry::Occupied(_) => {
-                    let key = *entry.key();
-                    entry.and_modify(|(original_value, counter)| {
-                        assert_eq!(
-                            value, *original_value,
-                            "Invalid payload: {}; expected: {}",
-                            value, *original_value
-                        );
-                        assert_eq!(*counter, 0, "Duplicate key: {}", key);
-                        *counter = *counter + 1;
-                    });
-                }
-                entry @ Entry::Vacant(_) => {
-                    // skip padding entries
-                    if *entry.key() != 0 {
-                        assert!(false, "Invalid key: {}", entry.key());
-                    }
-                }
-            };
-        });
-
-        original_tuples.iter().for_each(|(&key, &(_, counter))| {
-            assert_eq!(
-                counter, 1,
-                "Key {} occurs {} times; expected exactly once",
-                key, counter
-            );
-        });
-
-        Ok(())
-    }
-
-    fn gpu_verify_partitions_i32(
-        tuples: usize,
-        key_range: RangeInclusive<usize>,
-        histogram_algorithm: GpuHistogramAlgorithm,
-        partition_algorithm: GpuRadixPartitionAlgorithm,
-        radix_bits: u32,
-        grid_size: GridSize,
-        block_size: BlockSize,
-    ) -> Result<(), Box<dyn Error>> {
-        const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
-        const DMEM_BUFFER_BYTES: usize = 8 * 1024;
-
-        let _context = rustacuda::quick_init()?;
-
-        let mut data_key: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
-        let mut data_pay: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
-
-        UniformRelation::gen_attr(&mut data_key, key_range)?;
-        UniformRelation::gen_attr(&mut data_pay, PAYLOAD_RANGE)?;
-
-        let mut partition_offsets = PartitionOffsets::new(
-            histogram_algorithm,
-            grid_size.x,
-            radix_bits,
-            Allocator::mem_alloc_fn(MemType::CudaUniMem),
-        );
-
-        let mut partitioned_relation = PartitionedRelation::new(
-            tuples,
-            histogram_algorithm,
-            radix_bits,
-            grid_size.x,
-            Allocator::mem_alloc_fn(MemType::CudaUniMem),
-            Allocator::mem_alloc_fn(MemType::CudaUniMem),
-        );
-
-        let mut partitioner = GpuRadixPartitioner::new(
-            histogram_algorithm,
-            partition_algorithm,
-            radix_bits.into(),
-            &grid_size,
-            &block_size,
-            DMEM_BUFFER_BYTES,
-        )?;
-
-        let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
-        let data_key = Mem::CudaPinnedMem(data_key);
-        let data_pay = Mem::CudaPinnedMem(data_pay);
-
-        match histogram_algorithm {
-            GpuHistogramAlgorithm::CpuChunked => {
-                let key_slice: &[i32] = (&data_key)
-                    .try_into()
-                    .map_err(|_| "Failed to run CPU prefix sum on device memory")?;
-                let key_chunks = key_slice.input_chunks::<i32>(&partitioner)?;
-                let offset_chunks = partition_offsets.chunks_mut();
-
-                for (key_chunk, mut offset_chunk) in key_chunks.iter().zip(offset_chunks) {
-                    partitioner.cpu_prefix_sum(RadixPass::First, key_chunk, &mut offset_chunk)?;
-                }
-            }
-            _ => {
-                partitioner.prefix_sum(
-                    RadixPass::First,
-                    data_key.as_launchable_slice(),
-                    &mut partition_offsets,
-                    &stream,
-                )?;
-            }
-        }
-
-        partitioner.partition(
+        validator(
             RadixPass::First,
-            data_key.as_launchable_slice(),
-            data_pay.as_launchable_slice(),
-            partition_offsets,
-            &mut partitioned_relation,
-            &stream,
+            &radix_bits,
+            data_key.as_slice(),
+            data_pay.as_slice(),
+            &partitioned_relation,
+            None,
         )?;
-
-        stream.synchronize()?;
-
-        let mask = fanout(radix_bits) - 1;
-        (0..partitioned_relation.chunks())
-            .flat_map(|c| iter::repeat(c).zip(0..partitioned_relation.partitions()))
-            .flat_map(|(c, p)| iter::repeat((c, p)).zip(partitioned_relation[(c, p)].iter()))
-            .for_each(|((c, p), &tuple)| {
-                let dst_partition = tuple.key as u32 & mask;
-                assert_eq!(
-                    dst_partition, p,
-                    "Wrong partitioning detected in chunk {}: key {} in partition {}; expected partition {}",
-                    c, tuple.key, p, dst_partition
-                );
-            });
 
         Ok(())
     }
@@ -2505,792 +2383,950 @@ mod tests {
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_cpu_chunked_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::CpuChunked,
             GpuRadixPartitionAlgorithm::NC,
-            2,
+            RadixBits::from(2),
             GridSize::from(10),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_cpu_chunked_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::CpuChunked,
             GpuRadixPartitionAlgorithm::NC,
-            2,
+            RadixBits::from(2),
             GridSize::from(10),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_small_chunked_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             100,
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::NC,
-            2,
+            RadixBits::from(2),
             GridSize::from(4),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_small_chunked_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             100,
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::NC,
-            2,
+            RadixBits::from(2),
             GridSize::from(4),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::NC,
-            2,
+            RadixBits::from(2),
             GridSize::from(10),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_i32_10_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::NC,
-            10,
+            RadixBits::from(10),
             GridSize::from(10),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::NC,
-            2,
+            RadixBits::from(2),
             GridSize::from(10),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_i32_10_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::NC,
-            10,
+            RadixBits::from(10),
             GridSize::from(10),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_i32_12_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::NC,
-            12,
+            RadixBits::from(12),
             GridSize::from(10),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_i32_12_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::NC,
-            12,
+            RadixBits::from(12),
             GridSize::from(10),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_non_power_two() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::NC,
-            10,
+            RadixBits::from(10),
             GridSize::from(10),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_non_power_two() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             10_usize.pow(6),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::NC,
-            10,
+            RadixBits::from(10),
             GridSize::from(10),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_contiguous_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuContiguous,
             GpuRadixPartitionAlgorithm::NC,
-            2,
+            RadixBits::from(2),
             GridSize::from(10),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_contiguous_i32_10_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuContiguous,
             GpuRadixPartitionAlgorithm::NC,
-            10,
+            RadixBits::from(10),
             GridSize::from(10),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_contiguous_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuContiguous,
             GpuRadixPartitionAlgorithm::NC,
-            2,
+            RadixBits::from(2),
             GridSize::from(10),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_contiguous_i32_10_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuContiguous,
             GpuRadixPartitionAlgorithm::NC,
-            10,
+            RadixBits::from(10),
             GridSize::from(10),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_contiguous_i32_12_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuContiguous,
             GpuRadixPartitionAlgorithm::NC,
-            12,
+            RadixBits::from(12),
             GridSize::from(10),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_contiguous_i32_12_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuContiguous,
             GpuRadixPartitionAlgorithm::NC,
-            12,
+            RadixBits::from(12),
             GridSize::from(10),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_contiguous_non_power_two() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuContiguous,
             GpuRadixPartitionAlgorithm::NC,
-            10,
+            RadixBits::from(10),
             GridSize::from(10),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_contiguous_non_power_two() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             10_usize.pow(6),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuContiguous,
             GpuRadixPartitionAlgorithm::NC,
-            10,
+            RadixBits::from(10),
             GridSize::from(10),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_laswwc_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::LASWWC,
-            2,
+            RadixBits::from(2),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_laswwc_i32_10_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::LASWWC,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_laswwc_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::LASWWC,
-            2,
+            RadixBits::from(2),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_laswwc_i32_10_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::LASWWC,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_laswwc_non_power_two() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::LASWWC,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_laswwc_non_power_two() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             10_usize.pow(6),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::LASWWC,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_sswwc_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::SSWWC,
-            2,
+            RadixBits::from(2),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_sswwc_i32_10_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::SSWWC,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_sswwc_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::SSWWC,
-            2,
+            RadixBits::from(2),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_sswwc_i32_10_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::SSWWC,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_sswwc_non_power_two() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::SSWWC,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_sswwc_non_power_two() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             10_usize.pow(6),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::SSWWC,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_sswwc_non_temporal_i32_10_bits(
     ) -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::SSWWCNT,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_sswwc_v2_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::SSWWCv2,
-            2,
+            RadixBits::from(2),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_sswwc_v2_i32_10_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::SSWWCv2,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_sswwc_v2_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::SSWWCv2,
-            2,
+            RadixBits::from(2),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_sswwc_v2_i32_10_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::SSWWCv2,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_sswwc_v2_non_power_two() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::SSWWCv2,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_sswwc_v2_non_power_two() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             10_usize.pow(6),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::SSWWCv2,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWC,
-            2,
+            RadixBits::from(2),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_i32_10_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWC,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_hsswwc_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWC,
-            2,
+            RadixBits::from(2),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_hsswwc_i32_10_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWC,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_non_power_two() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWC,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_hsswwc_non_power_two() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             10_usize.pow(6),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWC,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v2_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWCv2,
-            2,
+            RadixBits::from(2),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v2_i32_10_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWCv2,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_hsswwc_v2_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWCv2,
-            2,
+            RadixBits::from(2),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_hsswwc_v2_i32_10_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWCv2,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v2_non_power_two() -> Result<(), Box<dyn Error>>
     {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWCv2,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_hsswwc_v2_non_power_two() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             10_usize.pow(6),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWCv2,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v3_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWCv3,
-            2,
+            RadixBits::from(2),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v3_i32_10_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWCv3,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_hsswwc_v3_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWCv3,
-            2,
+            RadixBits::from(2),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_hsswwc_v3_i32_10_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWCv3,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v3_non_power_two() -> Result<(), Box<dyn Error>>
     {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWCv3,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_hsswwc_v3_non_power_two() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             10_usize.pow(6),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWCv3,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v4_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWCv4,
-            2,
+            RadixBits::from(2),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v4_i32_10_bits() -> Result<(), Box<dyn Error>> {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWCv4,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_hsswwc_v4_i32_2_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWCv4,
-            2,
+            RadixBits::from(2),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_hsswwc_v4_i32_10_bits() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             (32 << 20) / mem::size_of::<i32>(),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWCv4,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
     #[test]
     fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v4_non_power_two() -> Result<(), Box<dyn Error>>
     {
-        gpu_tuple_loss_or_duplicates_i32(
+        run_gpu_partitioning(
             10_usize.pow(6),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWCv4,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_tuple_loss_or_duplicates),
         )
     }
 
     #[test]
     fn gpu_verify_partitions_chunked_hsswwc_v4_non_power_two() -> Result<(), Box<dyn Error>> {
-        gpu_verify_partitions_i32(
+        run_gpu_partitioning(
             10_usize.pow(6),
-            1..=(32 << 20),
+            Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
+            Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
             GpuHistogramAlgorithm::GpuChunked,
             GpuRadixPartitionAlgorithm::HSSWWCv4,
-            10,
+            RadixBits::from(10),
             GridSize::from(1),
             BlockSize::from(128),
+            Box::new(&gpu_verify_partitions),
         )
     }
 
@@ -3605,8 +3641,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_loss_or_duplicates_two_pass_laswwc_i32_6_6_bits(
-    ) -> Result<(), Box<dyn Error>> {
+    fn gpu_loss_or_duplicates_two_pass_laswwc_i32_6_6_bits() -> Result<(), Box<dyn Error>> {
         run_gpu_two_pass_partitioning(
             10_usize.pow(6),
             Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
@@ -3640,8 +3675,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_loss_or_duplicates_two_pass_sswwc_i32_6_6_bits(
-    ) -> Result<(), Box<dyn Error>> {
+    fn gpu_loss_or_duplicates_two_pass_sswwc_i32_6_6_bits() -> Result<(), Box<dyn Error>> {
         run_gpu_two_pass_partitioning(
             10_usize.pow(6),
             Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
@@ -3675,8 +3709,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_loss_or_duplicates_two_pass_sswwc_v2_i32_6_6_bits(
-    ) -> Result<(), Box<dyn Error>> {
+    fn gpu_loss_or_duplicates_two_pass_sswwc_v2_i32_6_6_bits() -> Result<(), Box<dyn Error>> {
         run_gpu_two_pass_partitioning(
             10_usize.pow(6),
             Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
