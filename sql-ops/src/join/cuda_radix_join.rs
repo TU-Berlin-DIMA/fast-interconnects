@@ -11,7 +11,7 @@
 use super::no_partitioning_join::NullKey;
 use super::HashingScheme;
 use crate::error::{ErrorKind, Result};
-use crate::partition::gpu_radix_partition::PartitionedRelation;
+use crate::partition::PartitionedRelation;
 use crate::partition::Tuple;
 use numa_gpu::runtime::memory::{LaunchableMutPtr, LaunchableMutSlice, LaunchablePtr};
 use rustacuda::context::CurrentContext;
@@ -132,13 +132,13 @@ impl CudaRadixJoinable for i32 {
     ) -> Result<()> {
         let (grid, block) = rj.dim.clone();
 
-        if build_rel.chunks() != 1 {
+        if build_rel.num_chunks() != 1 {
             Err(ErrorKind::InvalidArgument(
                 "Chunked build relations are not supported, use a contiguous relation instead"
                     .to_string(),
             ))?;
         }
-        if probe_rel.chunks() != 1 {
+        if probe_rel.num_chunks() != 1 {
             Err(ErrorKind::InvalidArgument(
                 "Chunked probe relations are not supported, use a contiguous relation instead"
                     .to_string(),

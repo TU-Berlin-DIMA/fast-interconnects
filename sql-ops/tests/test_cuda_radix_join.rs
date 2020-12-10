@@ -17,10 +17,10 @@ use rustacuda::stream::{Stream, StreamFlags};
 use sql_ops::join::cuda_radix_join::CudaRadixJoin;
 use sql_ops::join::HashingScheme;
 use sql_ops::partition::gpu_radix_partition::{
-    GpuHistogramAlgorithm, GpuRadixPartitionAlgorithm, GpuRadixPartitioner, PartitionOffsets,
-    PartitionedRelation,
+    GpuHistogramAlgorithm, GpuRadixPartitionAlgorithm, GpuRadixPartitioner,
 };
 use sql_ops::partition::RadixPass;
+use sql_ops::partition::{PartitionOffsets, PartitionedRelation};
 use std::error::Error;
 use std::result::Result;
 

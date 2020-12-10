@@ -12,6 +12,13 @@ use rustacuda::memory::DeviceCopy;
 
 pub mod cpu_radix_partition;
 pub mod gpu_radix_partition;
+mod partitioned_relation;
+
+// Export structs
+pub use partitioned_relation::{
+    PartitionOffsets, PartitionOffsetsChunksMut, PartitionOffsetsMutSlice, PartitionedRelation,
+    PartitionedRelationChunksMut, PartitionedRelationMutSlice,
+};
 
 /// Defines the alignment of each partition in bytes.
 ///

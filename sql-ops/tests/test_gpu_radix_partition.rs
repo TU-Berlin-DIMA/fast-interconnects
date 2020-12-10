@@ -15,8 +15,11 @@ use numa_gpu::runtime::memory::{LaunchableMem, Mem};
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::LockedBuffer;
 use rustacuda::stream::{Stream, StreamFlags};
-use sql_ops::partition::gpu_radix_partition::*;
-use sql_ops::partition::{RadixBits, RadixPass, Tuple};
+use sql_ops::partition::gpu_radix_partition::{
+    GpuHistogramAlgorithm, GpuRadixPartitionAlgorithm, GpuRadixPartitioner,
+    RadixPartitionInputChunkable,
+};
+use sql_ops::partition::{PartitionOffsets, PartitionedRelation, RadixBits, RadixPass, Tuple};
 use std::collections::hash_map::{Entry, HashMap};
 use std::error::Error;
 use std::iter;
@@ -462,8 +465,8 @@ fn gpu_verify_partitions(
     partitioned_relation: &PartitionedRelation<Tuple<i32, i32>>,
     partition_id: Option<u32>,
 ) -> Result<(), Box<dyn Error>> {
-    (0..partitioned_relation.chunks())
-        .flat_map(|c| iter::repeat(c).zip(0..partitioned_relation.partitions()))
+    (0..partitioned_relation.num_chunks())
+        .flat_map(|c| iter::repeat(c).zip(0..partitioned_relation.fanout()))
         .flat_map(|(c, p)| iter::repeat((c, p)).zip(partitioned_relation[(c, p)].iter()))
         .enumerate()
         .for_each(|(i, ((c, p), &tuple))| {
@@ -563,7 +566,7 @@ fn gpu_verify_transformed_input(
     cached_key_slice: &[i32],
     cached_pay_slice: &[i32],
 ) -> Result<(), Box<dyn Error>> {
-    (0..partitioned_relation_1st.chunks())
+    (0..partitioned_relation_1st.num_chunks())
         .flat_map(|c| partitioned_relation_1st[(c, partition_id)].iter())
         .zip(cached_key_slice.iter())
         .zip(cached_pay_slice.iter())

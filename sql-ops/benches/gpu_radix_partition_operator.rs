@@ -26,9 +26,9 @@ use serde_derive::Serialize;
 use serde_repr::Serialize_repr;
 use sql_ops::partition::gpu_radix_partition::{
     GpuHistogramAlgorithm, GpuRadixPartitionAlgorithm, GpuRadixPartitionable, GpuRadixPartitioner,
-    PartitionOffsets, PartitionedRelation, RadixPartitionInputChunkable,
+    RadixPartitionInputChunkable,
 };
-use sql_ops::partition::RadixPass;
+use sql_ops::partition::{PartitionOffsets, PartitionedRelation, RadixPass};
 use std::convert::TryInto;
 use std::error::Error;
 use std::fs;
