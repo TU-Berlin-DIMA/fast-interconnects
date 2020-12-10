@@ -30,6 +30,8 @@ use rustacuda::prelude::*;
 use serde::de::DeserializeOwned;
 use sql_ops::join::{cuda_radix_join, no_partitioning_join, HashingScheme};
 use sql_ops::partition::gpu_radix_partition::GpuRadixPartitionable;
+use sql_ops::partition::RadixBits;
+use std::convert::TryInto;
 use std::mem::size_of;
 use std::path::PathBuf;
 use structopt::StructOpt;
@@ -202,7 +204,7 @@ struct CmdOpt {
     #[structopt(long = "outer-rel-tuples", required_if("data_set", "Custom"))]
     outer_rel_tuples: Option<usize>,
 
-    /// Select the histogram algorithm to run
+    /// Select the histogram algorithm for 1st pass
     #[structopt(
         long,
         default_value = "GpuChunked",
@@ -211,7 +213,16 @@ struct CmdOpt {
     )]
     histogram_algorithm: ArgHistogramAlgorithm,
 
-    /// Select the radix partition algorithm to run
+    /// Select the histogram algorithm for 2nd pass
+    #[structopt(
+        long,
+        default_value = "GpuContiguous",
+        possible_values = &ArgHistogramAlgorithm::variants(),
+        case_insensitive = true
+    )]
+    histogram_algorithm_2nd: ArgHistogramAlgorithm,
+
+    /// Select the radix partition algorithm for 1st pass
     #[structopt(
         long,
         default_value = "NC",
@@ -219,6 +230,15 @@ struct CmdOpt {
         case_insensitive = true
     )]
     partition_algorithm: ArgRadixPartitionAlgorithm,
+
+    /// Select the radix partition algorithm for 2nd pass
+    #[structopt(
+        long,
+        default_value = "NC",
+        possible_values = &ArgRadixPartitionAlgorithm::variants(),
+        case_insensitive = true
+    )]
+    partition_algorithm_2nd: ArgRadixPartitionAlgorithm,
 
     /// Join execution strategy.
     #[structopt(
@@ -229,9 +249,15 @@ struct CmdOpt {
     )]
     execution_method: ArgExecutionMethod,
 
-    #[structopt(long = "radix-bits", default_value = "8")]
+    #[structopt(
+        long = "radix-bits",
+        default_value = "8,8",
+        require_delimiter = true,
+        min_values = 1,
+        max_values = 2
+    )]
     /// Radix bits with which to partition
-    radix_bits: u32,
+    radix_bits: Vec<u32>,
 
     #[structopt(short = "i", long = "device-id", default_value = "0")]
     /// Execute on GPU (See CUDA device list)
@@ -322,9 +348,15 @@ where
         );
 
     let exec_method = cmd.execution_method;
-    let histogram_algorithm = cmd.histogram_algorithm;
-    let partition_algorithm = cmd.partition_algorithm;
-    let radix_bits = cmd.radix_bits;
+    let histogram_algorithms = [
+        cmd.histogram_algorithm.into(),
+        cmd.histogram_algorithm_2nd.into(),
+    ];
+    let partition_algorithms = [
+        cmd.partition_algorithm.into(),
+        cmd.partition_algorithm_2nd.into(),
+    ];
+    let radix_bits: RadixBits = cmd.radix_bits.as_slice().try_into()?;
     let dmem_buffer_bytes = cmd.dmem_buffer_size * 1024; // convert KiB to bytes
     let mem_type = cmd.partitions_mem_type;
     let threads = cmd.threads;
@@ -393,16 +425,15 @@ where
             gpu_radix_join(
                 &mut join_data,
                 hashing_scheme,
-                histogram_algorithm.into(),
-                partition_algorithm.into(),
-                radix_bits,
+                histogram_algorithms,
+                partition_algorithms,
+                &radix_bits,
                 dmem_buffer_bytes,
                 threads,
                 cpu_affinity.clone(),
                 partitions_mem_type,
-                (grid_size.clone(), block_size.clone()),
-                (grid_size.clone(), block_size.clone()),
-                (grid_size.clone(), block_size.clone()),
+                (&grid_size, &block_size),
+                (&grid_size, &block_size),
             )
         }),
     };

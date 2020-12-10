@@ -8,7 +8,9 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
+use crate::error::{Error, ErrorKind};
 use rustacuda::memory::DeviceCopy;
+use std::convert::TryFrom;
 
 pub mod cpu_radix_partition;
 pub mod gpu_radix_partition;
@@ -106,6 +108,24 @@ impl RadixBits {
 impl From<u32> for RadixBits {
     fn from(first_bits: u32) -> Self {
         Self::new(Some(first_bits), None, None)
+    }
+}
+
+impl TryFrom<&[u32]> for RadixBits {
+    type Error = Error;
+
+    fn try_from(v: &[u32]) -> Result<Self, Self::Error> {
+        if v.len() == 0 || v.len() > 3 {
+            Err(ErrorKind::InvalidArgument(
+                "At least one and at most three sets of radix bits required".to_string(),
+            ))?;
+        }
+
+        Ok(Self::new(
+            v.get(0).copied(),
+            v.get(1).copied(),
+            v.get(2).copied(),
+        ))
     }
 }
 

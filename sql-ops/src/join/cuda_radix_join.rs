@@ -74,11 +74,16 @@ pub trait CudaRadixJoinable: DeviceCopy + NullKey {
 pub struct CudaRadixJoin {
     module: Module,
     hashing_scheme: HashingScheme,
-    dim: (GridSize, BlockSize),
+    grid_size: GridSize,
+    block_size: BlockSize,
 }
 
 impl CudaRadixJoin {
-    pub fn new(hashing_scheme: HashingScheme, dim: (GridSize, BlockSize)) -> Result<Self> {
+    pub fn new(
+        hashing_scheme: HashingScheme,
+        grid_size: &GridSize,
+        block_size: &BlockSize,
+    ) -> Result<Self> {
         let module_path = CString::new(env!("CUDAUTILS_PATH")).map_err(|_| {
             ErrorKind::NulCharError(
                 "Failed to load CUDA module, check your CUDAUTILS_PATH".to_string(),
@@ -90,7 +95,8 @@ impl CudaRadixJoin {
         Ok(Self {
             module,
             hashing_scheme,
-            dim,
+            grid_size: grid_size.clone(),
+            block_size: block_size.clone(),
         })
     }
 
@@ -130,7 +136,8 @@ impl CudaRadixJoinable for i32 {
         task_assignments: &mut LaunchableMutSlice<u32>,
         stream: &Stream,
     ) -> Result<()> {
-        let (grid, block) = rj.dim.clone();
+        let grid = &rj.grid_size;
+        let block = &rj.block_size;
 
         if build_rel.num_chunks() != 1 {
             Err(ErrorKind::InvalidArgument(
