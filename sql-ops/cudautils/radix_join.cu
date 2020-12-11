@@ -220,12 +220,12 @@ __device__ void gpu_radix_join_aggregate_smem_chaining(
   }
 #endif
 
+  K *const __restrict__ keys = reinterpret_cast<K *>(shared_mem);
+  PI *const __restrict__ values = reinterpret_cast<PI *>(&keys[ht_entries]);
   unsigned int *const __restrict__ heads =
-      reinterpret_cast<unsigned int *>(shared_mem);
+      reinterpret_cast<unsigned int *>(&values[ht_entries]);
   unsigned short *const __restrict__ links =
       reinterpret_cast<unsigned short *>(&heads[buckets]);
-  K *const __restrict__ keys = reinterpret_cast<K *>(&links[ht_entries]);
-  PI *const __restrict__ values = reinterpret_cast<PI *>(&keys[ht_entries]);
 
   int64_t sum = 0;
 
