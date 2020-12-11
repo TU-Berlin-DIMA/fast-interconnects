@@ -88,14 +88,15 @@ CUDA_MODIFIER T mult_shift_hash(T value) {}
 
 template <>
 CUDA_MODIFIER __forceinline__ int mult_shift_hash(int value) {
-  constexpr int HASH_FACTOR = 1234567891;
-  return value * HASH_FACTOR;
+  constexpr unsigned int HASH_FACTOR = 1234567891u;
+  return static_cast<int>(static_cast<unsigned int>(value) * HASH_FACTOR);
 }
 
 template <>
 CUDA_MODIFIER __forceinline__ long long mult_shift_hash(long long value) {
-  constexpr long long HASH_FACTOR = 123456789123456789ll;
-  return value * HASH_FACTOR;
+  constexpr unsigned long long HASH_FACTOR = 123456789123456789llu;
+  return static_cast<long long>(static_cast<unsigned long long>(value) *
+                                HASH_FACTOR);
 }
 
 // Murmur3 hash function
