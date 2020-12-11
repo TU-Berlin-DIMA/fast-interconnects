@@ -334,6 +334,22 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
 
         Ok(relation)
     }
+
+    /// Returns the internal representation of the relation data as a mutable slice.
+    ///
+    /// This function is intended for unit testing. Use the methods provided by
+    /// the `Index` trait or `chunks_mut()` instead if possible.
+    ///
+    /// The function is unsafe because:
+    /// - the internal representation may change
+    /// - padding may contain uninitialized memory.
+    pub unsafe fn as_raw_relation_mut_slice(&mut self) -> Result<&mut [T]> {
+        let relation: &mut [_] = (&mut self.relation).try_into().map_err(|_| {
+            ErrorKind::Msg("Tried to convert device memory into host slice".to_string())
+        })?;
+
+        Ok(relation)
+    }
 }
 
 /// Returns the specified chunk and partition as a subslice of the relation.

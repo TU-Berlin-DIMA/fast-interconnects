@@ -344,10 +344,6 @@ where
     let mut cached_pay: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
 
     for partition_id in 0..radix_bits.pass_fanout(RadixPass::First).unwrap() {
-        // Ensure that padded entries are zero for testing
-        cached_key.iter_mut().for_each(|x| *x = 0);
-        cached_pay.iter_mut().for_each(|x| *x = 0);
-
         let mut partition_offsets_2nd = PartitionOffsets::new(
             histogram_algorithm_2nd,
             grid_size.x,
@@ -365,6 +361,14 @@ where
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
         );
+
+        // Ensure that padded entries are zero for testing
+        unsafe {
+            partitioned_relation_2nd
+                .as_raw_relation_mut_slice()?
+                .iter_mut()
+                .for_each(|x| *x = Tuple::default());
+        }
 
         let cached_key_slice = &mut cached_key.as_mut_slice()[0..partition_len];
         let cached_pay_slice = &mut cached_pay.as_mut_slice()[0..partition_len];
