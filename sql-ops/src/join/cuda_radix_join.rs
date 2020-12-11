@@ -13,6 +13,7 @@ use super::HashingScheme;
 use crate::error::{ErrorKind, Result};
 use crate::partition::PartitionedRelation;
 use crate::partition::Tuple;
+use crate::partition::{RadixBits, RadixPass};
 use numa_gpu::runtime::memory::{LaunchableMutPtr, LaunchableMutSlice, LaunchablePtr};
 use rustacuda::context::CurrentContext;
 use rustacuda::device::DeviceAttribute;
@@ -42,6 +43,7 @@ struct JoinAggregateArgs {
     build_rel_padding_len: u32,
     probe_rel_padding_len: u32,
     radix_bits: u32,
+    ignore_bits: u32,
     ht_entries: u32,
 }
 
@@ -61,7 +63,6 @@ struct HtEntry<K, P> {
 pub trait CudaRadixJoinable: DeviceCopy + NullKey {
     fn join_impl(
         rj: &CudaRadixJoin,
-        radix_bits: u32,
         build_rel: &PartitionedRelation<Tuple<Self, Self>>,
         probe_rel: &PartitionedRelation<Tuple<Self, Self>>,
         result_set: &mut LaunchableMutSlice<i64>,
@@ -73,6 +74,8 @@ pub trait CudaRadixJoinable: DeviceCopy + NullKey {
 #[derive(Debug)]
 pub struct CudaRadixJoin {
     module: Module,
+    radix_pass: RadixPass,
+    radix_bits: RadixBits,
     hashing_scheme: HashingScheme,
     grid_size: GridSize,
     block_size: BlockSize,
@@ -80,6 +83,8 @@ pub struct CudaRadixJoin {
 
 impl CudaRadixJoin {
     pub fn new(
+        radix_pass: RadixPass,
+        radix_bits: RadixBits,
         hashing_scheme: HashingScheme,
         grid_size: &GridSize,
         block_size: &BlockSize,
@@ -94,6 +99,8 @@ impl CudaRadixJoin {
 
         Ok(Self {
             module,
+            radix_pass,
+            radix_bits,
             hashing_scheme,
             grid_size: grid_size.clone(),
             block_size: block_size.clone(),
@@ -102,7 +109,6 @@ impl CudaRadixJoin {
 
     pub fn join<T>(
         &self,
-        radix_bits: u32,
         build_rel: &PartitionedRelation<Tuple<T, T>>,
         probe_rel: &PartitionedRelation<Tuple<T, T>>,
         result_set: &mut LaunchableMutSlice<i64>,
@@ -114,7 +120,6 @@ impl CudaRadixJoin {
     {
         T::join_impl(
             self,
-            radix_bits,
             build_rel,
             probe_rel,
             result_set,
@@ -129,7 +134,6 @@ impl CudaRadixJoin {
 impl CudaRadixJoinable for i32 {
     fn join_impl(
         rj: &CudaRadixJoin,
-        radix_bits: u32,
         build_rel: &PartitionedRelation<Tuple<Self, Self>>,
         probe_rel: &PartitionedRelation<Tuple<Self, Self>>,
         result_set: &mut LaunchableMutSlice<i64>,
@@ -163,6 +167,8 @@ impl CudaRadixJoinable for i32 {
         let device = CurrentContext::get_device()?;
         let max_shared_mem_bytes =
             device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
+        let radix_bits = rj.radix_bits.pass_radix_bits(rj.radix_pass).unwrap();
+        let ignore_bits = rj.radix_bits.pass_ignore_bits(rj.radix_pass) + radix_bits;
 
         let mut args = JoinAggregateArgs {
             build_rel: build_rel.relation.as_launchable_ptr().as_void(),
@@ -176,6 +182,7 @@ impl CudaRadixJoinable for i32 {
             build_rel_padding_len: build_rel.padding_len(),
             probe_rel_padding_len: probe_rel.padding_len(),
             radix_bits,
+            ignore_bits,
             ht_entries: 0,
         };
 

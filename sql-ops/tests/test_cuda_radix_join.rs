@@ -108,7 +108,13 @@ fn gpu_verify_join_aggregate(
         0,
     )?;
 
-    let radix_join = CudaRadixJoin::new(hashing_scheme, &grid_size, &block_size)?;
+    let radix_join = CudaRadixJoin::new(
+        RadixPass::First,
+        radix_bits.into(),
+        hashing_scheme,
+        &grid_size,
+        &block_size,
+    )?;
 
     radix_partitioner.prefix_sum(
         RadixPass::First,
@@ -139,7 +145,6 @@ fn gpu_verify_join_aggregate(
         &stream,
     )?;
     radix_join.join(
-        radix_bits,
         &inner_rel_partitions,
         &outer_rel_partitions,
         &mut result_sums.as_launchable_mut_slice(),

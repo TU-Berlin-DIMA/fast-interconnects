@@ -41,6 +41,7 @@ struct JoinAggregateArgs {
   uint32_t const build_rel_padding_length;
   uint32_t const probe_rel_padding_length;
   uint32_t const radix_bits;
+  uint32_t const ignore_bits;
   uint32_t const ht_entries;
 };
 
@@ -96,13 +97,12 @@ extern "C" __global__ void gpu_radix_join_assign_tasks(JoinAggregateArgs args) {
 // Bucket chaining hash join in shared memory.
 //
 // See the Rust module for details.
-// FIXME: handle chunking in the 2nd partitioning pass
 template <typename K, typename PI, typename PO>
 __device__ void gpu_radix_join_aggregate_smem_perfect(JoinAggregateArgs &args) {
   extern __shared__ uint32_t shared_mem[];
 
   const uint32_t fanout = 1U << args.radix_bits;
-  const uint64_t mask = ~static_cast<uint64_t>(fanout - 1U);
+  const uint64_t mask = ~static_cast<uint64_t>((1U << args.ignore_bits) - 1U);
 
   HtEntry<K, PI> *const __restrict__ hash_table =
       reinterpret_cast<HtEntry<K, PI> *>(shared_mem);
@@ -152,7 +152,7 @@ __device__ void gpu_radix_join_aggregate_smem_perfect(JoinAggregateArgs &args) {
     // Build
     for (uint32_t i = threadIdx.x; i < build_size; i += blockDim.x) {
       Tuple<K, PI> tuple = build_rel[i];
-      auto ht_index = key_to_partition(tuple.key, mask, args.radix_bits);
+      auto ht_index = key_to_partition(tuple.key, mask, args.ignore_bits);
 
 #ifdef DEBUG
       assert(ht_index < args.ht_entries && "Invalid hash table index");
@@ -166,7 +166,7 @@ __device__ void gpu_radix_join_aggregate_smem_perfect(JoinAggregateArgs &args) {
     // Probe
     for (uint32_t i = threadIdx.x; i < probe_size; i += blockDim.x) {
       Tuple<K, PO> tuple = probe_rel[i];
-      auto ht_index = key_to_partition(tuple.key, mask, args.radix_bits);
+      auto ht_index = key_to_partition(tuple.key, mask, args.ignore_bits);
 
 #ifdef DEBUG
       assert(ht_index < args.ht_entries && "Invalid hash table index");
@@ -199,7 +199,7 @@ __device__ void gpu_radix_join_aggregate_smem_chaining(
   extern __shared__ uint32_t shared_mem[];
 
   const uint32_t fanout = 1U << args.radix_bits;
-  // const uint64_t mask = ~static_cast<uint64_t>(fanout - 1U);
+  const uint64_t mask = ~static_cast<uint64_t>((1U << args.ignore_bits) - 1U);
   constexpr unsigned short tail = USHRT_MAX;
 
   const uint32_t buckets = args.ht_entries;
@@ -277,7 +277,8 @@ __device__ void gpu_radix_join_aggregate_smem_chaining(
       keys[i] = tuple.key;
       values[i] = tuple.value;
 
-      auto bucket = hash<K>(tuple.key) & buckets_mask;
+      auto ht_index = key_to_partition(tuple.key, mask, args.ignore_bits);
+      auto bucket = hash<K>(ht_index) & buckets_mask;
       unsigned int next = atomicExch(&heads[bucket], i);
       links[i] = static_cast<unsigned short>(next);
     }
@@ -289,7 +290,8 @@ __device__ void gpu_radix_join_aggregate_smem_chaining(
       Tuple<K, PO> tuple;
       tuple.load(probe_rel[i]);
 
-      auto bucket = hash<K>(tuple.key) & buckets_mask;
+      auto ht_index = key_to_partition(tuple.key, mask, args.ignore_bits);
+      auto bucket = hash<K>(ht_index) & buckets_mask;
 
       for (unsigned short i = static_cast<unsigned short>(heads[bucket]);
            i != tail; i = links[i]) {

@@ -324,10 +324,14 @@ where
 
         let mut join_task_assignments =
             Allocator::alloc_mem(MemType::CudaDevMem, join_dim.0.x as usize + 1);
-        let radix_join =
-            cuda_radix_join::CudaRadixJoin::new(hashing_scheme, grid_size, block_size)?;
+        let radix_join = cuda_radix_join::CudaRadixJoin::new(
+            RadixPass::Second,
+            radix_bits.clone(),
+            hashing_scheme,
+            grid_size,
+            block_size,
+        )?;
         radix_join.join(
-            radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
             &inner_rel_partitions_2nd,
             &outer_rel_partitions_2nd,
             &mut result_sums.as_launchable_mut_slice(),
