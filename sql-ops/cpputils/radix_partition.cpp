@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2014 Cagri Balkesen, ETH Zurich
  * Copyright (c) 2014 Claude Barthels, ETH Zurich
- * Copyright (c) 2019 Clemens Lutz, German Research Center for Artificial
+ * Copyright (c) 2019-2020 Clemens Lutz, German Research Center for Artificial
  * Intelligence
  *
  * Original sources by Cagri Balkesen and Claude Barthels are copyrighted under
@@ -49,7 +49,15 @@
 #if defined(__x86_64__)
 #include <immintrin.h>
 #elif defined(__ALTIVEC__)
-#include <emmintrin.h>
+#include <altivec.h>
+#include <ppc_intrinsics.h>
+
+#ifdef bool
+// Workaround for AltiVec redefinition of bool.
+// See https://gcc.gnu.org/bugzilla/show_bug.cgi?id=58241
+// and https://bugzilla.redhat.com/show_bug.cgi?id=1394505
+#undef bool
+#endif
 #endif
 
 #include <cassert>
@@ -130,6 +138,11 @@ size_t key_to_partition(T key, size_t mask, B bits) {
   return (static_cast<size_t>(key) & mask) >> bits;
 }
 
+template <typename T, typename M, typename B>
+vector M key_to_partition_simd(vector T key, M mask, B bits) {
+  return (reinterpret_cast<M>(key) & mask) >> bits;
+}
+
 // Flushes a SWWC buffer from cache to memory.
 //
 // If possible, uses non-temporal SIMD writes, that require vector-length
@@ -154,25 +167,35 @@ void flush_buffer(void *const __restrict__ dst,
 
     _mm256_stream_si256(avx_dst, *avx_src);
   }
-#elif defined(__ALTIVEC__) || defined(__SSE2__)
-  // vec_st: 128-bit vector store; requires requires 16-byte alignment
-  // See also:
-  // https://gcc.gcc.gnu.narkive.com/cJndcMpR/vec-ld-versus-vec-vsx-ld-on-power8
-  //
-  // dcbtstt: cache-line non-temporal hint; unclear if requires 16-byte
-  // alignment
-  //
-  // __dcbz(ptr): zeroes a cache-line in-cache to prevent load from memory
-  //
-  // _mm_stream_si128 wraps dcbtstt
-  // See also:
-  // https://github.com/gcc-mirror/gcc/blob/74c5e5f5bf7f2f13718008421cdf53bb0a814f4c/gcc/config/rs6000/emmintrin.h#L2249
-
+#elif defined(__SSE2__)
   for (size_t i = 0; i < SWWC_BUFFER_SIZE; i += 16) {
     auto sse_dst = reinterpret_cast<__m128i *>(byte_dst + i);
     auto sse_src = reinterpret_cast<const __m128i *>(byte_src + i);
 
     _mm_stream_si128(sse_dst, *sse_src);
+  }
+#elif defined(__ALTIVEC__)
+  // vec_ld: 128-bit vector load; requires requires 16-byte alignment
+  // vec_st: 128-bit vector store; requires requires 16-byte alignment
+  // See also:
+  // https://gcc.gcc.gnu.narkive.com/cJndcMpR/vec-ld-versus-vec-vsx-ld-on-power8
+  //
+  // _mm_stream_si128 wraps dcbtstt
+  // See also:
+  // https://github.com/gcc-mirror/gcc/blob/74c5e5f5bf7f2f13718008421cdf53bb0a814f4c/gcc/config/rs6000/emmintrin.h#L2249
+  for (size_t i = 0; i < SWWC_BUFFER_SIZE; i += 64) {
+    int *vsx_dst = reinterpret_cast<int *>(byte_dst + i);
+    const int *vsx_src = reinterpret_cast<const int *>(byte_src + i);
+
+    vector int tmp0 = vec_ld(0, vsx_src);
+    vector int tmp1 = vec_ld(16, vsx_src);
+    vector int tmp2 = vec_ld(32, vsx_src);
+    vector int tmp3 = vec_ld(48, vsx_src);
+
+    vec_st(tmp0, 0, vsx_dst);
+    vec_st(tmp1, 16, vsx_dst);
+    vec_st(tmp2, 32, vsx_dst);
+    vec_st(tmp3, 48, vsx_dst);
   }
 #else
   memcpy(byte_dst, byte_src, SWWC_BUFFER_SIZE);
@@ -314,6 +337,184 @@ void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
   }
 }
 
+template <typename K, typename V, typename M>
+void buffer_tuple(Tuple<K, V> *const __restrict__ partitioned_relation,
+                  WriteCombineBuffer<Tuple<K, V>, SWWC_BUFFER_SIZE>
+                      *const __restrict__ buffers,
+                  M p_index, K key, V payload) {
+  constexpr size_t tuples_per_buffer =
+      WriteCombineBuffer<Tuple<K, V>, SWWC_BUFFER_SIZE>::tuples_per_buffer();
+
+  Tuple<K, V> tuple;
+  tuple.key = key;
+  tuple.value = payload;
+
+  auto &buffer = buffers[p_index];
+
+  size_t slot = buffer.meta.slot;
+  size_t buffer_slot = slot % tuples_per_buffer;
+
+  // `buffer.meta.slot` is overwritten on buffer_slot == (tuples_per_buffer -
+  // 1), and restored after the buffer flush.
+  buffer.tuples.data[buffer_slot] = tuple;
+
+  // Flush buffer
+  // Can occur on partially filled buffer due to cache-line alignment,
+  // because first output slot might not be at offset % tuples_per_buffer == 0
+  if (buffer_slot + 1 == tuples_per_buffer) {
+    flush_buffer(partitioned_relation + (slot + 1) - tuples_per_buffer,
+                 buffer.tuples.data);
+  }
+
+  // Restore `buffer.meta.slot` after overwriting it above, and increment its
+  // value.
+  buffer.meta.slot = slot + 1;
+}
+
+// Chunked radix partitioning with software write-combining.
+//
+// See the Rust module for details.
+template <typename K, typename V, typename M>
+void cpu_chunked_radix_partition_swwc_simd(RadixPartitionArgs &args) {
+  constexpr size_t tuples_per_buffer =
+      WriteCombineBuffer<Tuple<K, V>, SWWC_BUFFER_SIZE>::tuples_per_buffer();
+  constexpr size_t vec_len = sizeof(vector int) / sizeof(K);
+
+  // 512-bit intrinsics require 64-byte alignment
+  assert(reinterpret_cast<size_t>(args.write_combine_buffer) % 64 == 0);
+
+  // Padding must be a multiple of the buffer length.
+  assert(args.padding_length % tuples_per_buffer == 0);
+
+  auto join_attr_data =
+      static_cast<const K *const __restrict__>(args.join_attr_data);
+  auto payload_attr_data =
+      static_cast<const V *const __restrict__>(args.payload_attr_data);
+  auto partitioned_relation =
+      static_cast<Tuple<K, V> *const __restrict__>(args.partitioned_relation);
+  auto buffers = static_cast<
+      WriteCombineBuffer<Tuple<K, V>, SWWC_BUFFER_SIZE> *const __restrict__>(
+      args.write_combine_buffer);
+
+  assert(((size_t)join_attr_data) % vec_len == 0U &&
+         "Key column should be aligned to ALIGN_BYTES for best performance");
+  assert(
+      ((size_t)payload_attr_data) % vec_len == 0U &&
+      "Payload column should be aligned to ALIGN_BYTES for best performance");
+
+  const size_t fanout = 1UL << args.radix_bits;
+  const M mask = static_cast<M>(fanout - 1);
+  const M ignore_bits = 0;
+
+  const vector M mask_vsx = vec_splats(mask);
+  const vector M ignore_bits_vsx = vec_splats(ignore_bits);
+  size_t i;
+
+  // Ensure counters are all zeroed
+  for (size_t i = 0; i < fanout; ++i) {
+    args.partition_offsets[i] = 0;
+  }
+
+  // 1. Compute local histograms per partition
+  i = 0;
+  if (args.data_length > vec_len * 4) {
+    for (; i < (args.data_length - vec_len * 4); i += vec_len * 4) {
+      const K *const base = &join_attr_data[i];
+
+      vector K key0 = vec_ld(0, base);
+      vector K key1 = vec_ld(16, base);
+      vector K key2 = vec_ld(32, base);
+      vector K key3 = vec_ld(48, base);
+
+      vector M p_index0 =
+          key_to_partition_simd(key0, mask_vsx, ignore_bits_vsx);
+      vector M p_index1 =
+          key_to_partition_simd(key1, mask_vsx, ignore_bits_vsx);
+      vector M p_index2 =
+          key_to_partition_simd(key2, mask_vsx, ignore_bits_vsx);
+      vector M p_index3 =
+          key_to_partition_simd(key3, mask_vsx, ignore_bits_vsx);
+
+      for (uint32_t v = 0; v < vec_len; ++v) {
+        args.partition_offsets[p_index0[v]] += 1;
+        args.partition_offsets[p_index1[v]] += 1;
+        args.partition_offsets[p_index2[v]] += 1;
+        args.partition_offsets[p_index3[v]] += 1;
+      }
+    }
+  }
+  for (; i < args.data_length; ++i) {
+    auto key = join_attr_data[i];
+    auto p_index = key_to_partition(key, mask, 0);
+    args.partition_offsets[p_index] += 1;
+  }
+
+  // 2. Compute offsets with exclusive prefix sum
+  for (size_t i = 0, sum = 0, offset = 0; i < fanout; ++i, offset = sum) {
+    sum += args.partition_offsets[i];
+    offset += (i + 1) * args.padding_length;
+    args.partition_offsets[i] = offset;
+    buffers[i].meta.slot = offset;
+  }
+
+  // 3. Partition into software write combine buffers
+  i = 0;
+  if (args.data_length > vec_len * 4) {
+    for (; i < (args.data_length - vec_len * 4); i += vec_len * 4) {
+      const K *const key_base = &join_attr_data[i];
+      const V *const pay_base = &payload_attr_data[i];
+
+      vector K key0 = vec_ld(0, key_base);
+      vector K key1 = vec_ld(16, key_base);
+      vector K key2 = vec_ld(32, key_base);
+      vector K key3 = vec_ld(48, key_base);
+
+      vector V pay0 = vec_ld(0, pay_base);
+      vector V pay1 = vec_ld(16, pay_base);
+      vector V pay2 = vec_ld(32, pay_base);
+      vector V pay3 = vec_ld(48, pay_base);
+
+      vector M p_index0 =
+          key_to_partition_simd(key0, mask_vsx, ignore_bits_vsx);
+      vector M p_index1 =
+          key_to_partition_simd(key1, mask_vsx, ignore_bits_vsx);
+      vector M p_index2 =
+          key_to_partition_simd(key2, mask_vsx, ignore_bits_vsx);
+      vector M p_index3 =
+          key_to_partition_simd(key3, mask_vsx, ignore_bits_vsx);
+
+      // FIXME: check if GCC unrolls this loop, otherwise force unroll
+      for (uint32_t v = 0; v < vec_len; ++v) {
+        buffer_tuple<K, V, M>(partitioned_relation, buffers, p_index0[v],
+                              key0[v], pay0[v]);
+        buffer_tuple<K, V, M>(partitioned_relation, buffers, p_index1[v],
+                              key1[v], pay1[v]);
+        buffer_tuple<K, V, M>(partitioned_relation, buffers, p_index2[v],
+                              key2[v], pay2[v]);
+        buffer_tuple<K, V, M>(partitioned_relation, buffers, p_index3[v],
+                              key3[v], pay3[v]);
+      }
+    }
+  }
+  for (; i < args.data_length; ++i) {
+    K key = join_attr_data[i];
+    V payload = payload_attr_data[i];
+
+    M p_index = key_to_partition(key, mask, 0);
+    buffer_tuple<K, V, M>(partitioned_relation, buffers, p_index, key, payload);
+  }
+
+  // Flush remainders of all buffers.
+  for (size_t i = 0; i < fanout; ++i) {
+    size_t slot = buffers[i].meta.slot;
+    size_t remaining = slot % tuples_per_buffer;
+
+    for (size_t j = slot - remaining, k = 0; k < remaining; ++j, ++k) {
+      partitioned_relation[j] = buffers[i].tuples.data[k];
+    }
+  }
+}
+
 // Exports the the size of all SWWC buffers.
 extern "C" size_t cpu_swwc_buffer_bytes() { return SWWC_BUFFER_SIZE; }
 
@@ -339,4 +540,17 @@ extern "C" void cpu_chunked_radix_partition_swwc_int32_int32(
 extern "C" void cpu_chunked_radix_partition_swwc_int64_int64(
     RadixPartitionArgs *args) {
   cpu_chunked_radix_partition_swwc<int64_t, int64_t>(*args);
+}
+
+// Exports the partitioning function for 8-byte key/value tuples.
+extern "C" void cpu_chunked_radix_partition_swwc_simd_int32_int32(
+    RadixPartitionArgs *args) {
+  cpu_chunked_radix_partition_swwc_simd<int, int, unsigned>(*args);
+}
+
+// Exports the partitioning function for 16-byte key/value tuples.
+extern "C" void cpu_chunked_radix_partition_swwc_simd_int64_int64(
+    RadixPartitionArgs *args) {
+  cpu_chunked_radix_partition_swwc_simd<long long, long long,
+                                        unsigned long long>(*args);
 }

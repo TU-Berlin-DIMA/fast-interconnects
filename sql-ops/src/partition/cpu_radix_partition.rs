@@ -1,5 +1,5 @@
 /*
- * Copyright 2019 Clemens Lutz, German Research Center for Artificial Intelligence
+ * Copyright 2019-2020 Clemens Lutz, German Research Center for Artificial Intelligence
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -70,6 +70,8 @@ extern "C" {
     fn cpu_chunked_radix_partition_int64_int64(args: *mut RadixPartitionArgs);
     fn cpu_chunked_radix_partition_swwc_int32_int32(args: *mut RadixPartitionArgs);
     fn cpu_chunked_radix_partition_swwc_int64_int64(args: *mut RadixPartitionArgs);
+    fn cpu_chunked_radix_partition_swwc_simd_int32_int32(args: *mut RadixPartitionArgs);
+    fn cpu_chunked_radix_partition_swwc_simd_int64_int64(args: *mut RadixPartitionArgs);
 }
 
 /// Arguments to the C/C++ partitioning function.
@@ -250,6 +252,9 @@ pub enum CpuRadixPartitionAlgorithm {
 
     /// Chunked radix partition with software write-combining.
     ChunkedSwwc,
+
+    /// Chunked radix partition with software write-combining and SIMD optimizations.
+    ChunkedSwwcSimd,
 }
 
 /// Mutable internal state of the partition functions.
@@ -260,6 +265,7 @@ pub enum CpuRadixPartitionAlgorithm {
 enum RadixPartitionState {
     Chunked(DerefMem<u64>),
     ChunkedSwwc(WriteCombineBuffer),
+    ChunkedSwwcSimd(WriteCombineBuffer),
 }
 
 /// A CPU radix partitioner that provides partitioning functions.
@@ -284,6 +290,9 @@ impl CpuRadixPartitioner {
             }
             CpuRadixPartitionAlgorithm::ChunkedSwwc => {
                 RadixPartitionState::ChunkedSwwc(WriteCombineBuffer::new(radix_bits, alloc_fn))
+            }
+            CpuRadixPartitionAlgorithm::ChunkedSwwcSimd => {
+                RadixPartitionState::ChunkedSwwcSimd(WriteCombineBuffer::new(radix_bits, alloc_fn))
             }
         };
 
@@ -344,6 +353,12 @@ macro_rules! impl_cpu_radix_partition_for_type {
                         RadixPartitionState::ChunkedSwwc(ref mut swwc) =>
                             (
                                 [<cpu_chunked_radix_partition_swwc_ $Suffix _ $Suffix>],
+                                ptr::null_mut(),
+                                swwc.buffers.as_mut_slice().as_mut_ptr() as *mut c_void,
+                            ),
+                        RadixPartitionState::ChunkedSwwcSimd(ref mut swwc) =>
+                            (
+                                [<cpu_chunked_radix_partition_swwc_simd_ $Suffix _ $Suffix>],
                                 ptr::null_mut(),
                                 swwc.buffers.as_mut_slice().as_mut_ptr() as *mut c_void,
                             ),

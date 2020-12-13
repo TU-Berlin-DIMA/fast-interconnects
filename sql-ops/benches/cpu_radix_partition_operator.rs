@@ -36,6 +36,7 @@ arg_enum! {
     pub enum ArgRadixPartitionAlgorithm {
         Chunked,
         ChunkedSwwc,
+        ChunkedSwwcSimd,
     }
 }
 
@@ -62,6 +63,7 @@ impl Into<CpuRadixPartitionAlgorithm> for ArgRadixPartitionAlgorithm {
         match self {
             Self::Chunked => CpuRadixPartitionAlgorithm::Chunked,
             Self::ChunkedSwwc => CpuRadixPartitionAlgorithm::ChunkedSwwc,
+            Self::ChunkedSwwcSimd => CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
         }
     }
 }
