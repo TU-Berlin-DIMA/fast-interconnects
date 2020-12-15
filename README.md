@@ -27,7 +27,7 @@ Note that NVLink is only available on IBM POWER platforms.
 
 ### CUDA
 
-Ensure that CUDA 10.1 or greater is installed and in the path. If CUDA is
+Ensure that CUDA 10.2 or greater is installed and in the path. If CUDA is
 installed at a custom path, the path must be included, e.g.:
 ```sh
 export PATH="$PATH:/usr/local/cuda/bin"
@@ -46,6 +46,14 @@ sudo cat << EOF > /etc/ld.so.conf.d/cuda.conf
 EOF
 
 sudo ldconfig
+```
+
+### GNU C++ compiler
+
+Ensure that G++ 8.3 or greater is installed and in the path. If this version is
+not the default C++ compiler, the `CXX` environment variable must be set, e.g.:
+```sh
+export CXX=/usr/bin/g++-8
 ```
 
 ### Rust
