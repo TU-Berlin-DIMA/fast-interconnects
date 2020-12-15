@@ -41,6 +41,7 @@ use std::time::{Duration, Instant};
 
 pub struct HashJoinBench<T: DeviceCopy> {
     pub hashing_scheme: HashingScheme,
+    pub is_selective: bool,
     pub hash_table_len: usize,
     pub build_relation_key: Mem<T>,
     pub build_relation_payload: Mem<T>,
@@ -59,6 +60,7 @@ pub struct HashJoinBenchBuilder {
     outer_mem_type: ArgMemType,
     huge_pages: Option<bool>,
     hashing_scheme: HashingScheme,
+    is_selective: bool,
 }
 
 #[derive(Debug, Default)]
@@ -95,6 +97,7 @@ impl Default for HashJoinBenchBuilder {
             outer_mem_type: ArgMemType::System,
             huge_pages: None,
             hashing_scheme: HashingScheme::LinearProbing,
+            is_selective: false,
         }
     }
 }
@@ -142,6 +145,11 @@ impl HashJoinBenchBuilder {
 
     pub fn hashing_scheme(&mut self, hashing_scheme: HashingScheme) -> &mut Self {
         self.hashing_scheme = hashing_scheme;
+        self
+    }
+
+    pub fn is_selective(&mut self, is_selective: bool) -> &mut Self {
+        self.is_selective = is_selective;
         self
     }
 
@@ -261,6 +269,7 @@ impl HashJoinBenchBuilder {
         Ok((
             HashJoinBench {
                 hashing_scheme: self.hashing_scheme,
+                is_selective: self.is_selective,
                 hash_table_len: self.get_hash_table_len()?,
                 build_relation_key: inner_key.into(),
                 build_relation_payload: inner_payload.into(),
@@ -372,6 +381,7 @@ impl HashJoinBenchBuilder {
         Ok((
             HashJoinBench {
                 hashing_scheme: self.hashing_scheme,
+                is_selective: self.is_selective,
                 hash_table_len: self.get_hash_table_len()?,
                 build_relation_key: inner_key.into(),
                 build_relation_payload: inner_payload.into(),
@@ -433,6 +443,7 @@ where
 
         let hj_op = no_partitioning_join::CudaHashJoinBuilder::<T>::default()
             .hashing_scheme(self.hashing_scheme)
+            .is_selective(self.is_selective)
             .build_dim(build_dim.0.clone(), build_dim.1.clone())
             .probe_dim(probe_dim.0.clone(), probe_dim.1.clone())
             .hash_table(Arc::new(hash_table))
@@ -528,6 +539,7 @@ where
 
         let hj_op = no_partitioning_join::CudaHashJoinBuilder::<T>::default()
             .hashing_scheme(self.hashing_scheme)
+            .is_selective(self.is_selective)
             .build_dim(build_dim.0.clone(), build_dim.1.clone())
             .probe_dim(probe_dim.0.clone(), probe_dim.1.clone())
             .hash_table(Arc::new(hash_table))
@@ -615,6 +627,7 @@ where
 
         let hj_op = no_partitioning_join::CudaHashJoinBuilder::<T>::default()
             .hashing_scheme(self.hashing_scheme)
+            .is_selective(self.is_selective)
             .build_dim(build_dim.0.clone(), build_dim.1.clone())
             .probe_dim(probe_dim.0.clone(), probe_dim.1.clone())
             .hash_table(Arc::new(hash_table))
@@ -717,6 +730,7 @@ where
 
         let hj_builder = no_partitioning_join::CpuHashJoinBuilder::default()
             .hashing_scheme(self.hashing_scheme)
+            .is_selective(self.is_selective)
             .hash_table(Arc::new(hash_table));
 
         let build_timer = Instant::now();
@@ -800,10 +814,12 @@ where
 
         let cpu_hj_builder = no_partitioning_join::CpuHashJoinBuilder::default()
             .hashing_scheme(self.hashing_scheme)
+            .is_selective(self.is_selective)
             .hash_table(hash_table.clone());
 
         let gpu_hj_builder = no_partitioning_join::CudaHashJoinBuilder::<T>::default()
             .hashing_scheme(self.hashing_scheme)
+            .is_selective(self.is_selective)
             .build_dim(build_dim.0.clone(), build_dim.1.clone())
             .probe_dim(probe_dim.0.clone(), probe_dim.1.clone())
             .hash_table(hash_table.clone());
@@ -917,6 +933,7 @@ where
 
         let gpu_hj_builder = no_partitioning_join::CudaHashJoinBuilder::<T>::default()
             .hashing_scheme(self.hashing_scheme)
+            .is_selective(self.is_selective)
             .build_dim(build_dim.0.clone(), build_dim.1.clone())
             .probe_dim(probe_dim.0.clone(), probe_dim.1.clone())
             .hash_table(gpu_hash_table.clone());
@@ -947,6 +964,7 @@ where
         let probe_timer = Instant::now();
         let cpu_hj_builder = no_partitioning_join::CpuHashJoinBuilder::default()
             .hashing_scheme(self.hashing_scheme)
+            .is_selective(self.is_selective)
             .hash_table(cpu_hash_table.clone());
         (probe_rel_key, probe_rel_pay)
             .into_het_morsel_iter(&executor)

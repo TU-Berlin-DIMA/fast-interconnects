@@ -86,7 +86,23 @@ extern "C" {
         data_length: u64,
     );
 
+    fn cpu_ht_build_selective_perfect_int32(
+        hash_table: *mut i32, // FIXME: replace i32 with atomic_i32
+        hash_table_entries: u64,
+        join_attr_data: *const i32,
+        payload_attr_data: *const i32,
+        data_length: u64,
+    );
+
     fn cpu_ht_build_perfect_int64(
+        hash_table: *mut i64, // FIXME: replace i64 with atomic_i64
+        hash_table_entries: u64,
+        join_attr_data: *const i64,
+        payload_attr_data: *const i64,
+        data_length: u64,
+    );
+
+    fn cpu_ht_build_selective_perfect_int64(
         hash_table: *mut i64, // FIXME: replace i64 with atomic_i64
         hash_table_entries: u64,
         join_attr_data: *const i64,
@@ -203,6 +219,7 @@ pub trait CpuHashJoinable: DeviceCopy + NullKey {
 pub struct CudaHashJoin<T: DeviceCopy + NullKey> {
     ops: Module,
     hashing_scheme: HashingScheme,
+    is_selective: bool,
     hash_table: Arc<HashTable<T>>,
     build_dim: (GridSize, BlockSize),
     probe_dim: (GridSize, BlockSize),
@@ -219,6 +236,7 @@ pub struct CudaHashJoin<T: DeviceCopy + NullKey> {
 #[derive(Debug)]
 pub struct CpuHashJoin<T: DeviceCopy + NullKey> {
     hashing_scheme: HashingScheme,
+    is_selective: bool,
     hash_table: Arc<HashTable<T>>,
 }
 
@@ -233,6 +251,7 @@ pub struct HashTable<T: DeviceCopy + NullKey> {
 #[derive(Clone, Debug)]
 pub struct CudaHashJoinBuilder<T: DeviceCopy + NullKey> {
     hashing_scheme: HashingScheme,
+    is_selective: bool,
     hash_table_i: Option<Arc<HashTable<T>>>,
     build_dim_i: (GridSize, BlockSize),
     probe_dim_i: (GridSize, BlockSize),
@@ -242,6 +261,7 @@ pub struct CudaHashJoinBuilder<T: DeviceCopy + NullKey> {
 #[derive(Clone, Debug)]
 pub struct CpuHashJoinBuilder<T: DeviceCopy + NullKey> {
     hashing_scheme: HashingScheme,
+    is_selective: bool,
     hash_table_i: Option<Arc<HashTable<T>>>,
 }
 
@@ -334,8 +354,8 @@ macro_rules! impl_cuda_hash_join_for_type {
                     let hash_table_size = hj.hash_table.size as u64;
                     let module = &hj.ops;
 
-                    match &hj.hashing_scheme {
-                        HashingScheme::Perfect => unsafe{ launch!(
+                    match (&hj.hashing_scheme, &hj.is_selective) {
+                        (HashingScheme::Perfect, false) => unsafe{ launch!(
                                 module.[<gpu_ht_build_perfect_ $Suffix>]<<<grid, block, 0, stream>>>(
                                     hj.hash_table.mem.as_launchable_ptr(),
                                     hash_table_size,
@@ -344,7 +364,16 @@ macro_rules! impl_cuda_hash_join_for_type {
                                     join_attr_len
                                     )
                                 )? },
-                        HashingScheme::LinearProbing => unsafe { launch!(
+                        (HashingScheme::Perfect, true) => unsafe{ launch!(
+                                module.[<gpu_ht_build_selective_perfect_ $Suffix>]<<<grid, block, 0, stream>>>(
+                                    hj.hash_table.mem.as_launchable_ptr(),
+                                    hash_table_size,
+                                    join_attr.as_launchable_ptr(),
+                                    payload_attr.as_launchable_ptr(),
+                                    join_attr_len
+                                    )
+                                )? },
+                        (HashingScheme::LinearProbing, false) => unsafe { launch!(
                                 module.[<gpu_ht_build_linearprobing_ $Suffix>]<<<grid, block, 0, stream>>>(
                                     hj.hash_table.mem.as_launchable_ptr(),
                                     hash_table_size,
@@ -353,6 +382,7 @@ macro_rules! impl_cuda_hash_join_for_type {
                                     join_attr_len
                                     )
                                 )? },
+                        (HashingScheme::LinearProbing, true) => unimplemented!(),
                     };
 
                     Ok(())
@@ -446,8 +476,8 @@ macro_rules! impl_cpu_hash_join_for_type {
                     let join_attr_len = join_attr.len() as u64;
                     let hash_table_size = hj.hash_table.size as u64;
 
-                    match &hj.hashing_scheme {
-                        HashingScheme::Perfect => unsafe {
+                    match (&hj.hashing_scheme, &hj.is_selective) {
+                        (HashingScheme::Perfect, false) => unsafe {
                             [<cpu_ht_build_perfect_ $Suffix>](
                                 hj.hash_table.mem.as_ptr() as *mut $Type,
                                 hash_table_size,
@@ -456,7 +486,16 @@ macro_rules! impl_cpu_hash_join_for_type {
                                 join_attr_len,
                                 )
                         },
-                        HashingScheme::LinearProbing => unsafe {
+                        (HashingScheme::Perfect, true) => unsafe {
+                            [<cpu_ht_build_selective_perfect_ $Suffix>](
+                                hj.hash_table.mem.as_ptr() as *mut $Type,
+                                hash_table_size,
+                                join_attr.as_ptr(),
+                                payload_attr.as_ptr(),
+                                join_attr_len,
+                                )
+                        },
+                        (HashingScheme::LinearProbing, false) => unsafe {
                             [<cpu_ht_build_linearprobing_ $Suffix>](
                                 hj.hash_table.mem.as_ptr() as *mut $Type,
                                 hash_table_size,
@@ -465,6 +504,7 @@ macro_rules! impl_cpu_hash_join_for_type {
                                 join_attr_len,
                                 )
                         },
+                        (HashingScheme::LinearProbing, true) => unimplemented!(),
                     };
 
                     Ok(())
@@ -605,6 +645,7 @@ impl<T: DeviceCopy + NullKey> ::std::default::Default for CudaHashJoinBuilder<T>
     fn default() -> Self {
         Self {
             hashing_scheme: HashingScheme::default(),
+            is_selective: false,
             hash_table_i: None,
             build_dim_i: (1.into(), 1.into()),
             probe_dim_i: (1.into(), 1.into()),
@@ -620,6 +661,11 @@ where
 
     pub fn hashing_scheme(mut self, hashing_scheme: HashingScheme) -> Self {
         self.hashing_scheme = hashing_scheme;
+        self
+    }
+
+    pub fn is_selective(mut self, is_selective: bool) -> Self {
+        self.is_selective = is_selective;
         self
     }
 
@@ -666,6 +712,7 @@ where
         Ok(CudaHashJoin {
             ops,
             hashing_scheme: self.hashing_scheme,
+            is_selective: self.is_selective,
             hash_table,
             build_dim: self.build_dim_i.clone(),
             probe_dim: self.probe_dim_i.clone(),
@@ -677,6 +724,7 @@ impl<T: DeviceCopy + NullKey> ::std::default::Default for CpuHashJoinBuilder<T> 
     fn default() -> Self {
         Self {
             hashing_scheme: HashingScheme::default(),
+            is_selective: false,
             hash_table_i: None,
         }
     }
@@ -687,6 +735,11 @@ impl<T: Default + DeviceCopy + NullKey> CpuHashJoinBuilder<T> {
 
     pub fn hashing_scheme(mut self, hashing_scheme: HashingScheme) -> Self {
         self.hashing_scheme = hashing_scheme;
+        self
+    }
+
+    pub fn is_selective(mut self, is_selective: bool) -> Self {
+        self.is_selective = is_selective;
         self
     }
 
@@ -709,6 +762,7 @@ impl<T: Default + DeviceCopy + NullKey> CpuHashJoinBuilder<T> {
 
         CpuHashJoin {
             hashing_scheme: self.hashing_scheme,
+            is_selective: self.is_selective,
             hash_table,
         }
     }

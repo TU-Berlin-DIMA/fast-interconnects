@@ -327,6 +327,7 @@ where
     let mut hjb_builder = HashJoinBenchBuilder::default();
     hjb_builder
         .hashing_scheme(hashing_scheme)
+        .is_selective(cmd.selectivity != 100)
         .hash_table_load_factor(hash_table_load_factor)
         .inner_location(Box::new([NodeRatio {
             node: cmd.inner_rel_location,

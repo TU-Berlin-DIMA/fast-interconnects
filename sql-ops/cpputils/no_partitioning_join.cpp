@@ -237,6 +237,25 @@ void cpu_ht_build_perfect(
     }
 }
 
+template<typename T>
+void cpu_ht_build_selective_perfect(
+        T *const __restrict__ hash_table,
+        uint64_t const /* hash_table_entries */,
+        const T *const __restrict__ join_attribute_data,
+        const T *const __restrict__ payload_attributed_data,
+        uint64_t const data_length
+        )
+{
+    for (uint64_t tuple_id = 0; tuple_id < data_length; ++tuple_id) {
+        T key = join_attribute_data[tuple_id];
+        if (key != NULL_KEY) {
+            T val = payload_attributed_data[tuple_id];
+            hash_table[key] = key;
+            hash_table[key + 1] = val;
+        }
+    }
+}
+
 extern "C"
 void cpu_ht_build_perfect_int32(
         int32_t *const __restrict__ hash_table,
@@ -256,6 +275,24 @@ void cpu_ht_build_perfect_int32(
 }
 
 extern "C"
+void cpu_ht_build_selective_perfect_int32(
+        int32_t *const __restrict__ hash_table,
+        uint64_t const hash_table_entries,
+        const int32_t *const __restrict__ join_attribute_data,
+        const int32_t *const __restrict__ payload_attributed_data,
+        uint64_t const data_length
+        )
+{
+    cpu_ht_build_selective_perfect(
+            hash_table,
+            hash_table_entries,
+            join_attribute_data,
+            payload_attributed_data,
+            data_length
+            );
+}
+
+extern "C"
 void cpu_ht_build_perfect_int64(
         int64_t *const __restrict__ hash_table,
         uint64_t const hash_table_entries,
@@ -265,6 +302,24 @@ void cpu_ht_build_perfect_int64(
         )
 {
     cpu_ht_build_perfect(
+            hash_table,
+            hash_table_entries,
+            join_attribute_data,
+            payload_attributed_data,
+            data_length
+            );
+}
+
+extern "C"
+void cpu_ht_build_selective_perfect_int64(
+        int64_t *const __restrict__ hash_table,
+        uint64_t const hash_table_entries,
+        const int64_t *const __restrict__ join_attribute_data,
+        const int64_t *const __restrict__ payload_attributed_data,
+        uint64_t const data_length
+        )
+{
+    cpu_ht_build_selective_perfect(
             hash_table,
             hash_table_entries,
             join_attribute_data,
