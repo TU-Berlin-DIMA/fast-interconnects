@@ -115,7 +115,7 @@ impl MemoryLatency {
 
         let mem = match DerefMem::<u32>::try_from(Allocator::alloc_mem(mem_type, buffer_len)) {
             Ok(mut demem) => {
-                u32::ensure_physically_backed(demem.as_mut_slice());
+                demem.as_mut_slice().ensure_physically_backed();
                 demem.into()
             }
             Err((_, mem)) => mem,

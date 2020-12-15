@@ -229,9 +229,7 @@ impl<'h, 'c> Measurement<'h, 'c> {
             }
         };
 
-        u32::ensure_physically_backed(unsafe {
-            slice::from_raw_parts_mut(hmem.as_mut_ptr(), buf_len)
-        });
+        unsafe { slice::from_raw_parts_mut(hmem.as_mut_ptr(), buf_len) }.ensure_physically_backed();
 
         let mut dmem: *mut c_void = null_mut();
         unsafe { cuMemAlloc_v2(&mut dmem as *mut *mut c_void as *mut u64, buf_bytes) }

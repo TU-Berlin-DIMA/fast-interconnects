@@ -8,6 +8,8 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
+use std::mem;
+
 /// Ensure that memory is backed by physical pages
 ///
 /// Operating systems (such as Linux) sometimes do not back memory filled with
@@ -18,32 +20,16 @@
 ///
 /// This function forces the OS to back all pages with physical memory by
 /// writing non-uniform data into each page.
-pub trait EnsurePhysicallyBacked: Sized {
-    fn ensure_physically_backed(data: &mut [Self]);
+pub trait EnsurePhysicallyBacked {
+    fn ensure_physically_backed(&mut self);
 }
 
-impl EnsurePhysicallyBacked for i32 {
+impl<T> EnsurePhysicallyBacked for [T] {
     #[inline(never)]
-    fn ensure_physically_backed(data: &mut [i32]) {
-        data.iter_mut().by_ref().zip(0..).for_each(|(x, i)| *x = i);
-    }
-}
-
-impl EnsurePhysicallyBacked for i64 {
-    fn ensure_physically_backed(data: &mut [i64]) {
-        data.iter_mut().by_ref().zip(0..).for_each(|(x, i)| *x = i);
-    }
-}
-
-impl EnsurePhysicallyBacked for u32 {
-    #[inline(never)]
-    fn ensure_physically_backed(data: &mut [u32]) {
-        data.iter_mut().by_ref().zip(0..).for_each(|(x, i)| *x = i);
-    }
-}
-
-impl EnsurePhysicallyBacked for u64 {
-    fn ensure_physically_backed(data: &mut [u64]) {
-        data.iter_mut().by_ref().zip(0..).for_each(|(x, i)| *x = i);
+    fn ensure_physically_backed(&mut self) {
+        if mem::size_of::<T>() != 0 {
+            let (_, ints, _) = unsafe { self.align_to_mut::<usize>() };
+            ints.iter_mut().by_ref().zip(0..).for_each(|(x, i)| *x = i);
+        }
     }
 }

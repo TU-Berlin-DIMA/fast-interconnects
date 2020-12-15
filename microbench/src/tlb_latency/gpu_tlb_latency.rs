@@ -134,7 +134,8 @@ impl GpuTlbLatency {
         let mut data: Mem<Position> = Allocator::alloc_mem(mem_type, data_len);
 
         if let Ok(d) = (&mut data).try_into() {
-            Position::ensure_physically_backed(d);
+            let dslice: &mut [Position] = d;
+            dslice.ensure_physically_backed();
         }
 
         let mut cycles: DerefMem<u32> =

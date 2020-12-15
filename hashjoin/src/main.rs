@@ -23,7 +23,6 @@ use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::dispatcher::{MorselSpec, WorkerCpuAffinity};
 use numa_gpu::runtime::numa::{self, NodeRatio};
-use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
@@ -286,7 +285,6 @@ where
         + no_partitioning_join::NullKey
         + no_partitioning_join::CudaHashJoinable
         + no_partitioning_join::CpuHashJoinable
-        + EnsurePhysicallyBacked
         + KeyAttribute
         + num_traits::FromPrimitive
         + DeserializeOwned,

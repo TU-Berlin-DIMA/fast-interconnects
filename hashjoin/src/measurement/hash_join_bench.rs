@@ -157,7 +157,7 @@ impl HashJoinBenchBuilder {
         &self,
     ) -> Result<(DerefMem<T>, DerefMem<T>, DerefMem<T>, DerefMem<T>, Duration)>
     where
-        T: Clone + Default + DeviceCopy + EnsurePhysicallyBacked,
+        T: Clone + Default + DeviceCopy,
     {
         // Allocate memory for data sets
         let malloc_timer = Instant::now();
@@ -181,17 +181,15 @@ impl HashJoinBenchBuilder {
 
             // Force the OS to physically allocate the memory
             match mem {
-                DerefMem::SysMem(ref mut mem) => T::ensure_physically_backed(mem.as_mut_slice()),
-                DerefMem::NumaMem(ref mut mem) => T::ensure_physically_backed(mem.as_mut_slice()),
+                DerefMem::SysMem(ref mut mem) => mem.as_mut_slice().ensure_physically_backed(),
+                DerefMem::NumaMem(ref mut mem) => mem.as_mut_slice().ensure_physically_backed(),
                 DerefMem::DistributedNumaMem(ref mut mem) => {
-                    T::ensure_physically_backed(mem.as_mut_slice())
+                    mem.as_mut_slice().ensure_physically_backed()
                 }
                 DerefMem::CudaPinnedMem(ref mut mem) => {
-                    T::ensure_physically_backed(mem.as_mut_slice())
+                    mem.as_mut_slice().ensure_physically_backed()
                 }
-                DerefMem::CudaUniMem(ref mut mem) => {
-                    T::ensure_physically_backed(mem.as_mut_slice())
-                }
+                DerefMem::CudaUniMem(ref mut mem) => mem.as_mut_slice().ensure_physically_backed(),
             };
 
             Ok(mem)
@@ -256,7 +254,7 @@ impl HashJoinBenchBuilder {
         mut data_gen_fn: DataGenFn<T>,
     ) -> Result<(HashJoinBench<T>, Duration, Duration)>
     where
-        T: Copy + Default + DeviceCopy + EnsurePhysicallyBacked,
+        T: Copy + Default + DeviceCopy,
     {
         let (mut inner_key, inner_payload, mut outer_key, outer_payload, malloc_time) =
             self.allocate_relations()?;
@@ -287,7 +285,7 @@ impl HashJoinBenchBuilder {
         outer_relation_path: &str,
     ) -> Result<(HashJoinBench<T>, Duration, Duration)>
     where
-        T: Copy + Default + DeviceCopy + EnsurePhysicallyBacked,
+        T: Copy + Default + DeviceCopy,
     {
         let mut reader_spec = ReaderBuilder::new();
         reader_spec
@@ -402,8 +400,7 @@ where
         + Send
         + no_partitioning_join::NullKey
         + no_partitioning_join::CudaHashJoinable
-        + no_partitioning_join::CpuHashJoinable
-        + EnsurePhysicallyBacked,
+        + no_partitioning_join::CpuHashJoinable,
 {
     pub fn cuda_hash_join(
         &mut self,
@@ -683,7 +680,7 @@ where
     ) -> Result<HashJoinPoint> {
         let ht_malloc_timer = Instant::now();
         let mut hash_table_mem = hash_table_alloc(self.hash_table_len);
-        T::ensure_physically_backed(hash_table_mem.as_mut_slice());
+        hash_table_mem.as_mut_slice().ensure_physically_backed();
         let hash_table =
             no_partitioning_join::HashTable::new_on_cpu(hash_table_mem, self.hash_table_len)?;
         let ht_malloc_time = ht_malloc_timer.elapsed();
