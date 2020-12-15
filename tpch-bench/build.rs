@@ -14,19 +14,16 @@ use std::process::Command;
 
 fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();
+    let cpp_compiler = env::var("CXX");
 
     // Add CUDA utils
     let cuda_lib_file = format!("{}/cudautils.fatbin", out_dir);
     let cuda_files = vec!["cudautils/queries.cu"];
-    let nvcc_build_args = vec![
-        "-ccbin",
-        "/usr/bin/g++-7",
-        "--device-c",
-        "-std=c++11",
-        "--output-directory",
-        &out_dir,
-    ];
+    let nvcc_build_args = vec!["--device-c", "-std=c++11", "--output-directory", &out_dir];
     let nvcc_link_args = vec!["--device-link", "-fatbin", "--output-file", &cuda_lib_file];
+    let nvcc_host_compiler_args: Vec<_> = cpp_compiler
+        .as_ref()
+        .map_or_else(|_| Vec::new(), |cxx| ["-ccbin", cxx.as_str()].into());
 
     // For gencodes, see: http://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/
     let gpu_archs = vec![
@@ -44,6 +41,7 @@ fn main() {
 
     let output = Command::new("nvcc")
         .args(cuda_files.as_slice())
+        .args(nvcc_host_compiler_args.as_slice())
         .args(nvcc_build_args.as_slice())
         .args(gpu_archs.as_slice())
         .output()
@@ -93,7 +91,6 @@ fn main() {
 
     // Add CPP utils
     cc::Build::new()
-        .compiler("gcc-8")
         .cpp(true)
         // Note: -march not supported by GCC-7 on Power9, use -mcpu instead
         .flag("-std=c++11")
