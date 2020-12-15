@@ -180,17 +180,7 @@ impl HashJoinBenchBuilder {
             );
 
             // Force the OS to physically allocate the memory
-            match mem {
-                DerefMem::SysMem(ref mut mem) => mem.as_mut_slice().ensure_physically_backed(),
-                DerefMem::NumaMem(ref mut mem) => mem.as_mut_slice().ensure_physically_backed(),
-                DerefMem::DistributedNumaMem(ref mut mem) => {
-                    mem.as_mut_slice().ensure_physically_backed()
-                }
-                DerefMem::CudaPinnedMem(ref mut mem) => {
-                    mem.as_mut_slice().ensure_physically_backed()
-                }
-                DerefMem::CudaUniMem(ref mut mem) => mem.as_mut_slice().ensure_physically_backed(),
-            };
+            mem.ensure_physically_backed();
 
             Ok(mem)
         })
@@ -680,7 +670,7 @@ where
     ) -> Result<HashJoinPoint> {
         let ht_malloc_timer = Instant::now();
         let mut hash_table_mem = hash_table_alloc(self.hash_table_len);
-        hash_table_mem.as_mut_slice().ensure_physically_backed();
+        hash_table_mem.ensure_physically_backed();
         let hash_table =
             no_partitioning_join::HashTable::new_on_cpu(hash_table_mem, self.hash_table_len)?;
         let ht_malloc_time = ht_malloc_timer.elapsed();

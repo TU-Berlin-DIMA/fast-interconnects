@@ -9,7 +9,7 @@
  */
 
 use numa_gpu::runtime::allocator::{Allocator, MemType};
-use numa_gpu::runtime::memory::{DerefMem, Mem};
+use numa_gpu::runtime::memory::Mem;
 use numa_gpu::runtime::nvml::ThrottleReasons;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 use numa_gpu::runtime::{cuda_wrapper, hw_info, numa};
@@ -26,7 +26,7 @@ use rustacuda::prelude::*;
 
 use serde_derive::Serialize;
 
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryInto;
 use std::mem::size_of;
 use std::ops::RangeInclusive;
 
@@ -113,13 +113,8 @@ impl MemoryLatency {
 
         let mnt = Measurement::new(range, stride, template);
 
-        let mem = match DerefMem::<u32>::try_from(Allocator::alloc_mem(mem_type, buffer_len)) {
-            Ok(mut demem) => {
-                demem.as_mut_slice().ensure_physically_backed();
-                demem.into()
-            }
-            Err((_, mem)) => mem,
-        };
+        let mut mem = Allocator::alloc_mem(mem_type, buffer_len);
+        mem.ensure_physically_backed();
 
         let latencies = match device_id {
             DeviceId::Cpu(did) => {

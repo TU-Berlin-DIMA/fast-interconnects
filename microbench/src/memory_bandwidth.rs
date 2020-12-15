@@ -30,7 +30,7 @@ use rustacuda::prelude::*;
 
 use serde_derive::Serialize;
 
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryInto;
 use std::iter;
 use std::mem::{size_of, transmute_copy};
 use std::ops::RangeInclusive;
@@ -240,13 +240,8 @@ impl MemoryBandwidth {
             ..Default::default()
         };
 
-        let mem = match DerefMem::<u32>::try_from(Allocator::alloc_mem(mem_type, buffer_len)) {
-            Ok(mut demem) => {
-                demem.as_mut_slice().ensure_physically_backed();
-                demem.into()
-            }
-            Err((_, mem)) => mem,
-        };
+        let mut mem = Allocator::alloc_mem(mem_type, buffer_len);
+        mem.ensure_physically_backed();
 
         let bandwidths = match device_id {
             DeviceId::Cpu(cpu_node) => {
