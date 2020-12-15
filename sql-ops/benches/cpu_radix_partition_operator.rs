@@ -14,6 +14,7 @@ use numa_gpu::runtime::allocator::{Allocator, DerefMemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::hw_info;
 use numa_gpu::runtime::memory::DerefMem;
+use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 use rustacuda::memory::DeviceCopy;
 use serde_derive::Serialize;
 use serde_repr::Serialize_repr;
@@ -222,12 +223,14 @@ where
                 .iter()
                 .map(|chunk| chunk.len())
                 .map(|chunk_len| {
-                    PartitionedRelation::new(
+                    let mut pr = PartitionedRelation::new(
                         chunk_len,
                         radix_bits,
                         Allocator::deref_mem_alloc_fn(output_mem_type.clone()),
                         Allocator::deref_mem_alloc_fn(output_mem_type.clone()),
-                    )
+                    );
+                    pr.ensure_physically_backed();
+                    pr
                 })
                 .collect();
 

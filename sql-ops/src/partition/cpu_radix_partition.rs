@@ -58,6 +58,7 @@ use super::{fanout, Tuple};
 use crate::error::{ErrorKind, Result};
 use numa_gpu::runtime::allocator::DerefMemAllocFn;
 use numa_gpu::runtime::memory::DerefMem;
+use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 use rustacuda::memory::DeviceCopy;
 use std::ffi::c_void;
 use std::ops::{Index, IndexMut};
@@ -175,6 +176,13 @@ impl<T: DeviceCopy> IndexMut<usize> for PartitionedRelation<T> {
         };
 
         &mut self.relation[begin..end]
+    }
+}
+
+impl<T: DeviceCopy> EnsurePhysicallyBacked for PartitionedRelation<T> {
+    fn ensure_physically_backed(&mut self) {
+        self.relation.ensure_physically_backed();
+        self.offsets.ensure_physically_backed();
     }
 }
 
