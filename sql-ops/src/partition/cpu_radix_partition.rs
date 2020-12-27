@@ -750,4 +750,112 @@ mod tests {
         CpuRadixPartitionAlgorithm::ChunkedSwwc,
         17
     );
+
+    test_cpu_seq!(
+        swwc_simd_i32_small_data,
+        i32,
+        15,
+        1..=(32 << 20),
+        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        4
+    );
+
+    test_cpu_seq!(
+        swwc_simd_i32_1_bit,
+        i32,
+        (32 << 20) / size_of::<i32>(),
+        1..=(32 << 20),
+        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        1
+    );
+
+    test_cpu_seq!(
+        swwc_simd_i32_2_bits,
+        i32,
+        (32 << 20) / size_of::<i32>(),
+        1..=(32 << 20),
+        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        2
+    );
+
+    test_cpu_seq!(
+        swwc_simd_i32_12_bits,
+        i32,
+        (32 << 20) / size_of::<i32>(),
+        1..=(32 << 20),
+        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        12
+    );
+
+    test_cpu_seq!(
+        swwc_simd_i32_13_bits,
+        i32,
+        (32 << 20) / size_of::<i32>(),
+        1..=(32 << 20),
+        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        13
+    );
+
+    test_cpu_seq!(
+        swwc_simd_i32_14_bits,
+        i32,
+        (32 << 20) / size_of::<i32>(),
+        1..=(32 << 20),
+        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        14
+    );
+
+    test_cpu_seq!(
+        swwc_simd_i32_15_bits,
+        i32,
+        (32 << 20) / size_of::<i32>(),
+        1..=(32 << 20),
+        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        15
+    );
+
+    test_cpu_seq!(
+        swwc_simd_i32_16_bits,
+        i32,
+        (32 << 20) / size_of::<i32>(),
+        1..=(32 << 20),
+        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        16
+    );
+
+    test_cpu_seq!(
+        swwc_simd_i32_17_bits,
+        i32,
+        (32 << 20) / size_of::<i32>(),
+        1..=(32 << 20),
+        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        17
+    );
+
+    test_cpu_seq!(
+        swwc_simd_i32_less_tuples_than_partitions,
+        i32,
+        (32 << 5) / size_of::<i32>(),
+        1..=(32 << 20),
+        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        17
+    );
+
+    test_cpu_seq!(
+        swwc_simd_i32_non_power_2_data_len,
+        i32,
+        ((32 << 10) - 7) / size_of::<i32>(),
+        1..=(32 << 20),
+        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        10
+    );
+
+    test_cpu_seq!(
+        swwc_simd_i64_17_bits,
+        i64,
+        (64 << 20) / size_of::<i64>(),
+        1..=(64 << 20),
+        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        17
+    );
 }
