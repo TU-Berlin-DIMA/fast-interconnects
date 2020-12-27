@@ -225,6 +225,7 @@ void cpu_chunked_radix_partition(RadixPartitionArgs &args) {
   }
 
   // 1. Compute local histograms per partition
+#pragma GCC unroll 16
   for (size_t i = 0; i < args.data_length; ++i) {
     auto key = join_attr_data[i];
     M p_index = key_to_partition(key, mask, 0);
@@ -240,6 +241,7 @@ void cpu_chunked_radix_partition(RadixPartitionArgs &args) {
   }
 
   // 3. Partition
+#pragma GCC unroll 16
   for (size_t i = 0; i < args.data_length; ++i) {
     Tuple<K, V> tuple;
     tuple.key = join_attr_data[i];
@@ -319,6 +321,7 @@ void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
   }
 
   // 1. Compute local histograms per partition
+#pragma GCC unroll 16
   for (size_t i = 0; i < args.data_length; ++i) {
     auto key = join_attr_data[i];
     M p_index = key_to_partition(key, mask, 0);
@@ -334,6 +337,7 @@ void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
   }
 
   // 3. Partition into software write combine buffers
+#pragma GCC unroll 16
   for (size_t i = 0; i < args.data_length; ++i) {
     K key = join_attr_data[i];
     V pay = payload_attr_data[i];
