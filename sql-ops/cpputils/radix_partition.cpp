@@ -133,9 +133,9 @@ union WriteCombineBuffer {
 } __attribute__((packed));
 
 // Computes the partition ID of a given key.
-template <typename T, typename B>
-size_t key_to_partition(T key, size_t mask, B bits) {
-  return (static_cast<size_t>(key) & mask) >> bits;
+template <typename T, typename M, typename B>
+M key_to_partition(T key, M mask, B bits) {
+  return (static_cast<M>(key) & mask) >> bits;
 }
 
 #if defined(__ALTIVEC__)
@@ -207,7 +207,7 @@ void flush_buffer(void *const __restrict__ dst,
 // Chunked radix partitioning.
 //
 // See the Rust module for details.
-template <typename K, typename V>
+template <typename K, typename V, typename M>
 void cpu_chunked_radix_partition(RadixPartitionArgs &args) {
   auto join_attr_data =
       static_cast<const K *const __restrict__>(args.join_attr_data);
@@ -217,7 +217,7 @@ void cpu_chunked_radix_partition(RadixPartitionArgs &args) {
       static_cast<Tuple<K, V> *const __restrict__>(args.partitioned_relation);
 
   const size_t fanout = 1UL << args.radix_bits;
-  const size_t mask = fanout - 1;
+  const M mask = static_cast<M>(fanout - 1UL);
 
   // Ensure counters are all zeroed
   for (size_t i = 0; i < fanout; ++i) {
@@ -227,7 +227,7 @@ void cpu_chunked_radix_partition(RadixPartitionArgs &args) {
   // 1. Compute local histograms per partition
   for (size_t i = 0; i < args.data_length; ++i) {
     auto key = join_attr_data[i];
-    auto p_index = key_to_partition(key, mask, 0);
+    M p_index = key_to_partition(key, mask, 0);
     args.partition_offsets[p_index] += 1;
   }
 
@@ -245,101 +245,13 @@ void cpu_chunked_radix_partition(RadixPartitionArgs &args) {
     tuple.key = join_attr_data[i];
     tuple.value = payload_attr_data[i];
 
-    auto p_index = key_to_partition(tuple.key, mask, 0);
+    M p_index = key_to_partition(tuple.key, mask, 0);
     auto &offset = args.tmp_partition_offsets[p_index];
     partitioned_relation[offset] = tuple;
     offset += 1;
   }
 }
 
-// Chunked radix partitioning with software write-combining.
-//
-// See the Rust module for details.
-template <typename K, typename V>
-void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
-  constexpr size_t tuples_per_buffer =
-      WriteCombineBuffer<Tuple<K, V>, SWWC_BUFFER_SIZE>::tuples_per_buffer();
-
-  // 512-bit intrinsics require 64-byte alignment
-  assert(reinterpret_cast<size_t>(args.write_combine_buffer) % 64 == 0);
-
-  // Padding must be a multiple of the buffer length.
-  assert(args.padding_length % tuples_per_buffer == 0);
-
-  auto join_attr_data =
-      static_cast<const K *const __restrict__>(args.join_attr_data);
-  auto payload_attr_data =
-      static_cast<const V *const __restrict__>(args.payload_attr_data);
-  auto partitioned_relation =
-      static_cast<Tuple<K, V> *const __restrict__>(args.partitioned_relation);
-  auto buffers = static_cast<
-      WriteCombineBuffer<Tuple<K, V>, SWWC_BUFFER_SIZE> *const __restrict__>(
-      args.write_combine_buffer);
-
-  const size_t fanout = 1UL << args.radix_bits;
-  const size_t mask = fanout - 1;
-
-  // Ensure counters are all zeroed
-  for (size_t i = 0; i < fanout; ++i) {
-    args.partition_offsets[i] = 0;
-  }
-
-  // 1. Compute local histograms per partition
-  for (size_t i = 0; i < args.data_length; ++i) {
-    auto key = join_attr_data[i];
-    auto p_index = key_to_partition(key, mask, 0);
-    args.partition_offsets[p_index] += 1;
-  }
-
-  // 2. Compute offsets with exclusive prefix sum
-  for (size_t i = 0, sum = 0, offset = 0; i < fanout; ++i, offset = sum) {
-    sum += args.partition_offsets[i];
-    offset += (i + 1) * args.padding_length;
-    args.partition_offsets[i] = offset;
-    buffers[i].meta.slot = offset;
-  }
-
-  // 3. Partition into software write combine buffers
-  for (size_t i = 0; i < args.data_length; ++i) {
-    Tuple<K, V> tuple;
-    tuple.key = join_attr_data[i];
-    tuple.value = payload_attr_data[i];
-
-    auto p_index = key_to_partition(tuple.key, mask, 0);
-    auto &buffer = buffers[p_index];
-
-    size_t slot = buffer.meta.slot;
-    size_t buffer_slot = slot % tuples_per_buffer;
-
-    // `buffer.meta.slot` is overwritten on buffer_slot == (tuples_per_buffer -
-    // 1), and restored after the buffer flush.
-    buffer.tuples.data[buffer_slot] = tuple;
-
-    // Flush buffer
-    // Can occur on partially filled buffer due to cache-line alignment,
-    // because first output slot might not be at offset % tuples_per_buffer == 0
-    if (buffer_slot + 1 == tuples_per_buffer) {
-      flush_buffer(partitioned_relation + (slot + 1) - tuples_per_buffer,
-                   buffer.tuples.data);
-    }
-
-    // Restore `buffer.meta.slot` after overwriting it above, and increment its
-    // value.
-    buffer.meta.slot = slot + 1;
-  }
-
-  // Flush remainders of all buffers.
-  for (size_t i = 0; i < fanout; ++i) {
-    size_t slot = buffers[i].meta.slot;
-    size_t remaining = slot % tuples_per_buffer;
-
-    for (size_t j = slot - remaining, k = 0; k < remaining; ++j, ++k) {
-      partitioned_relation[j] = buffers[i].tuples.data[k];
-    }
-  }
-}
-
-#if defined(__ALTIVEC__)
 template <typename K, typename V, typename M>
 void buffer_tuple(Tuple<K, V> *const __restrict__ partitioned_relation,
                   WriteCombineBuffer<Tuple<K, V>, SWWC_BUFFER_SIZE>
@@ -378,6 +290,75 @@ void buffer_tuple(Tuple<K, V> *const __restrict__ partitioned_relation,
 //
 // See the Rust module for details.
 template <typename K, typename V, typename M>
+void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
+  constexpr size_t tuples_per_buffer =
+      WriteCombineBuffer<Tuple<K, V>, SWWC_BUFFER_SIZE>::tuples_per_buffer();
+
+  // 512-bit intrinsics require 64-byte alignment
+  assert(reinterpret_cast<size_t>(args.write_combine_buffer) % 64 == 0);
+
+  // Padding must be a multiple of the buffer length.
+  assert(args.padding_length % tuples_per_buffer == 0);
+
+  auto join_attr_data =
+      static_cast<const K *const __restrict__>(args.join_attr_data);
+  auto payload_attr_data =
+      static_cast<const V *const __restrict__>(args.payload_attr_data);
+  auto partitioned_relation =
+      static_cast<Tuple<K, V> *const __restrict__>(args.partitioned_relation);
+  auto buffers = static_cast<
+      WriteCombineBuffer<Tuple<K, V>, SWWC_BUFFER_SIZE> *const __restrict__>(
+      args.write_combine_buffer);
+
+  const size_t fanout = 1UL << args.radix_bits;
+  const M mask = static_cast<M>(fanout - 1UL);
+
+  // Ensure counters are all zeroed
+  for (size_t i = 0; i < fanout; ++i) {
+    args.partition_offsets[i] = 0;
+  }
+
+  // 1. Compute local histograms per partition
+  for (size_t i = 0; i < args.data_length; ++i) {
+    auto key = join_attr_data[i];
+    M p_index = key_to_partition(key, mask, 0);
+    args.partition_offsets[p_index] += 1;
+  }
+
+  // 2. Compute offsets with exclusive prefix sum
+  for (size_t i = 0, sum = 0, offset = 0; i < fanout; ++i, offset = sum) {
+    sum += args.partition_offsets[i];
+    offset += (i + 1) * args.padding_length;
+    args.partition_offsets[i] = offset;
+    buffers[i].meta.slot = offset;
+  }
+
+  // 3. Partition into software write combine buffers
+  for (size_t i = 0; i < args.data_length; ++i) {
+    K key = join_attr_data[i];
+    V pay = payload_attr_data[i];
+
+    M p_index = key_to_partition(key, mask, 0);
+
+    buffer_tuple<K, V, M>(partitioned_relation, buffers, p_index, key, pay);
+  }
+
+  // Flush remainders of all buffers.
+  for (size_t i = 0; i < fanout; ++i) {
+    size_t slot = buffers[i].meta.slot;
+    size_t remaining = slot % tuples_per_buffer;
+
+    for (size_t j = slot - remaining, k = 0; k < remaining; ++j, ++k) {
+      partitioned_relation[j] = buffers[i].tuples.data[k];
+    }
+  }
+}
+
+#if defined(__ALTIVEC__)
+// Chunked radix partitioning with software write-combining.
+//
+// See the Rust module for details.
+template <typename K, typename V, typename M>
 void cpu_chunked_radix_partition_swwc_simd(RadixPartitionArgs &args) {
   constexpr size_t tuples_per_buffer =
       WriteCombineBuffer<Tuple<K, V>, SWWC_BUFFER_SIZE>::tuples_per_buffer();
@@ -406,7 +387,7 @@ void cpu_chunked_radix_partition_swwc_simd(RadixPartitionArgs &args) {
       "Payload column should be aligned to ALIGN_BYTES for best performance");
 
   const size_t fanout = 1UL << args.radix_bits;
-  const M mask = static_cast<M>(fanout - 1);
+  const M mask = static_cast<M>(fanout - 1UL);
   const M ignore_bits = 0;
 
   const vector M mask_vsx = vec_splats(mask);
@@ -525,25 +506,26 @@ extern "C" size_t cpu_swwc_buffer_bytes() { return SWWC_BUFFER_SIZE; }
 // Exports the partitioning function for 8-byte key/value tuples.
 extern "C" void cpu_chunked_radix_partition_int32_int32(
     RadixPartitionArgs *args) {
-  cpu_chunked_radix_partition<int32_t, int32_t>(*args);
+  cpu_chunked_radix_partition<int, int, unsigned>(*args);
 }
 
 // Exports the partitioning function for 16-byte key/value tuples.
 extern "C" void cpu_chunked_radix_partition_int64_int64(
     RadixPartitionArgs *args) {
-  cpu_chunked_radix_partition<int64_t, int64_t>(*args);
+  cpu_chunked_radix_partition<long long, long long, unsigned long long>(*args);
 }
 
 // Exports the partitioning function for 8-byte key/value tuples.
 extern "C" void cpu_chunked_radix_partition_swwc_int32_int32(
     RadixPartitionArgs *args) {
-  cpu_chunked_radix_partition_swwc<int32_t, int32_t>(*args);
+  cpu_chunked_radix_partition_swwc<int, int, unsigned>(*args);
 }
 
 // Exports the partitioning function for 16-byte key/value tuples.
 extern "C" void cpu_chunked_radix_partition_swwc_int64_int64(
     RadixPartitionArgs *args) {
-  cpu_chunked_radix_partition_swwc<int64_t, int64_t>(*args);
+  cpu_chunked_radix_partition_swwc<long long, long long, unsigned long long>(
+      *args);
 }
 
 #if defined(__ALTIVEC__)
@@ -559,9 +541,9 @@ extern "C" void cpu_chunked_radix_partition_swwc_simd_int64_int64(
   cpu_chunked_radix_partition_swwc_simd<long long, long long,
                                         unsigned long long>(*args);
 }
-#else // define dummy function symbols
+#else  // define dummy function symbols
 extern "C" void cpu_chunked_radix_partition_swwc_simd_int32_int32(
-    RadixPartitionArgs *args) {}
+    RadixPartitionArgs * /* args */) {}
 extern "C" void cpu_chunked_radix_partition_swwc_simd_int64_int64(
-    RadixPartitionArgs *args) {}
+    RadixPartitionArgs * /* args */) {}
 #endif /* defined(__ALTIVEC__) */
