@@ -138,10 +138,12 @@ size_t key_to_partition(T key, size_t mask, B bits) {
   return (static_cast<size_t>(key) & mask) >> bits;
 }
 
+#if defined(__ALTIVEC__)
 template <typename T, typename M, typename B>
 vector M key_to_partition_simd(vector T key, M mask, B bits) {
   return (reinterpret_cast<M>(key) & mask) >> bits;
 }
+#endif
 
 // Flushes a SWWC buffer from cache to memory.
 //
@@ -337,6 +339,7 @@ void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
   }
 }
 
+#if defined(__ALTIVEC__)
 template <typename K, typename V, typename M>
 void buffer_tuple(Tuple<K, V> *const __restrict__ partitioned_relation,
                   WriteCombineBuffer<Tuple<K, V>, SWWC_BUFFER_SIZE>
@@ -514,6 +517,7 @@ void cpu_chunked_radix_partition_swwc_simd(RadixPartitionArgs &args) {
     }
   }
 }
+#endif /* defined(__ALTIVEC__) */
 
 // Exports the the size of all SWWC buffers.
 extern "C" size_t cpu_swwc_buffer_bytes() { return SWWC_BUFFER_SIZE; }
@@ -542,6 +546,7 @@ extern "C" void cpu_chunked_radix_partition_swwc_int64_int64(
   cpu_chunked_radix_partition_swwc<int64_t, int64_t>(*args);
 }
 
+#if defined(__ALTIVEC__)
 // Exports the partitioning function for 8-byte key/value tuples.
 extern "C" void cpu_chunked_radix_partition_swwc_simd_int32_int32(
     RadixPartitionArgs *args) {
@@ -554,3 +559,9 @@ extern "C" void cpu_chunked_radix_partition_swwc_simd_int64_int64(
   cpu_chunked_radix_partition_swwc_simd<long long, long long,
                                         unsigned long long>(*args);
 }
+#else // define dummy function symbols
+extern "C" void cpu_chunked_radix_partition_swwc_simd_int32_int32(
+    RadixPartitionArgs *args) {}
+extern "C" void cpu_chunked_radix_partition_swwc_simd_int64_int64(
+    RadixPartitionArgs *args) {}
+#endif /* defined(__ALTIVEC__) */
