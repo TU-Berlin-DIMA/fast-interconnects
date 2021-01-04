@@ -70,7 +70,9 @@ extern "C" {
     fn cpu_chunked_radix_partition_int64_int64(args: *mut RadixPartitionArgs);
     fn cpu_chunked_radix_partition_swwc_int32_int32(args: *mut RadixPartitionArgs);
     fn cpu_chunked_radix_partition_swwc_int64_int64(args: *mut RadixPartitionArgs);
+    #[cfg(target_arch = "powerpc64")]
     fn cpu_chunked_radix_partition_swwc_simd_int32_int32(args: *mut RadixPartitionArgs);
+    #[cfg(target_arch = "powerpc64")]
     fn cpu_chunked_radix_partition_swwc_simd_int64_int64(args: *mut RadixPartitionArgs);
 }
 
@@ -356,12 +358,16 @@ macro_rules! impl_cpu_radix_partition_for_type {
                                 ptr::null_mut(),
                                 swwc.buffers.as_mut_slice().as_mut_ptr() as *mut c_void,
                             ),
+                        #[cfg(target_arch = "powerpc64")]
                         RadixPartitionState::ChunkedSwwcSimd(ref mut swwc) =>
                             (
                                 [<cpu_chunked_radix_partition_swwc_simd_ $Suffix _ $Suffix>],
                                 ptr::null_mut(),
                                 swwc.buffers.as_mut_slice().as_mut_ptr() as *mut c_void,
                             ),
+                        #[cfg(not(target_arch = "powerpc64"))]
+                        RadixPartitionState::ChunkedSwwcSimd(ref mut _swwc) =>
+                            unimplemented!(),
                     };
 
                     let mut args = RadixPartitionArgs {
