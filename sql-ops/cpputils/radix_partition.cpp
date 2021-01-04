@@ -392,10 +392,9 @@ void cpu_chunked_radix_partition_swwc_simd(RadixPartitionArgs &args) {
 
   const size_t fanout = 1UL << args.radix_bits;
   const M mask = static_cast<M>(fanout - 1UL);
-  const M ignore_bits = 0;
 
   const vector M mask_vsx = vec_splats(mask);
-  const vector M ignore_bits_vsx = vec_splats(ignore_bits);
+  const vector M ignore_bits_vsx = vec_splats(static_cast<M>(0U));
   size_t i;
 
   // Ensure counters are all zeroed
