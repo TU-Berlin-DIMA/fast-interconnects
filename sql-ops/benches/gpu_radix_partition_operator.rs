@@ -294,6 +294,7 @@ struct DataPoint {
     pub data_distribution: Option<ArgDataDistribution>,
     pub zipf_exponent: Option<f64>,
     pub radix_bits: Option<u32>,
+    pub warm_up: Option<bool>,
     pub prefix_sum_ns: Option<u128>,
     pub partition_ns: Option<u128>,
 }
@@ -380,83 +381,87 @@ where
                 Allocator::mem_alloc_fn(output_mem_type.clone()),
             );
 
-            let result: Result<(), Box<dyn Error>> = (0..repeat).into_iter().try_for_each(|_| {
-                let mut partition_offsets = PartitionOffsets::new(
-                    histogram_algorithm.into(),
-                    grid_size.x,
-                    radix_bits,
-                    Allocator::mem_alloc_fn(MemType::CudaPinnedMem),
-                );
+            let result: Result<(), Box<dyn Error>> = (0..repeat)
+                .zip(std::iter::once(true).chain(std::iter::repeat(false)))
+                .try_for_each(|(_, warm_up)| {
+                    let mut partition_offsets = PartitionOffsets::new(
+                        histogram_algorithm.into(),
+                        grid_size.x,
+                        radix_bits,
+                        Allocator::mem_alloc_fn(MemType::CudaPinnedMem),
+                    );
 
-                let prefix_sum_timer = Instant::now();
+                    let prefix_sum_timer = Instant::now();
 
-                match histogram_algorithm {
-                    GpuHistogramAlgorithm::CpuChunked => {
-                        let key_slice: &[T] = (&input_data.0)
-                            .try_into()
-                            .map_err(|_| "Failed to run CPU prefix sum on device memory")?;
-                        let key_chunks = key_slice.input_chunks::<T>(grid_size.x)?;
-                        let out_chunks = partition_offsets.chunks_mut();
+                    match histogram_algorithm {
+                        GpuHistogramAlgorithm::CpuChunked => {
+                            let key_slice: &[T] = (&input_data.0)
+                                .try_into()
+                                .map_err(|_| "Failed to run CPU prefix sum on device memory")?;
+                            let key_chunks = key_slice.input_chunks::<T>(grid_size.x)?;
+                            let out_chunks = partition_offsets.chunks_mut();
 
-                        thread_pool.scope(|s| {
-                            for (input, output) in key_chunks.into_iter().zip(out_chunks) {
-                                s.spawn(move |_| {
-                                    let cpu_id =
-                                        CpuAffinity::get_cpu().expect("Failed to get CPU ID");
-                                    let local_node: u16 = linux_wrapper::numa_node_of_cpu(cpu_id)
-                                        .expect("Failed to map CPU to NUMA node");
-                                    // FIXME: don't hard-code histogram algorithm
-                                    let mut radix_prnr = CpuRadixPartitioner::new(
-                                        CpuHistogramAlgorithm::Chunked,
-                                        CpuRadixPartitionAlgorithm::NC,
-                                        radix_bits,
-                                        DerefMemType::NumaMem(local_node, None),
-                                    );
-                                    radix_prnr
-                                        .prefix_sum(input, output)
-                                        .expect("Failed to run CPU prefix sum");
-                                })
-                            }
-                        });
+                            thread_pool.scope(|s| {
+                                for (input, output) in key_chunks.into_iter().zip(out_chunks) {
+                                    s.spawn(move |_| {
+                                        let cpu_id =
+                                            CpuAffinity::get_cpu().expect("Failed to get CPU ID");
+                                        let local_node: u16 =
+                                            linux_wrapper::numa_node_of_cpu(cpu_id)
+                                                .expect("Failed to map CPU to NUMA node");
+                                        // FIXME: don't hard-code histogram algorithm
+                                        let mut radix_prnr = CpuRadixPartitioner::new(
+                                            CpuHistogramAlgorithm::Chunked,
+                                            CpuRadixPartitionAlgorithm::NC,
+                                            radix_bits,
+                                            DerefMemType::NumaMem(local_node, None),
+                                        );
+                                        radix_prnr
+                                            .prefix_sum(input, output)
+                                            .expect("Failed to run CPU prefix sum");
+                                    })
+                                }
+                            });
+                        }
+                        _ => {
+                            radix_prnr.prefix_sum(
+                                RadixPass::First,
+                                input_data.0.as_launchable_slice(),
+                                &mut partition_offsets,
+                                &stream,
+                            )?;
+                        }
                     }
-                    _ => {
-                        radix_prnr.prefix_sum(
-                            RadixPass::First,
-                            input_data.0.as_launchable_slice(),
-                            &mut partition_offsets,
-                            &stream,
-                        )?;
-                    }
-                }
-                stream.synchronize()?;
+                    stream.synchronize()?;
 
-                let prefix_sum_time = prefix_sum_timer.elapsed();
-                let partition_timer = Instant::now();
+                    let prefix_sum_time = prefix_sum_timer.elapsed();
+                    let partition_timer = Instant::now();
 
-                radix_prnr.partition(
-                    RadixPass::First,
-                    input_data.0.as_launchable_slice(),
-                    input_data.1.as_launchable_slice(),
-                    partition_offsets,
-                    &mut partitioned_relation,
-                    &stream,
-                )?;
-                stream.synchronize()?;
+                    radix_prnr.partition(
+                        RadixPass::First,
+                        input_data.0.as_launchable_slice(),
+                        input_data.1.as_launchable_slice(),
+                        partition_offsets,
+                        &mut partitioned_relation,
+                        &stream,
+                    )?;
+                    stream.synchronize()?;
 
-                let partition_time = partition_timer.elapsed();
+                    let partition_time = partition_timer.elapsed();
 
-                let dp = DataPoint {
-                    radix_bits: Some(radix_bits),
-                    grid_size: Some(grid_size.x),
-                    block_size: Some(block_size.x),
-                    prefix_sum_ns: Some(prefix_sum_time.as_nanos()),
-                    partition_ns: Some(partition_time.as_nanos()),
-                    ..template.clone()
-                };
+                    let dp = DataPoint {
+                        radix_bits: Some(radix_bits),
+                        grid_size: Some(grid_size.x),
+                        block_size: Some(block_size.x),
+                        warm_up: Some(warm_up),
+                        prefix_sum_ns: Some(prefix_sum_time.as_nanos()),
+                        partition_ns: Some(partition_time.as_nanos()),
+                        ..template.clone()
+                    };
 
-                csv_writer.serialize(dp)?;
-                Ok(())
-            });
+                    csv_writer.serialize(dp)?;
+                    Ok(())
+                });
             result?;
 
             Ok(())

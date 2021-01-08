@@ -200,6 +200,7 @@ struct DataPoint {
     pub data_distribution: Option<ArgDataDistribution>,
     pub zipf_exponent: Option<f64>,
     pub radix_bits: Option<u32>,
+    pub warm_up: Option<bool>,
     pub prefix_sum_ns: Option<u128>,
     pub partition_ns: Option<u128>,
 }
@@ -277,67 +278,75 @@ where
             );
             partitioned_relation.ensure_physically_backed();
 
-            let result: Result<(), Box<dyn Error>> = (0..repeat).into_iter().try_for_each(|_| {
-                let prefix_sum_timer = Instant::now();
+            let result: Result<(), Box<dyn Error>> = (0..repeat)
+                .zip(std::iter::once(true).chain(std::iter::repeat(false)))
+                .try_for_each(|(_, warm_up)| {
+                    let prefix_sum_timer = Instant::now();
 
-                let data_key_chunks = input_data.0.input_chunks::<T>(threads as u32)?;
-                thread_pool.scope(|s| {
-                    for (_tid, radix_prnr, key_chunk, offsets_chunk) in izip!(
-                        0..threads,
-                        radix_prnrs.iter_mut(),
-                        data_key_chunks.into_iter(),
-                        partition_offsets.chunks_mut()
-                    ) {
-                        s.spawn(move |_| {
-                            radix_prnr
-                                .prefix_sum(key_chunk, offsets_chunk)
-                                .expect("Failed to prefix sum the data");
-                        });
-                    }
+                    let data_key_chunks = input_data.0.input_chunks::<T>(threads as u32)?;
+                    thread_pool.scope(|s| {
+                        for (_tid, radix_prnr, key_chunk, offsets_chunk) in izip!(
+                            0..threads,
+                            radix_prnrs.iter_mut(),
+                            data_key_chunks.into_iter(),
+                            partition_offsets.chunks_mut()
+                        ) {
+                            s.spawn(move |_| {
+                                radix_prnr
+                                    .prefix_sum(key_chunk, offsets_chunk)
+                                    .expect("Failed to prefix sum the data");
+                            });
+                        }
+                    });
+
+                    let prefix_sum_time = prefix_sum_timer.elapsed();
+                    let partition_timer = Instant::now();
+
+                    let data_key_chunks = input_data.0.input_chunks::<T>(threads as u32)?;
+                    let data_pay_chunks = input_data.1.input_chunks::<T>(threads as u32)?;
+                    thread_pool.scope(|s| {
+                        for (
+                            _tid,
+                            radix_prnr,
+                            key_chunk,
+                            pay_chunk,
+                            offsets_chunk,
+                            partitioned_chunk,
+                        ) in izip!(
+                            0..threads,
+                            radix_prnrs.iter_mut(),
+                            data_key_chunks.into_iter(),
+                            data_pay_chunks.into_iter(),
+                            partition_offsets.chunks_mut(),
+                            partitioned_relation.chunks_mut()
+                        ) {
+                            s.spawn(move |_| {
+                                radix_prnr
+                                    .partition(
+                                        key_chunk,
+                                        pay_chunk,
+                                        offsets_chunk,
+                                        partitioned_chunk,
+                                    )
+                                    .expect("Failed to partition the data");
+                            });
+                        }
+                    });
+
+                    let partition_time = partition_timer.elapsed();
+
+                    let dp = DataPoint {
+                        radix_bits: Some(radix_bits),
+                        threads: Some(threads),
+                        warm_up: Some(warm_up),
+                        prefix_sum_ns: Some(prefix_sum_time.as_nanos()),
+                        partition_ns: Some(partition_time.as_nanos()),
+                        ..template.clone()
+                    };
+
+                    csv_writer.serialize(dp)?;
+                    Ok(())
                 });
-
-                let prefix_sum_time = prefix_sum_timer.elapsed();
-                let partition_timer = Instant::now();
-
-                let data_key_chunks = input_data.0.input_chunks::<T>(threads as u32)?;
-                let data_pay_chunks = input_data.1.input_chunks::<T>(threads as u32)?;
-                thread_pool.scope(|s| {
-                    for (
-                        _tid,
-                        radix_prnr,
-                        key_chunk,
-                        pay_chunk,
-                        offsets_chunk,
-                        partitioned_chunk,
-                    ) in izip!(
-                        0..threads,
-                        radix_prnrs.iter_mut(),
-                        data_key_chunks.into_iter(),
-                        data_pay_chunks.into_iter(),
-                        partition_offsets.chunks_mut(),
-                        partitioned_relation.chunks_mut()
-                    ) {
-                        s.spawn(move |_| {
-                            radix_prnr
-                                .partition(key_chunk, pay_chunk, offsets_chunk, partitioned_chunk)
-                                .expect("Failed to partition the data");
-                        });
-                    }
-                });
-
-                let partition_time = partition_timer.elapsed();
-
-                let dp = DataPoint {
-                    radix_bits: Some(radix_bits),
-                    threads: Some(threads),
-                    prefix_sum_ns: Some(prefix_sum_time.as_nanos()),
-                    partition_ns: Some(partition_time.as_nanos()),
-                    ..template.clone()
-                };
-
-                csv_writer.serialize(dp)?;
-                Ok(())
-            });
             result?;
 
             Ok(())
