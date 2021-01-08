@@ -14,6 +14,7 @@ use num_rational::Ratio;
 use num_traits::cast::FromPrimitive;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
+use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::Mem;
 use numa_gpu::runtime::numa::NodeRatio;
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
@@ -400,13 +401,16 @@ where
                         thread_pool.scope(|s| {
                             for (input, output) in key_chunks.into_iter().zip(out_chunks) {
                                 s.spawn(move |_| {
+                                    let cpu_id =
+                                        CpuAffinity::get_cpu().expect("Failed to get CPU ID");
+                                    let local_node: u16 = linux_wrapper::numa_node_of_cpu(cpu_id)
+                                        .expect("Failed to map CPU to NUMA node");
                                     // FIXME: don't hard-code histogram algorithm
                                     let mut radix_prnr = CpuRadixPartitioner::new(
                                         CpuHistogramAlgorithm::Chunked,
                                         CpuRadixPartitionAlgorithm::NC,
                                         radix_bits,
-                                        // FIXME: use processor-local local NUMA memory
-                                        DerefMemType::NumaMem(0, None),
+                                        DerefMemType::NumaMem(local_node, None),
                                     );
                                     radix_prnr
                                         .prefix_sum(input, output)

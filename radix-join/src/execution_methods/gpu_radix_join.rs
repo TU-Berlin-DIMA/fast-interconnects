@@ -13,6 +13,7 @@ use crate::measurement::harness::RadixJoinPoint;
 use data_store::join_data::JoinData;
 use numa_gpu::runtime::allocator::{self, Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
+use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::*;
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
 use rustacuda::function::{BlockSize, GridSize};
@@ -170,13 +171,15 @@ where
                     .chain(inner_key_chunks.into_iter().zip(inner_offsets_chunks))
                 {
                     s.spawn(move |_| {
+                        let cpu_id = CpuAffinity::get_cpu().expect("Failed to get CPU ID");
+                        let local_node: u16 = linux_wrapper::numa_node_of_cpu(cpu_id)
+                            .expect("Failed to map CPU to NUMA node");
                         // FIXME: don't hard-code histogram algorithm
                         let mut radix_prnr = CpuRadixPartitioner::new(
                             CpuHistogramAlgorithm::Chunked,
                             CpuRadixPartitionAlgorithm::NC,
                             radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
-                            // FIXME: use processor-local local NUMA memory
-                            DerefMemType::NumaMem(0, None),
+                            DerefMemType::NumaMem(local_node, None),
                         );
                         radix_prnr
                             .prefix_sum(input, output)

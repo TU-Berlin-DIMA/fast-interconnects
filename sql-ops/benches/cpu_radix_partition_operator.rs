@@ -14,6 +14,7 @@ use num_traits::cast::FromPrimitive;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::hw_info;
+use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::DerefMem;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 use rustacuda::memory::DeviceCopy;
@@ -244,13 +245,17 @@ where
         .iter()
         .map(|&radix_bits| {
             let mut radix_prnrs: Vec<_> = (0..threads)
-                .map(|_| {
+                .map(|tid| {
+                    let cpu_id = cpu_affinity
+                        .thread_to_cpu(tid as u16)
+                        .expect("Failed to map thread ID to CPU ID");
+                    let local_node = linux_wrapper::numa_node_of_cpu(cpu_id)
+                        .expect("Failed to map CPU to NUMA node");
                     CpuRadixPartitioner::new(
                         prefix_sum_algorithm,
                         partition_algorithm,
                         radix_bits,
-                        // FIXME: use processor-local local NUMA memory
-                        DerefMemType::NumaMem(0, None),
+                        DerefMemType::NumaMem(local_node, None),
                     )
                 })
                 .collect();
