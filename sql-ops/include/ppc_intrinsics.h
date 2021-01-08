@@ -20,6 +20,8 @@
 #ifndef PPC_INTRINSICS_H
 #define PPC_INTRINSICS_H
 
+#define PPC_DSCR 3
+
 // Set cacheline to zero
 #define __dcbz(base) __asm__ volatile("dcbz 0,%0" ::"r"(base) : "memory")
 
@@ -36,5 +38,9 @@
 
 // Flush local primary, i.e., flush only L1 cacheline of the executing CPU core
 #define __dcbflp(base) __asm__ volatile("dcbf 0,%0,3" ::"r"(base) : "memory")
+
+// Move to special-purpose register, e.g., data stream control register == 3
+#define __mtspr(spr, value) \
+  __asm__ volatile("mtspr %0,%1" : : "n"(spr), "r"(value))
 
 #endif /* PPC_INTRINSICS_H */

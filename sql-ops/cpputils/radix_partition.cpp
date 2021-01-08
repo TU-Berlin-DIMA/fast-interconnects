@@ -78,6 +78,9 @@
 #define SWWC_BUFFER_SIZE CACHE_LINE_SIZE
 #endif
 
+// Disable strided prefetch and set maximum prefetch depth
+#define PPC_TUNE_DSCR 7ULL
+
 using namespace std;
 
 // Arguments to the prefix sum function.
@@ -233,6 +236,10 @@ void flush_buffer(void *const __restrict__ dst,
 template <typename K, typename M>
 void cpu_chunked_prefix_sum(PrefixSumArgs &args, uint32_t const chunk_id,
                             uint32_t const /* num_chunks */) {
+#ifdef __powerpc64__
+  __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
+#endif
+
   const size_t fanout = 1UL << args.radix_bits;
   const M mask = static_cast<M>(fanout - 1UL);
 
@@ -274,6 +281,9 @@ void cpu_chunked_prefix_sum(PrefixSumArgs &args, uint32_t const chunk_id,
 template <typename K, typename M>
 void cpu_chunked_prefix_sum_simd(PrefixSumArgs &args, uint32_t const chunk_id,
                                  uint32_t const /* num_chunks */) {
+  // Disable strided prefetch and set maximum prefetch depth
+  __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
+
   constexpr size_t vec_len = sizeof(vector int) / sizeof(K);
   const size_t fanout = 1UL << args.radix_bits;
   const M mask = static_cast<M>(fanout - 1UL);
@@ -348,6 +358,10 @@ void cpu_chunked_prefix_sum_simd(PrefixSumArgs &args, uint32_t const chunk_id,
 // See the Rust module for details.
 template <typename K, typename V, typename M>
 void cpu_chunked_radix_partition(RadixPartitionArgs &args) {
+#ifdef __powerpc64__
+  __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
+#endif
+
   auto join_attr_data =
       static_cast<const K *const __restrict__>(args.join_attr_data);
   auto payload_attr_data =
@@ -419,6 +433,10 @@ void buffer_tuple(Tuple<K, V> *const __restrict__ partitioned_relation,
 // See the Rust module for details.
 template <typename K, typename V, typename M>
 void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
+#ifdef __powerpc64__
+  __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
+#endif
+
   constexpr size_t tuples_per_buffer =
       WriteCombineBuffer<Tuple<K, V>, SWWC_BUFFER_SIZE>::tuples_per_buffer();
 
@@ -475,6 +493,8 @@ void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
 // See the Rust module for details.
 template <typename K, typename V, typename M>
 void cpu_chunked_radix_partition_swwc_simd(RadixPartitionArgs &args) {
+  __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
+
   constexpr size_t tuples_per_buffer =
       WriteCombineBuffer<Tuple<K, V>, SWWC_BUFFER_SIZE>::tuples_per_buffer();
   constexpr size_t vec_len = sizeof(vector int) / sizeof(K);
