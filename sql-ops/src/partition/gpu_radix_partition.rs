@@ -15,13 +15,16 @@
  * limitations under the License.
  */
 
-use super::{PartitionOffsets, PartitionOffsetsMutSlice, PartitionedRelation};
-use super::{RadixBits, RadixPass, Tuple};
+use super::{
+    partition_input_chunk, HistogramAlgorithmType, PartitionOffsets, PartitionedRelation,
+    RadixBits, RadixPass, Tuple,
+};
+use crate::constants;
 use crate::error::{ErrorKind, Result};
 use crate::prefix_scan::{GpuPrefixScanState, GpuPrefixSum};
 use numa_gpu::runtime::allocator::{Allocator, MemType};
 use numa_gpu::runtime::memory::{
-    LaunchableMem, LaunchableMutPtr, LaunchableMutSlice, LaunchablePtr, LaunchableSlice, Mem,
+    LaunchableMutPtr, LaunchableMutSlice, LaunchablePtr, LaunchableSlice, Mem,
 };
 use rustacuda::context::CurrentContext;
 use rustacuda::device::DeviceAttribute;
@@ -33,11 +36,6 @@ use rustacuda::{launch, launch_cooperative};
 use std::cmp;
 use std::ffi::{self, CString};
 use std::mem;
-
-extern "C" {
-    fn cpu_chunked_prefix_sum_int32(args: *mut PrefixSumArgs, chunk_id: u32, num_chunks: u32);
-    fn cpu_chunked_prefix_sum_int64(args: *mut PrefixSumArgs, chunk_id: u32, num_chunks: u32);
-}
 
 /// Arguments to the C/C++ prefix sum function.
 ///
@@ -148,23 +146,7 @@ struct RadixPartitionArgs {
 
 unsafe impl DeviceCopy for RadixPartitionArgs {}
 
-pub trait RadixPartitionInputChunkable: Sized {
-    type Out;
-
-    fn input_chunks<'a, Key>(
-        &'a self,
-        radix_partitioner: &GpuRadixPartitioner,
-    ) -> Result<Vec<RadixPartitionInputChunk<'a, Self::Out>>>;
-}
-
 pub trait GpuRadixPartitionable: Sized + DeviceCopy {
-    fn cpu_prefix_sum_impl(
-        rp: &GpuRadixPartitioner,
-        pass: RadixPass,
-        partition_attr: &RadixPartitionInputChunk<'_, Self>,
-        partition_offsets: &mut PartitionOffsetsMutSlice<'_, Tuple<Self, Self>>,
-    ) -> Result<()>;
-
     fn prefix_sum_impl(
         rp: &mut GpuRadixPartitioner,
         pass: RadixPass,
@@ -206,51 +188,9 @@ pub trait GpuRadixPartitionable: Sized + DeviceCopy {
     ) -> Result<()>;
 }
 
-/// A reference to a chunk of input data.
-///
-/// Effectively a slice with additional metadata specifying the referenced chunk.
-#[derive(Debug)]
-pub struct RadixPartitionInputChunk<'a, T: Sized> {
-    data: &'a [T],
-    canonical_chunk_len: usize,
-    chunk_id: u32,
-    num_chunks: u32,
-}
-
-impl<T> RadixPartitionInputChunkable for &[T] {
-    type Out = T;
-
-    fn input_chunks<Key>(
-        &self,
-        radix_partitioner: &GpuRadixPartitioner,
-    ) -> Result<Vec<RadixPartitionInputChunk<'_, Self::Out>>> {
-        let num_chunks = radix_partitioner.grid_size.x;
-        let canonical_chunk_len = radix_partitioner.input_chunk_size::<Key>(self.len())?;
-
-        let chunks = (0..num_chunks)
-            .map(|chunk_id| {
-                let offset = canonical_chunk_len * chunk_id as usize;
-                let actual_chunk_len = if chunk_id + 1 == num_chunks {
-                    self.len() - offset
-                } else {
-                    canonical_chunk_len
-                };
-                let data = &self[offset..(offset + actual_chunk_len)];
-
-                RadixPartitionInputChunk {
-                    data,
-                    canonical_chunk_len,
-                    chunk_id,
-                    num_chunks,
-                }
-            })
-            .collect();
-
-        Ok(chunks)
-    }
-}
-
 /// Specifies the histogram algorithm that computes the partition offsets.
+// FIXME: Find a clean way to remove the CpuChunked work-around. Ideally, there should be a single
+// type that subsumes all CPU and GPU algorithms.
 #[derive(Copy, Clone, Debug)]
 pub enum GpuHistogramAlgorithm {
     /// Chunked partitions, that are computed on the CPU.
@@ -264,6 +204,13 @@ pub enum GpuHistogramAlgorithm {
     /// target size at maximum 2^12 buckets, which is only 32 KiB and should fit
     /// into the CPU's L1 cache. This upper bound for buckets is given by the
     /// GPU hardware and partitioning algorithm.
+    ///
+    /// The purpose is to avoid transferring the key attribute twice the GPU
+    /// across the interconnect. Although the CPU may be slower at shuffling the
+    /// data, computing a histogram is light-weight and should be close to the
+    /// memory bandwidth. See Polychroniou et al. "A comprehensive study of
+    /// main-memory partitioning and its application to large-scale comparison-
+    /// and radix-sort.
     CpuChunked,
 
     /// Chunked partitions, that are computed on the GPU.
@@ -290,6 +237,16 @@ pub enum GpuHistogramAlgorithm {
     /// Note that this algorithm does not work on pre-`Pascal` GPUs, because it
     /// requires cooperative launch capability to perform grid synchronization.
     GpuContiguous,
+}
+
+impl From<GpuHistogramAlgorithm> for HistogramAlgorithmType {
+    fn from(algo: GpuHistogramAlgorithm) -> Self {
+        match algo {
+            GpuHistogramAlgorithm::CpuChunked => Self::Chunked,
+            GpuHistogramAlgorithm::GpuChunked => Self::Chunked,
+            GpuHistogramAlgorithm::GpuContiguous => Self::Contiguous,
+        }
+    }
 }
 
 /// Specifies the radix partition algorithm.
@@ -382,7 +339,6 @@ enum PrefixSumState {
 #[derive(Debug)]
 pub struct GpuRadixPartitioner {
     radix_bits: RadixBits,
-    log2_num_banks: u32,
     prefix_sum_algorithm: GpuHistogramAlgorithm,
     partition_algorithm: GpuRadixPartitionAlgorithm,
     prefix_sum_state: PrefixSumState,
@@ -402,9 +358,6 @@ impl GpuRadixPartitioner {
         block_size: &BlockSize,
         dmem_buffer_bytes: usize,
     ) -> Result<Self> {
-        let log2_num_banks = env!("LOG2_NUM_BANKS")
-            .parse::<u32>()
-            .expect("Failed to parse \"log2_num_banks\" string to an integer");
         let prefix_scan_state_len = GpuPrefixSum::state_len(grid_size.clone(), block_size.clone())?;
 
         let prefix_sum_state = match prefix_sum_algorithm {
@@ -425,7 +378,6 @@ impl GpuRadixPartitioner {
 
         Ok(Self {
             radix_bits,
-            log2_num_banks,
             prefix_sum_algorithm,
             partition_algorithm,
             prefix_sum_state,
@@ -553,33 +505,6 @@ impl GpuRadixPartitioner {
         )
     }
 
-    /// Computes the prefix sum on the CPU.
-    ///
-    /// The purpose is to avoid transferring the key attribute twice the GPU
-    /// across the interconnect. Although the CPU may be slower at shuffling the
-    /// data, computing a histogram is light-weight and should be close to the
-    /// memory bandwidth. See Polychroniou et al. "A comprehensive study of
-    /// main-memory partitioning and its application to large-scale comparison-
-    /// and radix-sort:
-    ///
-    /// ## Result
-    ///
-    /// The result is identical to `prefix_sum` on the GPU.
-    ///
-    /// ## Parallelism
-    ///
-    /// The function is sequential and is meant to be externally parallelized by
-    /// the caller. Parallel calls to the function are thread-safe. One
-    /// `GpuRadixPartitioner` instance should be shared among all threads.
-    pub fn cpu_prefix_sum<T: DeviceCopy + GpuRadixPartitionable>(
-        &self,
-        pass: RadixPass,
-        partition_attr: &RadixPartitionInputChunk<'_, T>,
-        partition_offsets: &mut PartitionOffsetsMutSlice<'_, Tuple<T, T>>,
-    ) -> Result<()> {
-        T::cpu_prefix_sum_impl(self, pass, partition_attr, partition_offsets)
-    }
-
     /// Radix-partitions a relation by its key attribute.
     ///
     /// See the module-level documentation for details on the algorithm.
@@ -602,90 +527,12 @@ impl GpuRadixPartitioner {
             stream,
         )
     }
-
-    /// Returns the reference chunk size with which input should be partitioned.
-    pub fn input_chunk_size<Key>(&self, len: usize) -> Result<usize> {
-        let num_chunks = self.grid_size.x as usize;
-        let input_align_mask = !(super::ALIGN_BYTES as usize / mem::size_of::<Key>() - 1);
-        let chunk_len = ((len + num_chunks - 1) / num_chunks) & input_align_mask;
-
-        if chunk_len >= std::u32::MAX as usize {
-            let msg = "Relation is too large and causes an integer overflow. Try using more chunks by setting a higher CUDA grid size";
-            Err(ErrorKind::IntegerOverflow(msg.to_string()))?
-        };
-
-        Ok(chunk_len)
-    }
 }
 
 macro_rules! impl_gpu_radix_partition_for_type {
     ($Type:ty, $Suffix:expr) => {
         impl GpuRadixPartitionable for $Type {
             paste::item! {
-                fn cpu_prefix_sum_impl(
-                    rp: &GpuRadixPartitioner,
-                    pass: RadixPass,
-                    partition_attr: &RadixPartitionInputChunk<'_, $Type>,
-                    partition_offsets: &mut PartitionOffsetsMutSlice<'_, Tuple<$Type, $Type>>,
-                    ) -> Result<()> {
-
-                    let radix_bits = rp
-                        .radix_bits
-                        .pass_radix_bits(pass)
-                        .ok_or_else(||
-                                ErrorKind::InvalidArgument(
-                                    "The requested partitioning pass is not specified".to_string()
-                                    ))?;
-                    if partition_offsets.radix_bits != radix_bits {
-                        Err(ErrorKind::InvalidArgument(
-                                "PartitionedRelation has mismatching radix bits".to_string(),
-                                ))?;
-                    }
-                    if partition_attr.chunk_id != partition_offsets.chunk_id {
-                        Err(ErrorKind::InvalidArgument(
-                                "PartitionOffsets has mismatching chunk ID".to_string(),
-                                ))?;
-                    }
-                    if partition_attr.num_chunks != partition_offsets.chunks {
-                        dbg!(partition_attr.num_chunks);
-                        dbg!(partition_offsets.chunks);
-                        Err(ErrorKind::InvalidArgument(
-                                "PartitionOffsets has mismatching number of chunks".to_string(),
-                                ))?;
-                    }
-                    match rp.prefix_sum_algorithm {
-                        GpuHistogramAlgorithm::CpuChunked => {},
-                        _ => {
-                                Err(ErrorKind::InvalidArgument(
-                                        "Unsuppored option, use prefix_sum() instead".to_string(),
-                                        ))?;
-                            },
-                    }
-
-                    let mut args = PrefixSumArgs {
-                        partition_attr: partition_attr.data.as_launchable_slice().as_launchable_ptr().as_void(),
-                        data_len: partition_attr.data.len(),
-                        canonical_chunk_len: partition_attr.canonical_chunk_len,
-                        padding_len: partition_offsets.padding_len(),
-                        radix_bits,
-                        ignore_bits: rp.radix_bits.pass_ignore_bits(pass),
-                        prefix_scan_state: LaunchableMutPtr::null_mut(),
-                        tmp_partition_offsets: LaunchableMutPtr::null_mut(),
-                        partition_offsets: partition_offsets.offsets.as_launchable_mut_ptr(),
-                    };
-
-                    match rp.prefix_sum_state {
-                        PrefixSumState::CpuChunked => {
-                            unsafe {
-                                [<cpu_chunked_prefix_sum_ $Suffix>](&mut args, partition_offsets.chunk_id, rp.grid_size.x);
-                            }
-                        },
-                        _ => unreachable!(),
-                    }
-
-                    Ok(())
-                }
-
                 fn prefix_sum_impl(
                     rp: &mut GpuRadixPartitioner,
                     pass: RadixPass,
@@ -717,19 +564,19 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                         ))?;
                             },
                         GpuHistogramAlgorithm::GpuChunked
-                            => if partition_offsets.chunks() != rp.grid_size.x {
+                            => if partition_offsets.num_chunks() != rp.grid_size.x {
                                 Err(ErrorKind::InvalidArgument(
                                         "PartitionedRelation has mismatching number of chunks".to_string(),
                                         ))?;
                             },
                         GpuHistogramAlgorithm::GpuContiguous
                             => {
-                                if partition_offsets.chunks() != 1 {
+                                if partition_offsets.num_chunks() != 1 {
                                     Err(ErrorKind::InvalidArgument(
                                             "PartitionedRelation has mismatching number of chunks".to_string(),
                                             ))?;
                                 }
-                                if sm_count < partition_offsets.chunks() {
+                                if sm_count < partition_offsets.num_chunks() {
                                     Err(ErrorKind::InvalidArgument(
                                             "The GpuContiguous algorithm requires \
                                             all threads to run simultaneously. Try \
@@ -751,7 +598,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     let ignore_bits = rp.radix_bits.pass_ignore_bits(pass);
                     let grid_size = rp.grid_size.clone();
                     let block_size = rp.block_size.clone();
-                    let canonical_chunk_len = rp.input_chunk_size::<$Type>(partition_attr.len())?;
+                    let canonical_chunk_len = partition_input_chunk::input_chunk_size::<$Type>(partition_attr.len(), partition_offsets.num_chunks())?;
 
                     let tmp_partition_offsets = if let Some(ref mut local_offsets) = partition_offsets.local_offsets {
                         local_offsets.as_launchable_mut_ptr()
@@ -775,7 +622,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         PrefixSumState::CpuChunked => unreachable!(),
                         PrefixSumState::GpuChunked => {
                             let shared_mem_bytes = (
-                                (block_size.x + (block_size.x >> rp.log2_num_banks)) + fanout_u32
+                                (block_size.x + (block_size.x >> constants::LOG2_NUM_BANKS)) + fanout_u32
                                 ) * mem::size_of::<u32>() as u32;
                             assert!(
                                 shared_mem_bytes <= max_shared_mem_bytes,
@@ -796,7 +643,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         },
                         PrefixSumState::GpuContiguous(ref mut prefix_scan_state) => {
                             let shared_mem_bytes = (
-                                (block_size.x + (block_size.x >> rp.log2_num_banks)) + fanout_u32
+                                (block_size.x + (block_size.x >> constants::LOG2_NUM_BANKS)) + fanout_u32
                                 ) * mem::size_of::<u64>() as u32;
                             assert!(
                                 shared_mem_bytes <= max_shared_mem_bytes,
@@ -857,12 +704,12 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             },
                         GpuHistogramAlgorithm::GpuContiguous
                             => {
-                                if partition_offsets.chunks() != 1 {
+                                if partition_offsets.num_chunks() != 1 {
                                     Err(ErrorKind::InvalidArgument(
                                             "PartitionOffsets has mismatching number of chunks".to_string(),
                                             ))?;
                                 }
-                                if sm_count < partition_offsets.chunks() {
+                                if sm_count < partition_offsets.num_chunks() {
                                     Err(ErrorKind::InvalidArgument(
                                             "The GpuContiguous algorithm requires \
                                             all threads to run simultaneously. Try \
@@ -886,7 +733,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     let ignore_bits = rp.radix_bits.pass_ignore_bits(pass);
                     let grid_size = rp.grid_size.clone();
                     let block_size = rp.block_size.clone();
-                    let canonical_chunk_len = rp.input_chunk_size::<$Type>(src_partition_attr.len())?;
+                    let canonical_chunk_len = partition_input_chunk::input_chunk_size::<$Type>(src_partition_attr.len(), partition_offsets.num_chunks())?;
 
                     let tmp_partition_offsets = if let Some(ref mut local_offsets) = partition_offsets.local_offsets {
                         local_offsets.as_launchable_mut_ptr()
@@ -914,7 +761,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         PrefixSumState::GpuChunked => unreachable!(),
                         PrefixSumState::GpuContiguous(ref mut prefix_scan_state) => {
                             let shared_mem_bytes = (
-                                (block_size.x + (block_size.x >> rp.log2_num_banks)) + fanout_u32
+                                (block_size.x + (block_size.x >> constants::LOG2_NUM_BANKS)) + fanout_u32
                                 ) * mem::size_of::<u64>() as u32;
                             assert!(
                                 shared_mem_bytes <= max_shared_mem_bytes,
@@ -980,12 +827,12 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             },
                         GpuHistogramAlgorithm::GpuContiguous
                             => {
-                                if partition_offsets.chunks() != 1 {
+                                if partition_offsets.num_chunks() != 1 {
                                     Err(ErrorKind::InvalidArgument(
                                             "PartitionedRelation has mismatching number of chunks".to_string(),
                                             ))?;
                                 }
-                                if sm_count < partition_offsets.chunks() {
+                                if sm_count < partition_offsets.num_chunks() {
                                     Err(ErrorKind::InvalidArgument(
                                             "The GpuContiguous algorithm requires \
                                             all threads to run simultaneously. Try \
@@ -1038,7 +885,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         PrefixSumState::GpuChunked => unreachable!(),
                         PrefixSumState::GpuContiguous(ref mut prefix_scan_state) => {
                             let shared_mem_bytes = (
-                                (block_size.x + (block_size.x >> rp.log2_num_banks))
+                                (block_size.x + (block_size.x >> constants::LOG2_NUM_BANKS))
                                 + fanout_u32
                                 + 2 * src_relation.chunks
                                 ) * mem::size_of::<u64>() as u32;
@@ -1100,7 +947,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             let msg = "Relation is too large and causes an integer overflow. Try using more chunks by setting a higher CUDA grid size";
                             Err(ErrorKind::IntegerOverflow(msg.to_string(),))?
                     }
-                    if (partition_offsets.chunks() != partitioned_relation.chunks) {
+                    if (partition_offsets.num_chunks() != partitioned_relation.chunks) {
                         Err(ErrorKind::InvalidArgument(
                                 "PartitionOffsets and PartitionedRelation have mismatching chunks".to_string(),
                                 ))?;

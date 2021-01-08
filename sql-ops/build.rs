@@ -4,30 +4,95 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018 German Research Center for Artificial Intelligence (DFKI)
+ * Copyright 2018-2021 German Research Center for Artificial Intelligence (DFKI)
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
 use std::env;
 use std::ffi::OsString;
+use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
-    // Number of GPU shared memory banks
-    let log2_num_banks = "5";
-
     let include_path = Path::new("include");
 
     let out_dir = env::var("OUT_DIR").unwrap();
     let cpp_compiler = env::var("CXX");
 
     #[cfg(target_arch = "aarch64")]
-    let cache_line_size = 64;
+    let cache_line_size: u32 = 64;
     #[cfg(target_arch = "x86_64")]
-    let cache_line_size = 64;
+    let cache_line_size: u32 = 64;
     #[cfg(target_arch = "powerpc64")]
-    let cache_line_size = 128;
+    let cache_line_size: u32 = 128;
+
+    // Defines the alignment of each partition in bytes.
+    //
+    // Typically, alignment should be a multiple of the cache line size. Reasons for this size are:
+    //
+    // 1. Non-temporal store instructions
+    // 2. Vector load and store intructions
+    // 3. Coalesced loads and stores on GPUs
+    let align_bytes: u32 = 128;
+
+    // Defines the padding bytes between partitions.
+    //
+    // Padding is necessary for partitioning algorithms to align writes. Aligned writes have fixed
+    // length and may overwrite the padding space in front of their partition.  For this reason,
+    // also the first partition includes padding in front.
+    //
+    // # Invariants
+    //
+    // * The padding length must be equal to or larger than the alignment:
+    //   padding_bytes >= align_bytes
+    let padding_bytes: u32 = 128;
+
+    // Number of GPU shared memory banks
+    //
+    // * Nvidia Volta architecture: 32 banks (log2: 5)
+    let log2_num_banks: u32 = 5;
+
+    // The number of tuples processed by each thread. This is a tuning parameter for LA-SWWC GPU
+    // partitioning variant.
+    let laswwc_tuples_per_thread = 5;
+
+    // Generate constants files for Rust and C++
+    let cpp_constants_path = Path::new(&out_dir).join("constants.h");
+    let rust_constants_path = Path::new(&out_dir).join("constants.rs");
+    let mut cpp_constants = File::create(&cpp_constants_path).unwrap();
+    let mut rust_constants = File::create(&rust_constants_path).unwrap();
+
+    cpp_constants
+        .write_all(
+            format!(
+                "
+    #define CACHE_LINE_SIZE {}U\n\
+    #define ALIGN_BYTES {}U\n\
+    #define LOG2_NUM_BANKS {}U\n\
+    #define LASWWC_TUPLES_PER_THREAD {}U\n\
+    ",
+                cache_line_size, align_bytes, log2_num_banks, laswwc_tuples_per_thread,
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+    rust_constants
+        .write_all(
+            format!(
+                "
+    pub const CACHE_LINE_SIZE: u32 = {};\n\
+    pub const ALIGN_BYTES: u32 = {};\n\
+    pub const PADDING_BYTES: u32 = {};\n\
+    pub const LOG2_NUM_BANKS: u32 = {};\n\
+    ",
+                cache_line_size, align_bytes, padding_bytes, log2_num_banks,
+            )
+            .as_bytes(),
+        )
+        .unwrap();
 
     // Add CUDA utils
     let cuda_lib_file = format!("{}/cudautils.fatbin", out_dir);
@@ -37,9 +102,7 @@ fn main() {
         "cudautils/radix_join.cu",
         "cudautils/radix_partition.cu",
     ];
-    let num_banks_arg = format!("-DLOG2_NUM_BANKS={}", log2_num_banks);
     let nvcc_build_args = vec![
-        num_banks_arg.as_str(),
         "-rdc=true",
         "--device-c",
         "-std=c++14",
@@ -69,6 +132,11 @@ fn main() {
         s.push(include_path.as_os_str());
         s
     };
+    let constants_include = {
+        let mut s = OsString::from("-I ");
+        s.push(&out_dir);
+        s
+    };
 
     let output = Command::new("nvcc")
         .args(cuda_files.as_slice())
@@ -76,6 +144,7 @@ fn main() {
         .args(nvcc_build_args.as_slice())
         .args(gpu_archs.as_slice())
         .arg(nvcc_include)
+        .arg(constants_include)
         .output()
         .expect("Couldn't execute nvcc");
 
@@ -113,7 +182,6 @@ fn main() {
         panic!();
     }
 
-    println!("cargo:rustc-env=LOG2_NUM_BANKS={}", log2_num_banks);
     println!(
         "cargo:rustc-env=CUDAUTILS_PATH={}/cudautils.fatbin",
         out_dir
@@ -125,6 +193,7 @@ fn main() {
     // Add CPP utils
     cc::Build::new()
         .include(include_path)
+        .include(&out_dir)
         .cpp(true)
         // Note: -march not supported by GCC-7 on Power9, use -mcpu instead
         .flag("-std=c++14")
@@ -134,13 +203,11 @@ fn main() {
         .flag("-mtune=native")
         // .flag("-fopenmp")
         // .flag("-lnuma")
-        .define("CACHE_LINE_SIZE", cache_line_size.to_string().as_str())
         // Note: Enables x86 intrinsic translations on POWER9
         // See also "Linux on Power Porting Guide - Vector Intrinsics"
         .define("NO_WARN_X86_INTRINSICS", None)
         .pic(true)
         .file("cpputils/no_partitioning_join.cpp")
         .file("cpputils/radix_partition.cpp")
-        .file("cpputils/gpu_radix_partition.cpp")
         .compile("libcpputils.a");
 }

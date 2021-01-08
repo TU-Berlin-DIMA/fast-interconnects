@@ -558,16 +558,17 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
       "Payload column should be aligned to ALIGN_BYTES for best performance");
 
   const uint32_t laswwc_bytes =
-      blockDim.x * TUPLES_PER_THREAD * (sizeof(K) + sizeof(V)) +
+      blockDim.x * LASWWC_TUPLES_PER_THREAD * (sizeof(K) + sizeof(V)) +
       2U * fanout * sizeof(uint32_t);
 
   assert(laswwc_bytes <= shared_mem_bytes &&
          "LA-SWWC buffer must fit into shared memory");
 
   K *const cached_keys = (K *)shared_mem;
-  V *const cached_vals = (V *)&cached_keys[blockDim.x * TUPLES_PER_THREAD];
+  V *const cached_vals =
+      (V *)&cached_keys[blockDim.x * LASWWC_TUPLES_PER_THREAD];
   unsigned int *const tmp_partition_offsets = reinterpret_cast<unsigned int *>(
-      &cached_vals[blockDim.x * TUPLES_PER_THREAD]);
+      &cached_vals[blockDim.x * LASWWC_TUPLES_PER_THREAD]);
   unsigned int *const cache_offsets =
       reinterpret_cast<unsigned int *>(&tmp_partition_offsets[fanout]);
 
@@ -581,15 +582,15 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
   __syncthreads();
 
   // Partition data
-  size_t loop_length = (data_length / (blockDim.x * TUPLES_PER_THREAD)) *
-                       (blockDim.x * TUPLES_PER_THREAD);
+  size_t loop_length = (data_length / (blockDim.x * LASWWC_TUPLES_PER_THREAD)) *
+                       (blockDim.x * LASWWC_TUPLES_PER_THREAD);
 
   for (size_t i = threadIdx.x; i < loop_length;
-       i += blockDim.x * TUPLES_PER_THREAD) {
+       i += blockDim.x * LASWWC_TUPLES_PER_THREAD) {
     // Load tuples
-    Tuple<K, V> tuple[TUPLES_PER_THREAD];
+    Tuple<K, V> tuple[LASWWC_TUPLES_PER_THREAD];
 #pragma unroll
-    for (uint32_t k = 0; k < TUPLES_PER_THREAD; ++k) {
+    for (uint32_t k = 0; k < LASWWC_TUPLES_PER_THREAD; ++k) {
       tuple[k].key = join_attr_data[i + k * blockDim.x];
       tuple[k].value = payload_attr_data[i + k * blockDim.x];
     }
@@ -602,7 +603,7 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
     __syncthreads();
 
 #pragma unroll
-    for (uint32_t k = 0; k < TUPLES_PER_THREAD; ++k) {
+    for (uint32_t k = 0; k < LASWWC_TUPLES_PER_THREAD; ++k) {
       // Hash keys to partition IDs
       auto p_index = key_to_partition(tuple[k].key, mask, args.ignore_bits);
 
@@ -628,7 +629,7 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
 
     // Allocate space per tuple for tuple reordering and then do reordering
 #pragma unroll
-    for (uint32_t k = 0; k < TUPLES_PER_THREAD; ++k) {
+    for (uint32_t k = 0; k < LASWWC_TUPLES_PER_THREAD; ++k) {
       auto p_index = key_to_partition(tuple[k].key, mask, args.ignore_bits);
       auto pos = atomicAdd(&cache_offsets[p_index], 1U);
       cached_keys[pos] = tuple[k].key;
@@ -639,7 +640,7 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
 
     // Write tuples to global memory
 #pragma unroll
-    for (uint32_t k = threadIdx.x; k < blockDim.x * TUPLES_PER_THREAD;
+    for (uint32_t k = threadIdx.x; k < blockDim.x * LASWWC_TUPLES_PER_THREAD;
          k += blockDim.x) {
       Tuple<K, V> tuple;
       tuple.key = cached_keys[k];
@@ -656,7 +657,7 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
 
     // Update partition offsets for next loop iteration
 #pragma unroll
-    for (uint32_t k = threadIdx.x; k < blockDim.x * TUPLES_PER_THREAD;
+    for (uint32_t k = threadIdx.x; k < blockDim.x * LASWWC_TUPLES_PER_THREAD;
          k += blockDim.x) {
       auto key = cached_keys[k];
       auto p_index = key_to_partition(key, mask, args.ignore_bits);
@@ -666,7 +667,7 @@ __device__ void gpu_chunked_laswwc_radix_partition(RadixPartitionArgs &args,
 
   __syncthreads();
 
-  // Handle case when data_length % (TUPLES_PER_THREAD * blockDim) != 0
+  // Handle case when data_length % (LASWWC_TUPLES_PER_THREAD * blockDim) != 0
   for (size_t i = loop_length + threadIdx.x; i < data_length; i += blockDim.x) {
     Tuple<K, V> tuple;
     tuple.key = join_attr_data[i];

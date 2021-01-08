@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2020 Clemens Lutz, German Research Center for Artificial Intelligence
+ * Copyright 2019-2021 Clemens Lutz, German Research Center for Artificial Intelligence
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -54,18 +54,27 @@
 //!
 //! [mchj]: https://www.systems.ethz.ch/sites/default/files/file/PublishedCode/multicore-distributed-hashjoins-0_1.zip
 
-use super::{fanout, Tuple};
+use super::{
+    fanout, HistogramAlgorithmType, PartitionOffsetsMutSlice, PartitionedRelationMutSlice,
+    RadixPartitionInputChunk, Tuple,
+};
+use crate::constants;
 use crate::error::{ErrorKind, Result};
-use numa_gpu::runtime::allocator::DerefMemAllocFn;
+use numa_gpu::runtime::allocator::{Allocator, DerefMemAllocFn, DerefMemType};
 use numa_gpu::runtime::memory::DerefMem;
-use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
+use numa_gpu::utils::CachePadded;
 use rustacuda::memory::DeviceCopy;
 use std::ffi::c_void;
-use std::ops::{Index, IndexMut};
 use std::{mem, ptr};
 
 extern "C" {
     fn cpu_swwc_buffer_bytes() -> usize;
+    fn cpu_chunked_prefix_sum_int32(args: *mut PrefixSumArgs, chunk_id: u32, num_chunks: u32);
+    fn cpu_chunked_prefix_sum_int64(args: *mut PrefixSumArgs, chunk_id: u32, num_chunks: u32);
+    #[cfg(target_arch = "powerpc64")]
+    fn cpu_chunked_prefix_sum_simd_int32(args: *mut PrefixSumArgs, chunk_id: u32, num_chunks: u32);
+    #[cfg(target_arch = "powerpc64")]
+    fn cpu_chunked_prefix_sum_simd_int64(args: *mut PrefixSumArgs, chunk_id: u32, num_chunks: u32);
     fn cpu_chunked_radix_partition_int32_int32(args: *mut RadixPartitionArgs);
     fn cpu_chunked_radix_partition_int64_int64(args: *mut RadixPartitionArgs);
     fn cpu_chunked_radix_partition_swwc_int32_int32(args: *mut RadixPartitionArgs);
@@ -74,6 +83,28 @@ extern "C" {
     fn cpu_chunked_radix_partition_swwc_simd_int32_int32(args: *mut RadixPartitionArgs);
     #[cfg(target_arch = "powerpc64")]
     fn cpu_chunked_radix_partition_swwc_simd_int64_int64(args: *mut RadixPartitionArgs);
+}
+
+/// Arguments to the C/C++ prefix sum function.
+///
+/// Note that the struct's layout must be kept in sync with its counterpart in
+/// C/C++.
+#[repr(C)]
+#[derive(Clone, Debug)]
+struct PrefixSumArgs {
+    // Inputs
+    partition_attr: *const c_void,
+    data_len: usize,
+    canonical_chunk_len: usize,
+    padding_len: u32,
+    radix_bits: u32,
+    ignore_bits: u32,
+
+    // State
+    tmp_partition_offsets: *mut u32,
+
+    // Outputs
+    partition_offsets: *mut u64,
 }
 
 /// Arguments to the C/C++ partitioning function.
@@ -87,107 +118,17 @@ struct RadixPartitionArgs {
     partition_attr_data: *const c_void,
     payload_attr_data: *const c_void,
     data_len: usize,
-    padding_len: usize,
+    padding_len: usize, // FIXME: u32
     radix_bits: u32,
+    ignore_bits: u32,
+    partition_offsets: *const u64,
 
     // State
     tmp_partition_offsets: *mut u64,
     write_combine_buffer: *mut c_void,
 
     // Outputs
-    partition_offsets: *mut u64,
     partitioned_relation: *mut c_void,
-}
-
-/// A radix-partitioned relation, optionally with padding in front of each
-/// partition.
-///
-/// # Invariants
-///
-/// The `radix_bits` must match in `WriteCombineBuffer` and `CpuRadixPartitioner`.
-#[derive(Debug)]
-pub struct PartitionedRelation<T: DeviceCopy> {
-    relation: DerefMem<T>,
-    offsets: DerefMem<u64>,
-    radix_bits: u32,
-}
-
-impl<T: DeviceCopy> PartitionedRelation<T> {
-    /// Creates a new partitioned relation, and automatically includes the
-    /// necessary padding and metadata.
-    pub fn new(
-        len: usize,
-        radix_bits: u32,
-        partition_alloc_fn: DerefMemAllocFn<T>,
-        offsets_alloc_fn: DerefMemAllocFn<u64>,
-    ) -> Self {
-        let padding_len = WriteCombineBuffer::tuples_per_buffer::<T>();
-        let num_partitions = fanout(radix_bits) as usize;
-        let relation_len = len + num_partitions * padding_len;
-
-        let relation = partition_alloc_fn(relation_len);
-        let offsets = offsets_alloc_fn(num_partitions);
-
-        Self {
-            relation,
-            offsets,
-            radix_bits,
-        }
-    }
-
-    /// Returns the total number of elements in the relation (excluding padding).
-    pub fn len(&self) -> usize {
-        let num_partitions = fanout(self.radix_bits) as usize;
-
-        self.relation.len() - num_partitions * self.padding_len()
-    }
-
-    /// Returns the number of partitions.
-    pub fn partitions(&self) -> u32 {
-        fanout(self.radix_bits)
-    }
-
-    /// Returns the number of padding elements per partition.
-    fn padding_len(&self) -> usize {
-        WriteCombineBuffer::tuples_per_buffer::<T>()
-    }
-}
-
-/// Returns the specified partition as a subslice of the relation.
-impl<T: DeviceCopy> Index<usize> for PartitionedRelation<T> {
-    type Output = [T];
-
-    fn index(&self, i: usize) -> &Self::Output {
-        let begin = self.offsets[i] as usize;
-        let end = if i + 1 < self.offsets.len() {
-            self.offsets[i + 1] as usize - self.padding_len()
-        } else {
-            self.relation.len()
-        };
-
-        &self.relation[begin..end]
-    }
-}
-
-/// Returns the specified partition as a mutable subslice of the relation.
-impl<T: DeviceCopy> IndexMut<usize> for PartitionedRelation<T> {
-    fn index_mut(&mut self, i: usize) -> &mut Self::Output {
-        let begin = self.offsets[i] as usize;
-        let end = if i + 1 < self.offsets.len() {
-            self.offsets[i + 1] as usize - self.padding_len()
-        } else {
-            self.relation.len()
-        };
-
-        &mut self.relation[begin..end]
-    }
-}
-
-impl<T: DeviceCopy> EnsurePhysicallyBacked for PartitionedRelation<T> {
-    fn ensure_physically_backed(&mut self) {
-        self.relation.ensure_physically_backed();
-        self.offsets.ensure_physically_backed();
-    }
 }
 
 /// A set of buffers used for software write-combining.
@@ -207,25 +148,44 @@ impl<T: DeviceCopy> EnsurePhysicallyBacked for PartitionedRelation<T> {
 ///   the cache-line size
 #[derive(Debug)]
 struct WriteCombineBuffer {
-    buffers: DerefMem<u64>,
+    raw_memory: DerefMem<u64>,
 }
 
 impl WriteCombineBuffer {
     /// Creates a new set of SWWC buffers.
     fn new(radix_bits: u32, alloc_fn: DerefMemAllocFn<u64>) -> Self {
         let buffer_bytes = unsafe { cpu_swwc_buffer_bytes() };
-        let bytes = buffer_bytes * fanout(radix_bits) as usize;
-        let buffers = alloc_fn(bytes / mem::size_of::<u64>());
+        assert!(buffer_bytes as u32 <= constants::PADDING_BYTES, "Partition padding is too small for the SWWC buffers; padding must be at least {} bytes", buffer_bytes);
 
-        Self { buffers }
+        let align_bytes = mem::align_of::<CachePadded<u64>>();
+        let bytes = buffer_bytes * fanout(radix_bits) as usize + align_bytes;
+        let raw_memory = alloc_fn(bytes / mem::size_of::<u64>());
+
+        Self { raw_memory }
+    }
+
+    /// Returns a mutable slice to the aligned buffers
+    fn as_mut_slice(&mut self) -> &mut [u64] {
+        let (_, buffers, _) = unsafe {
+            self.raw_memory
+                .as_mut_slice()
+                .align_to_mut::<CachePadded<u64>>()
+        };
+
+        let buffer_bytes = unsafe { cpu_swwc_buffer_bytes() };
+        let len = buffer_bytes / mem::size_of::<u64>();
+
+        let buffers_slice =
+            unsafe { std::slice::from_raw_parts_mut(buffers.as_mut_ptr() as *mut u64, len) };
+        buffers_slice
     }
 
     /// Computes the number of tuples per SWWC buffer.
     ///
     /// Note that `WriteCombineBuffer` contains one SWWC buffer per
-    fn tuples_per_buffer<T: Sized>() -> usize {
+    fn tuples_per_buffer<T: Sized>() -> u32 {
         let buffer_bytes = unsafe { cpu_swwc_buffer_bytes() };
-        buffer_bytes / mem::size_of::<T>()
+        (buffer_bytes / mem::size_of::<T>()) as u32
     }
 }
 
@@ -238,25 +198,82 @@ impl WriteCombineBuffer {
 ///
 /// See `CudaHashJoinable` for more details on the design decision.
 pub trait CpuRadixPartitionable: Sized + DeviceCopy {
+    fn prefix_sum_impl(
+        rp: &mut CpuRadixPartitioner,
+        partition_attr: RadixPartitionInputChunk<'_, Self>,
+        partition_offsets: PartitionOffsetsMutSlice<'_, Tuple<Self, Self>>,
+    ) -> Result<()>;
+
     fn partition_impl(
         rp: &mut CpuRadixPartitioner,
-        partition_attr: &[Self],
-        payload_attr: &[Self],
-        partitioned_relation: &mut PartitionedRelation<Tuple<Self, Self>>,
+        partition_attr: RadixPartitionInputChunk<'_, Self>,
+        payload_attr: RadixPartitionInputChunk<'_, Self>,
+        partition_offsets: PartitionOffsetsMutSlice<Tuple<Self, Self>>,
+        partitioned_relation: PartitionedRelationMutSlice<Tuple<Self, Self>>,
     ) -> Result<()>;
+}
+
+/// Specifies the histogram algorithm that computes the partition offsets.
+#[derive(Copy, Clone, Debug)]
+pub enum CpuHistogramAlgorithm {
+    /// `Chunked` computes a separate set of partitions per thread block. Tuples of the resulting
+    /// partitions are thus distributed among all chunks.
+    ///
+    /// It was originally introduced for NUMA locality by Schuh et al. in "An Experimental
+    /// Comparison of Thirteen Relational Equi-Joins in Main Memory".
+    Chunked,
+
+    /// Prefix sum with SIMD optimizations.
+    ///
+    /// This is the same algorithm as `Chunked`, but uses SIMD load instructions. Also, loops are
+    /// manually unrolled to 64 bytes.
+    ///
+    /// # Limitations
+    ///
+    /// Currently only implemented for PPC64le.
+    ChunkedSimd,
+}
+
+impl From<CpuHistogramAlgorithm> for HistogramAlgorithmType {
+    fn from(algorithm: CpuHistogramAlgorithm) -> Self {
+        match algorithm {
+            CpuHistogramAlgorithm::Chunked => Self::Chunked,
+            CpuHistogramAlgorithm::ChunkedSimd => Self::Chunked,
+        }
+    }
 }
 
 /// Specifies the radix partition algorithm.
 #[derive(Copy, Clone, Debug)]
 pub enum CpuRadixPartitionAlgorithm {
-    /// Chunked radix partition.
-    Chunked,
+    /// Non-caching radix partition.
+    ///
+    /// This is a standard, parallel radix partition algorithm.
+    NC,
 
-    /// Chunked radix partition with software write-combining.
-    ChunkedSwwc,
+    /// Radix partition with software write-combining.
+    ///
+    /// This algorithm uses software-write combine buffers to avoid TLB misses.
+    /// The buffers are flushed using non-temporal SIMD stores on x86-64. In
+    /// contrast, PPC64le uses regular SIMD stores, as non-temporal hints
+    /// don't actually enforce streaming, but cause additional overhead.
+    Swwc,
 
-    /// Chunked radix partition with software write-combining and SIMD optimizations.
-    ChunkedSwwcSimd,
+    /// Radix partition with software write-combining and SIMD optimizations.
+    ///
+    /// This is the same algorithm as `Swwc`, but uses SIMD loads in addition to
+    /// the SIMD buffer flush. Also, loops are manually unrolled to 64 bytes.
+    ///
+    /// # Limitations
+    ///
+    /// Currently only implemented for PPC64le.
+    SwwcSimd,
+}
+
+#[derive(Debug)]
+enum PrefixSumState {
+    Chunked(DerefMem<u32>),
+    ChunkedSimd(DerefMem<u32>),
 }
 
 /// Mutable internal state of the partition functions.
@@ -265,40 +282,86 @@ pub enum CpuRadixPartitionAlgorithm {
 /// runs.
 #[derive(Debug)]
 enum RadixPartitionState {
-    Chunked(DerefMem<u64>),
-    ChunkedSwwc(WriteCombineBuffer),
-    ChunkedSwwcSimd(WriteCombineBuffer),
+    NC(DerefMem<u64>),
+    Swwc(WriteCombineBuffer),
+    SwwcSimd(WriteCombineBuffer),
 }
 
 /// A CPU radix partitioner that provides partitioning functions.
 #[derive(Debug)]
 pub struct CpuRadixPartitioner {
     radix_bits: u32,
-    state: RadixPartitionState,
+    prefix_sum_state: PrefixSumState,
+    radix_partition_state: RadixPartitionState,
 }
 
 impl CpuRadixPartitioner {
     /// Creates a new CPU radix partitioner.
     pub fn new(
-        algorithm: CpuRadixPartitionAlgorithm,
+        prefix_sum_algorithm: CpuHistogramAlgorithm,
+        partition_algorithm: CpuRadixPartitionAlgorithm,
         radix_bits: u32,
-        alloc_fn: DerefMemAllocFn<u64>,
+        state_mem_type: DerefMemType,
     ) -> Self {
         let num_partitions = fanout(radix_bits) as usize;
 
-        let state = match algorithm {
-            CpuRadixPartitionAlgorithm::Chunked => {
-                RadixPartitionState::Chunked(alloc_fn(num_partitions))
-            }
-            CpuRadixPartitionAlgorithm::ChunkedSwwc => {
-                RadixPartitionState::ChunkedSwwc(WriteCombineBuffer::new(radix_bits, alloc_fn))
-            }
-            CpuRadixPartitionAlgorithm::ChunkedSwwcSimd => {
-                RadixPartitionState::ChunkedSwwcSimd(WriteCombineBuffer::new(radix_bits, alloc_fn))
+        // FIXME: pad to cacheline
+        let prefix_sum_state = match prefix_sum_algorithm {
+            CpuHistogramAlgorithm::Chunked => PrefixSumState::Chunked(Allocator::alloc_deref_mem(
+                state_mem_type.clone(),
+                num_partitions,
+            )),
+            CpuHistogramAlgorithm::ChunkedSimd => PrefixSumState::ChunkedSimd(
+                Allocator::alloc_deref_mem(state_mem_type.clone(), num_partitions),
+            ),
+        };
+
+        // FIXME: pad to cacheline
+        let radix_partition_state = match partition_algorithm {
+            CpuRadixPartitionAlgorithm::NC => RadixPartitionState::NC(Allocator::alloc_deref_mem(
+                state_mem_type.clone(),
+                num_partitions,
+            )),
+            CpuRadixPartitionAlgorithm::Swwc => RadixPartitionState::Swwc(WriteCombineBuffer::new(
+                radix_bits,
+                Allocator::deref_mem_alloc_fn(state_mem_type.clone()),
+            )),
+            CpuRadixPartitionAlgorithm::SwwcSimd => {
+                RadixPartitionState::SwwcSimd(WriteCombineBuffer::new(
+                    radix_bits,
+                    Allocator::deref_mem_alloc_fn(state_mem_type.clone()),
+                ))
             }
         };
 
-        Self { radix_bits, state }
+        Self {
+            radix_bits,
+            prefix_sum_state,
+            radix_partition_state,
+        }
+    }
+
+    /// Computes the prefix sum.
+    ///
+    /// The prefix sum performs a scan over all partitioning keys. It first
+    /// computes a histogram. The prefix sum is computed from this histogram.
+    ///
+    /// The prefix sum serves two main purposes:
+    ///
+    /// 1. The prefix sums are used in `partition` as offsets in an array for
+    ///    the output partitions.
+    /// 2. The prefix sum can also be used to detect skew in the data.
+    ///
+    /// ## Parallelism
+    ///
+    /// The function is thread-safe, and meant to be externally parallelized by
+    /// the caller.
+    pub fn prefix_sum<T: DeviceCopy + CpuRadixPartitionable>(
+        &mut self,
+        partition_attr: RadixPartitionInputChunk<'_, T>,
+        partition_offsets: PartitionOffsetsMutSlice<'_, Tuple<T, T>>,
+    ) -> Result<()> {
+        T::prefix_sum_impl(self, partition_attr, partition_offsets)
     }
 
     /// Radix-partitions a relation by its key attribute.
@@ -306,11 +369,18 @@ impl CpuRadixPartitioner {
     /// See the module-level documentation for details on the algorithm.
     pub fn partition<T: DeviceCopy + CpuRadixPartitionable>(
         &mut self,
-        partition_attr: &[T],
-        payload_attr: &[T],
-        partitioned_relation: &mut PartitionedRelation<Tuple<T, T>>,
+        partition_attr: RadixPartitionInputChunk<'_, T>,
+        payload_attr: RadixPartitionInputChunk<'_, T>,
+        partition_offsets: PartitionOffsetsMutSlice<Tuple<T, T>>,
+        partitioned_relation: PartitionedRelationMutSlice<Tuple<T, T>>,
     ) -> Result<()> {
-        T::partition_impl(self, partition_attr, payload_attr, partitioned_relation)
+        T::partition_impl(
+            self,
+            partition_attr,
+            payload_attr,
+            partition_offsets,
+            partitioned_relation,
+        )
     }
 }
 
@@ -318,14 +388,84 @@ macro_rules! impl_cpu_radix_partition_for_type {
     ($Type:ty, $Suffix:expr) => {
         impl CpuRadixPartitionable for $Type {
             paste::item! {
+                fn prefix_sum_impl(
+                    rp: &mut CpuRadixPartitioner,
+                    partition_attr: RadixPartitionInputChunk<'_, Self>,
+                    mut partition_offsets: PartitionOffsetsMutSlice<'_, Tuple<Self, Self>>,
+                    ) -> Result<()> {
+
+                    let radix_bits = rp.radix_bits;
+                    if partition_offsets.radix_bits != radix_bits {
+                        Err(ErrorKind::InvalidArgument(
+                                "PartitionedRelation has mismatching radix bits".to_string(),
+                                ))?;
+                    }
+                    if partition_attr.chunk_id != partition_offsets.chunk_id {
+                        Err(ErrorKind::InvalidArgument(
+                                "PartitionOffsets has mismatching chunk ID".to_string(),
+                                ))?;
+                    }
+                    if partition_attr.num_chunks != partition_offsets.chunks {
+                        Err(ErrorKind::InvalidArgument(
+                                "PartitionOffsets has mismatching number of chunks".to_string(),
+                                ))?;
+                    }
+                    if partition_offsets.padding_len() < WriteCombineBuffer::tuples_per_buffer::<Tuple<Self, Self>>() {
+                        Err(ErrorKind::InvalidArgument(
+                                "Padding is too small; should be at least the SWWC buffer size".to_string(),
+                                ))?;
+                    }
+
+                    let (prefix_sum_fn, tmp_partition_offsets):
+                        (
+                            unsafe extern "C" fn(*mut PrefixSumArgs, u32, u32),
+                            *mut u32
+                        ) = match rp.prefix_sum_state
+                    {
+                        PrefixSumState::Chunked(ref mut state) =>
+                            (
+                                [<cpu_chunked_prefix_sum_ $Suffix>],
+                                state.as_mut_ptr(),
+                            ),
+                        #[cfg(target_arch = "powerpc64")]
+                        PrefixSumState::ChunkedSimd(ref mut state) =>
+                            (
+                                [<cpu_chunked_prefix_sum_simd_ $Suffix>],
+                                state.as_mut_ptr(),
+                            ),
+                        #[cfg(not(target_arch = "powerpc64"))]
+                        PrefixSumState::ChunkedSimd(_) =>
+                            unimplemented!()
+                    };
+
+                    let mut args = PrefixSumArgs {
+                        partition_attr: partition_attr.data.as_ptr() as *const c_void,
+                        data_len: partition_attr.data.len(),
+                        canonical_chunk_len: partition_attr.canonical_chunk_len,
+                        padding_len: partition_offsets.padding_len(),
+                        radix_bits,
+                        ignore_bits: 0,
+                        tmp_partition_offsets,
+                        partition_offsets: partition_offsets.offsets.as_mut_ptr(),
+                    };
+
+                    unsafe {
+                        prefix_sum_fn(&mut args, partition_offsets.chunk_id, partition_offsets.chunks);
+                    }
+
+                    Ok(())
+
+                }
+
                 fn partition_impl(
                     rp: &mut CpuRadixPartitioner,
-                    partition_attr: &[$Type],
-                    payload_attr: &[$Type],
-                    partitioned_relation: &mut PartitionedRelation<Tuple<$Type, $Type>>,
+                    partition_attr: RadixPartitionInputChunk<'_, Self>,
+                    payload_attr: RadixPartitionInputChunk<'_, Self>,
+                    partition_offsets: PartitionOffsetsMutSlice<Tuple<Self, Self>>,
+                    mut partitioned_relation: PartitionedRelationMutSlice<Tuple<Self, Self>>,
                     ) -> Result<()>
                 {
-                    if partition_attr.len() != payload_attr.len() {
+                    if partition_attr.data.len() != payload_attr.data.len() {
                         Err(ErrorKind::InvalidArgument(
                                 "Partition and payload attributes have different sizes"
                                 .to_string()
@@ -337,48 +477,64 @@ macro_rules! impl_cpu_radix_partition_for_type {
                                 .to_string()
                             ))?;
                     }
+                    if (partition_offsets.radix_bits != rp.radix_bits) {
+                        Err(ErrorKind::InvalidArgument(
+                                "PartitionOffsets has mismatching radix bits".to_string(),
+                                ))?;
+                    }
+                    if (partition_offsets.chunks != partitioned_relation.chunks) {
+                        Err(ErrorKind::InvalidArgument(
+                                "PartitionOffsets and PartitionedRelation have mismatching chunks".to_string(),
+                                ))?;
+                    }
+                    if (partition_offsets.padding_len() != partitioned_relation.padding_len()) {
+                        Err(ErrorKind::InvalidArgument(
+                                "PartitionOffsets and PartitionedRelation have mismatching padding".to_string(),
+                                ))?;
+                    }
 
-                    let data_len = partition_attr.len();
+                    let data_len = partition_attr.data.len();
                     let (partition_fn, tmp_partition_offsets, write_combine_buffer):
                         (
                             unsafe extern "C" fn(*mut RadixPartitionArgs),
                             *mut u64,
                             *mut c_void,
-                        ) = match rp.state
+                        ) = match rp.radix_partition_state
                     {
-                        RadixPartitionState::Chunked(ref mut offsets) =>
+                        RadixPartitionState::NC(ref mut offsets) =>
                             (
                                 [<cpu_chunked_radix_partition_ $Suffix _ $Suffix>],
                                 offsets.as_mut_ptr(),
                                 ptr::null_mut(),
                             ),
-                        RadixPartitionState::ChunkedSwwc(ref mut swwc) =>
+                        RadixPartitionState::Swwc(ref mut swwc) =>
                             (
                                 [<cpu_chunked_radix_partition_swwc_ $Suffix _ $Suffix>],
                                 ptr::null_mut(),
-                                swwc.buffers.as_mut_slice().as_mut_ptr() as *mut c_void,
+                                swwc.as_mut_slice().as_mut_ptr() as *mut c_void,
                             ),
                         #[cfg(target_arch = "powerpc64")]
-                        RadixPartitionState::ChunkedSwwcSimd(ref mut swwc) =>
+                        RadixPartitionState::SwwcSimd(ref mut swwc) =>
                             (
                                 [<cpu_chunked_radix_partition_swwc_simd_ $Suffix _ $Suffix>],
                                 ptr::null_mut(),
-                                swwc.buffers.as_mut_slice().as_mut_ptr() as *mut c_void,
+                                swwc.as_mut_slice().as_mut_ptr() as *mut c_void,
                             ),
                         #[cfg(not(target_arch = "powerpc64"))]
-                        RadixPartitionState::ChunkedSwwcSimd(ref mut _swwc) =>
+                        RadixPartitionState::SwwcSimd(ref mut _swwc) =>
                             unimplemented!(),
                     };
 
                     let mut args = RadixPartitionArgs {
-                        partition_attr_data: partition_attr.as_ptr() as *const c_void,
-                        payload_attr_data: payload_attr.as_ptr() as *const c_void,
+                        partition_attr_data: partition_attr.data.as_ptr() as *const c_void,
+                        payload_attr_data: payload_attr.data.as_ptr() as *const c_void,
                         data_len,
-                        padding_len: partitioned_relation.padding_len(),
+                        padding_len: partitioned_relation.padding_len() as usize,
                         radix_bits: rp.radix_bits,
+                        ignore_bits: 0,
+                        partition_offsets: partition_offsets.offsets.as_ptr(),
                         tmp_partition_offsets,
                         write_combine_buffer,
-                        partition_offsets: partitioned_relation.offsets.as_mut_ptr(),
                         partitioned_relation: partitioned_relation.relation
                             .as_mut_ptr() as *mut c_void,
                     };
@@ -387,6 +543,14 @@ macro_rules! impl_cpu_radix_partition_for_type {
                         partition_fn(
                             &mut args as *mut RadixPartitionArgs
                         );
+                    }
+
+                    // Move ownership of offsets to PartitionedRelation.
+                    // PartitionOffsets will be destroyed.
+                    unsafe {
+                        partitioned_relation.offsets
+                            .as_mut_slice()
+                            .copy_from_slice(partition_offsets.offsets.as_slice());
                     }
 
                     Ok(())
@@ -402,8 +566,9 @@ impl_cpu_radix_partition_for_type!(i64, int64);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::partition::{PartitionOffsets, PartitionedRelation};
     use datagen::relation::UniformRelation;
-    use numa_gpu::runtime::allocator::{Allocator, DerefMemType};
+    use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
     use std::collections::hash_map::{Entry, HashMap};
     use std::error::Error;
     use std::iter;
@@ -418,7 +583,9 @@ mod tests {
                 #[test]
                 fn [<cpu_tuple_loss_or_duplicates_ $fn_suffix>]() -> Result<(), Box<dyn Error>> {
                     const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
-                    const NUMA_NODE: u16 = 0;
+                    const THREADS: u32 = 1;
+
+                    let prefix_sum_algorithm = CpuHistogramAlgorithm::Chunked;
 
                     let mut data_key: Vec<$type> = vec![0; $tuples];
                     let mut data_pay: Vec<$type> = vec![0; $tuples];
@@ -432,52 +599,70 @@ mod tests {
                         .zip(data_pay.iter().cloned().zip(std::iter::repeat(0)))
                         .collect();
 
+                    let mut partition_offsets = PartitionOffsets::new(
+                        prefix_sum_algorithm.into(),
+                        THREADS,
+                        $radix_bits,
+                        Allocator::mem_alloc_fn(MemType::SysMem),
+                        );
+
                     let mut partitioned_relation = PartitionedRelation::new(
                         $tuples,
+                        prefix_sum_algorithm.into(),
                         $radix_bits,
-                        Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(NUMA_NODE, None)),
-                        Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(NUMA_NODE, None)),
+                        THREADS,
+                        Allocator::mem_alloc_fn(MemType::SysMem),
+                        Allocator::mem_alloc_fn(MemType::SysMem),
                     );
 
                     let mut partitioner = CpuRadixPartitioner::new(
+                        prefix_sum_algorithm,
                         $algorithm,
                         $radix_bits,
-                        Allocator::deref_mem_alloc_fn::<u64>(DerefMemType::NumaMem(NUMA_NODE, None))
+                        DerefMemType::SysMem,
                     );
 
-                    partitioner.partition(
-                        &data_key,
-                        &data_pay,
-                        &mut partitioned_relation,
+                    partitioner.prefix_sum(
+                        data_key.as_slice().into(),
+                        partition_offsets.chunks_mut().nth(0).unwrap(),
                     )?;
 
-                    partitioned_relation.relation
-                        .as_slice()
-                        .iter()
-                        .cloned()
-                        .for_each(|Tuple { key, value }| {
-                            let entry = original_tuples.entry(key);
-                            match entry {
-                                entry @ Entry::Occupied(_) => {
-                                    let key = *entry.key();
-                                    entry.and_modify(|(original_value, counter)| {
-                                        assert_eq!(
-                                            value, *original_value,
-                                            "Invalid payload: {}; expected: {}",
-                                            value, *original_value
-                                            );
-                                        assert_eq!(*counter, 0, "Duplicate key: {}", key);
-                                        *counter = *counter + 1;
-                                    });
-                                }
-                                entry @ Entry::Vacant(_) => {
-                                    // skip padding entries
-                                    if *entry.key() != 0 {
-                                        assert!(false, "Invalid key: {}", entry.key());
+                    partitioner.partition(
+                        data_key.as_slice().into(),
+                        data_pay.as_slice().into(),
+                        partition_offsets.chunks_mut().nth(0).unwrap(),
+                        partitioned_relation.chunks_mut().nth(0).unwrap(),
+                    )?;
+
+                    unsafe {
+                        partitioned_relation
+                            .as_raw_relation_slice()?
+                            .iter()
+                            .cloned()
+                            .for_each(|Tuple { key, value }| {
+                                let entry = original_tuples.entry(key);
+                                match entry {
+                                    entry @ Entry::Occupied(_) => {
+                                        let key = *entry.key();
+                                        entry.and_modify(|(original_value, counter)| {
+                                            assert_eq!(
+                                                value, *original_value,
+                                                "Invalid payload: {}; expected: {}",
+                                                value, *original_value
+                                                );
+                                            assert_eq!(*counter, 0, "Duplicate key: {}", key);
+                                            *counter = *counter + 1;
+                                        });
                                     }
-                                }
-                            };
-                        });
+                                    entry @ Entry::Vacant(_) => {
+                                        // skip padding entries
+                                        if *entry.key() != 0 {
+                                            assert!(false, "Invalid key: {}", entry.key());
+                                        }
+                                    }
+                                };
+                            });
+                    }
 
                     original_tuples.iter().for_each(|(&key, &(_, counter))| {
                         assert_eq!(
@@ -493,7 +678,9 @@ mod tests {
                 #[test]
                 fn [<cpu_verify_partitions_ $fn_suffix>]() -> Result<(), Box<dyn Error>> {
                     const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
-                    const NUMA_NODE: u16 = 0;
+                    const THREADS: u32 = 1;
+
+                    let prefix_sum_algorithm = CpuHistogramAlgorithm::Chunked;
 
                     let mut data_key: Vec<$type> = vec![0; $tuples];
                     let mut data_pay: Vec<$type> = vec![0; $tuples];
@@ -501,39 +688,57 @@ mod tests {
                     UniformRelation::gen_attr(&mut data_key, $key_range)?;
                     UniformRelation::gen_attr(&mut data_pay, PAYLOAD_RANGE)?;
 
+                    let mut partition_offsets = PartitionOffsets::new(
+                        prefix_sum_algorithm.into(),
+                        THREADS,
+                        $radix_bits,
+                        Allocator::mem_alloc_fn(MemType::SysMem),
+                        );
+
                     let mut partitioned_relation = PartitionedRelation::new(
                         $tuples,
+                        prefix_sum_algorithm.into(),
                         $radix_bits,
-                        Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(NUMA_NODE, None)),
-                        Allocator::deref_mem_alloc_fn(DerefMemType::NumaMem(NUMA_NODE, None)),
+                        THREADS,
+                        Allocator::mem_alloc_fn(MemType::SysMem),
+                        Allocator::mem_alloc_fn(MemType::SysMem),
                     );
 
                     let mut partitioner = CpuRadixPartitioner::new(
+                        prefix_sum_algorithm,
                         $algorithm,
                         $radix_bits,
-                        Allocator::deref_mem_alloc_fn::<u64>(DerefMemType::NumaMem(NUMA_NODE, None))
+                        DerefMemType::SysMem,
                     );
 
+                    partitioner.prefix_sum(
+                        data_key.as_slice().into(),
+                        partition_offsets.chunks_mut().nth(0).unwrap(),
+                    )?;
+
                     partitioner.partition(
-                        &data_key,
-                        &data_pay,
-                        &mut partitioned_relation,
+                        data_key.as_slice().into(),
+                        data_pay.as_slice().into(),
+                        partition_offsets.chunks_mut().nth(0).unwrap(),
+                        partitioned_relation.chunks_mut().nth(0).unwrap(),
                     )?;
 
                     let mask = fanout($radix_bits) - 1;
-                    (0..partitioned_relation.partitions())
-                        .flat_map(|i| {
-                            iter::repeat(i)
-                                .zip(partitioned_relation[i as usize].iter())
-                        })
-                    .for_each(|(i, &tuple)| {
-                        let dst_partition = (tuple.key) & mask as $type;
-                        assert_eq!(
-                            dst_partition, i as $type,
-                            "Wrong partitioning detected: key {} in partition {}; expected partition {}",
-                            tuple.key, i, dst_partition
-                            );
-                    });
+                    let partition_id: Option<u32> = None;
+                    (0..partitioned_relation.num_chunks())
+                        .flat_map(|c| iter::repeat(c).zip(0..partitioned_relation.fanout()))
+                        .flat_map(|(c, p)| iter::repeat((c, p)).zip(partitioned_relation[(c, p)].iter()))
+                        .enumerate()
+                        .for_each(|(i, ((c, p), &tuple))| {
+                            let dst_partition = tuple.key & (mask as $type);
+                            let id_str = partition_id.map_or_else(|| "".to_string(), |id| format!("{}:", id));
+                            assert_eq!(
+                                dst_partition, p as $type,
+                                "Wrong partitioning detected in chunk {} at position {}: \
+                                key {} in partition {}{}; expected partition {}{}",
+                                c, i, tuple.key, id_str, p, id_str, dst_partition
+                                );
+                        });
 
                     Ok(())
                 }
@@ -546,7 +751,7 @@ mod tests {
         i32,
         15,
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::Chunked,
+        CpuRadixPartitionAlgorithm::NC,
         4
     );
 
@@ -555,7 +760,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::Chunked,
+        CpuRadixPartitionAlgorithm::NC,
         1
     );
 
@@ -564,7 +769,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::Chunked,
+        CpuRadixPartitionAlgorithm::NC,
         2
     );
 
@@ -573,7 +778,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::Chunked,
+        CpuRadixPartitionAlgorithm::NC,
         12
     );
 
@@ -582,7 +787,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::Chunked,
+        CpuRadixPartitionAlgorithm::NC,
         13
     );
 
@@ -591,7 +796,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::Chunked,
+        CpuRadixPartitionAlgorithm::NC,
         14
     );
 
@@ -600,7 +805,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::Chunked,
+        CpuRadixPartitionAlgorithm::NC,
         15
     );
 
@@ -609,7 +814,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::Chunked,
+        CpuRadixPartitionAlgorithm::NC,
         16
     );
 
@@ -618,7 +823,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::Chunked,
+        CpuRadixPartitionAlgorithm::NC,
         17
     );
 
@@ -627,7 +832,7 @@ mod tests {
         i32,
         (32 << 5) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::Chunked,
+        CpuRadixPartitionAlgorithm::NC,
         17
     );
 
@@ -636,7 +841,7 @@ mod tests {
         i32,
         ((32 << 10) - 7) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::Chunked,
+        CpuRadixPartitionAlgorithm::NC,
         10
     );
 
@@ -645,7 +850,7 @@ mod tests {
         i64,
         (64 << 20) / size_of::<i64>(),
         1..=(64 << 20),
-        CpuRadixPartitionAlgorithm::Chunked,
+        CpuRadixPartitionAlgorithm::NC,
         17
     );
 
@@ -654,7 +859,7 @@ mod tests {
         i32,
         15,
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwc,
+        CpuRadixPartitionAlgorithm::Swwc,
         4
     );
 
@@ -663,7 +868,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwc,
+        CpuRadixPartitionAlgorithm::Swwc,
         1
     );
 
@@ -672,7 +877,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwc,
+        CpuRadixPartitionAlgorithm::Swwc,
         2
     );
 
@@ -681,7 +886,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwc,
+        CpuRadixPartitionAlgorithm::Swwc,
         12
     );
 
@@ -690,7 +895,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwc,
+        CpuRadixPartitionAlgorithm::Swwc,
         13
     );
 
@@ -699,7 +904,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwc,
+        CpuRadixPartitionAlgorithm::Swwc,
         14
     );
 
@@ -708,7 +913,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwc,
+        CpuRadixPartitionAlgorithm::Swwc,
         15
     );
 
@@ -717,7 +922,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwc,
+        CpuRadixPartitionAlgorithm::Swwc,
         16
     );
 
@@ -726,7 +931,7 @@ mod tests {
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwc,
+        CpuRadixPartitionAlgorithm::Swwc,
         17
     );
 
@@ -735,7 +940,7 @@ mod tests {
         i32,
         (32 << 5) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwc,
+        CpuRadixPartitionAlgorithm::Swwc,
         17
     );
 
@@ -744,7 +949,7 @@ mod tests {
         i32,
         ((32 << 10) - 7) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwc,
+        CpuRadixPartitionAlgorithm::Swwc,
         10
     );
 
@@ -753,115 +958,127 @@ mod tests {
         i64,
         (64 << 20) / size_of::<i64>(),
         1..=(64 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwc,
+        CpuRadixPartitionAlgorithm::Swwc,
         17
     );
 
+    #[cfg(target_arch = "powerpc64")]
     test_cpu_seq!(
         swwc_simd_i32_small_data,
         i32,
         15,
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        CpuRadixPartitionAlgorithm::SwwcSimd,
         4
     );
 
+    #[cfg(target_arch = "powerpc64")]
     test_cpu_seq!(
         swwc_simd_i32_1_bit,
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        CpuRadixPartitionAlgorithm::SwwcSimd,
         1
     );
 
+    #[cfg(target_arch = "powerpc64")]
     test_cpu_seq!(
         swwc_simd_i32_2_bits,
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        CpuRadixPartitionAlgorithm::SwwcSimd,
         2
     );
 
+    #[cfg(target_arch = "powerpc64")]
     test_cpu_seq!(
         swwc_simd_i32_12_bits,
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        CpuRadixPartitionAlgorithm::SwwcSimd,
         12
     );
 
+    #[cfg(target_arch = "powerpc64")]
     test_cpu_seq!(
         swwc_simd_i32_13_bits,
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        CpuRadixPartitionAlgorithm::SwwcSimd,
         13
     );
 
+    #[cfg(target_arch = "powerpc64")]
     test_cpu_seq!(
         swwc_simd_i32_14_bits,
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        CpuRadixPartitionAlgorithm::SwwcSimd,
         14
     );
 
+    #[cfg(target_arch = "powerpc64")]
     test_cpu_seq!(
         swwc_simd_i32_15_bits,
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        CpuRadixPartitionAlgorithm::SwwcSimd,
         15
     );
 
+    #[cfg(target_arch = "powerpc64")]
     test_cpu_seq!(
         swwc_simd_i32_16_bits,
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        CpuRadixPartitionAlgorithm::SwwcSimd,
         16
     );
 
+    #[cfg(target_arch = "powerpc64")]
     test_cpu_seq!(
         swwc_simd_i32_17_bits,
         i32,
         (32 << 20) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        CpuRadixPartitionAlgorithm::SwwcSimd,
         17
     );
 
+    #[cfg(target_arch = "powerpc64")]
     test_cpu_seq!(
         swwc_simd_i32_less_tuples_than_partitions,
         i32,
         (32 << 5) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        CpuRadixPartitionAlgorithm::SwwcSimd,
         17
     );
 
+    #[cfg(target_arch = "powerpc64")]
     test_cpu_seq!(
         swwc_simd_i32_non_power_2_data_len,
         i32,
         ((32 << 10) - 7) / size_of::<i32>(),
         1..=(32 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        CpuRadixPartitionAlgorithm::SwwcSimd,
         10
     );
 
+    #[cfg(target_arch = "powerpc64")]
     test_cpu_seq!(
         swwc_simd_i64_17_bits,
         i64,
         (64 << 20) / size_of::<i64>(),
         1..=(64 << 20),
-        CpuRadixPartitionAlgorithm::ChunkedSwwcSimd,
+        CpuRadixPartitionAlgorithm::SwwcSimd,
         17
     );
 }

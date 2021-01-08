@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019-2020 Clemens Lutz, German Research Center for Artificial
+ * Copyright (c) 2019-2021 Clemens Lutz, German Research Center for Artificial
  * Intelligence
  * Author: Clemens Lutz, DFKI GmbH <clemens.lutz@dfki.de>
  */
@@ -12,12 +12,13 @@
 #ifndef GPU_RADIX_PARTITION_H
 #define GPU_RADIX_PARTITION_H
 
-#include <cstdint>
-
+#include <constants.h>
 #include "prefix_scan_state.h"
 
-#ifndef TUPLES_PER_THREAD
-#define TUPLES_PER_THREAD 5U
+#include <cstdint>
+
+#ifndef LASWWC_TUPLES_PER_THREAD
+#define LASWWC_TUPLES_PER_THREAD 5U
 #endif
 
 #ifndef ALIGN_BYTES

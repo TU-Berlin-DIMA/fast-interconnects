@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018-2020 German Research Center for Artificial Intelligence (DFKI)
+ * Copyright 2018-2021 German Research Center for Artificial Intelligence (DFKI)
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
@@ -29,6 +29,7 @@ use rustacuda::memory::DeviceCopy;
 use rustacuda::prelude::*;
 use serde::de::DeserializeOwned;
 use sql_ops::join::{cuda_radix_join, no_partitioning_join, HashingScheme};
+use sql_ops::partition::cpu_radix_partition::CpuRadixPartitionable;
 use sql_ops::partition::gpu_radix_partition::GpuRadixPartitionable;
 use sql_ops::partition::RadixBits;
 use std::convert::TryInto;
@@ -302,6 +303,7 @@ where
         + DeviceCopy
         + Sync
         + Send
+        + CpuRadixPartitionable
         + GpuRadixPartitionable
         + no_partitioning_join::NullKey
         + no_partitioning_join::CudaHashJoinable

@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2014 Cagri Balkesen, ETH Zurich
  * Copyright (c) 2014 Claude Barthels, ETH Zurich
- * Copyright (c) 2019-2020 Clemens Lutz, German Research Center for Artificial
+ * Copyright (c) 2019-2021 Clemens Lutz, German Research Center for Artificial
  * Intelligence
  *
  * Original sources by Cagri Balkesen and Claude Barthels are copyrighted under
@@ -46,6 +46,8 @@
  * limitations under the License.
  */
 
+#include <constants.h>
+
 #if defined(__x86_64__)
 #include <immintrin.h>
 #elif defined(__ALTIVEC__)
@@ -67,7 +69,7 @@
 // Defines the cache-line size; usually this should be passed via the build
 // script.
 #ifndef CACHE_LINE_SIZE
-#define CACHE_LINE_SIZE 64
+#define CACHE_LINE_SIZE 64U
 #endif
 
 // Defines the software write-combine buffer size; usually this should be passed
@@ -77,6 +79,26 @@
 #endif
 
 using namespace std;
+
+// Arguments to the prefix sum function.
+//
+// Note that the struct's layout must be kept in sync with its counterpart in
+// Rust.
+struct PrefixSumArgs {
+  // Inputs
+  const void *const __restrict__ partition_attr;
+  size_t const data_length;
+  size_t const canonical_chunk_length;
+  uint32_t const padding_length;
+  uint32_t const radix_bits;
+  uint32_t const ignore_bits;
+
+  // State
+  unsigned int *const __restrict__ tmp_partition_offsets;
+
+  // Outputs
+  unsigned long long *const __restrict__ partition_offsets;
+};
 
 // Arguments to the partitioning function.
 //
@@ -89,13 +111,14 @@ struct RadixPartitionArgs {
   size_t const data_length;
   size_t const padding_length;
   uint32_t const radix_bits;
+  uint32_t const ignore_bits;
+  const unsigned long long *const __restrict__ partition_offsets;
 
   // State
-  uint64_t *const __restrict__ tmp_partition_offsets;
+  unsigned long long *const __restrict__ tmp_partition_offsets;
   void *const __restrict__ write_combine_buffer;
 
   // Outputs
-  uint64_t *const __restrict__ partition_offsets;
   void *const __restrict__ partitioned_relation;
 };
 
@@ -204,6 +227,122 @@ void flush_buffer(void *const __restrict__ dst,
 #endif
 }
 
+// Chunked histogram and offset computation.
+//
+// See the Rust module for details.
+template <typename K, typename M>
+void cpu_chunked_prefix_sum(PrefixSumArgs &args, uint32_t const chunk_id,
+                            uint32_t const /* num_chunks */) {
+  const size_t fanout = 1UL << args.radix_bits;
+  const M mask = static_cast<M>(fanout - 1UL);
+
+  auto partition_attr =
+      static_cast<const K *const __restrict__>(args.partition_attr);
+
+  // Ensure counters are all zeroed
+  for (size_t i = 0; i < fanout; ++i) {
+    args.tmp_partition_offsets[i] = 0;
+  }
+
+  // Compute local histograms per partition for chunk
+#pragma GCC unroll 16
+  for (size_t i = 0; i < args.data_length; ++i) {
+    auto key = partition_attr[i];
+    M p_index = key_to_partition(key, mask, 0);
+    args.tmp_partition_offsets[p_index] += 1;
+  }
+
+  // Compute offsets with exclusive prefix sum
+  size_t partitioned_data_offset =
+      (args.canonical_chunk_length + args.padding_length * fanout) * chunk_id;
+  uint64_t offset = partitioned_data_offset + args.padding_length;
+  for (uint32_t i = 0; i < fanout; ++i) {
+    // Add data offset onto partitions offsets and write out the final offsets
+    // to device memory.
+    args.partition_offsets[i] = offset;
+
+    // Update offset
+    offset += static_cast<uint64_t>(args.tmp_partition_offsets[i]);
+    offset += args.padding_length;
+  }
+}
+
+#if defined(__ALTIVEC__)
+// Chunked histogram and offset computation with SIMD optimizations.
+//
+// See the Rust module for details.
+template <typename K, typename M>
+void cpu_chunked_prefix_sum_simd(PrefixSumArgs &args, uint32_t const chunk_id,
+                                 uint32_t const /* num_chunks */) {
+  constexpr size_t vec_len = sizeof(vector int) / sizeof(K);
+  const size_t fanout = 1UL << args.radix_bits;
+  const M mask = static_cast<M>(fanout - 1UL);
+
+  auto partition_attr =
+      static_cast<const K *const __restrict__>(args.partition_attr);
+
+  assert(((size_t)partition_attr) % vec_len == 0U &&
+         "128-bit intrinsics require 16-byte alignment");
+
+  const vector M mask_vsx = vec_splats(mask);
+  const vector M ignore_bits_vsx = vec_splats(static_cast<M>(0U));
+  size_t i;
+
+  // Ensure counters are all zeroed
+  for (size_t i = 0; i < fanout; ++i) {
+    args.tmp_partition_offsets[i] = 0;
+  }
+
+  // Compute local histograms per partition
+  i = 0;
+  if (args.data_length > vec_len * 4) {
+    for (; i < (args.data_length - vec_len * 4); i += vec_len * 4) {
+      const K *const base = &partition_attr[i];
+
+      vector K key0 = vec_ld(0, base);
+      vector K key1 = vec_ld(16, base);
+      vector K key2 = vec_ld(32, base);
+      vector K key3 = vec_ld(48, base);
+
+      vector M p_index0 =
+          key_to_partition_simd(key0, mask_vsx, ignore_bits_vsx);
+      vector M p_index1 =
+          key_to_partition_simd(key1, mask_vsx, ignore_bits_vsx);
+      vector M p_index2 =
+          key_to_partition_simd(key2, mask_vsx, ignore_bits_vsx);
+      vector M p_index3 =
+          key_to_partition_simd(key3, mask_vsx, ignore_bits_vsx);
+
+      for (uint32_t v = 0; v < vec_len; ++v) {
+        args.tmp_partition_offsets[p_index0[v]] += 1;
+        args.tmp_partition_offsets[p_index1[v]] += 1;
+        args.tmp_partition_offsets[p_index2[v]] += 1;
+        args.tmp_partition_offsets[p_index3[v]] += 1;
+      }
+    }
+  }
+  for (; i < args.data_length; ++i) {
+    auto key = partition_attr[i];
+    auto p_index = key_to_partition(key, mask, 0);
+    args.tmp_partition_offsets[p_index] += 1;
+  }
+
+  // Compute offsets with exclusive prefix sum
+  size_t partitioned_data_offset =
+      (args.canonical_chunk_length + args.padding_length * fanout) * chunk_id;
+  uint64_t offset = partitioned_data_offset + args.padding_length;
+  for (uint32_t i = 0; i < fanout; ++i) {
+    // Add data offset onto partitions offsets and write out the final offsets
+    // to device memory.
+    args.partition_offsets[i] = offset;
+
+    // Update offset
+    offset += static_cast<uint64_t>(args.tmp_partition_offsets[i]);
+    offset += args.padding_length;
+  }
+}
+#endif /* defined(__ALTIVEC__) */
+
 // Chunked radix partitioning.
 //
 // See the Rust module for details.
@@ -215,32 +354,19 @@ void cpu_chunked_radix_partition(RadixPartitionArgs &args) {
       static_cast<const V *const __restrict__>(args.payload_attr_data);
   auto partitioned_relation =
       static_cast<Tuple<K, V> *const __restrict__>(args.partitioned_relation);
+  auto tmp_partition_offsets = args.tmp_partition_offsets;
 
   const size_t fanout = 1UL << args.radix_bits;
   const M mask = static_cast<M>(fanout - 1UL);
+  const size_t partitioned_data_offset = args.partition_offsets[0];
 
-  // Ensure counters are all zeroed
+  // Load partition offsets.
   for (size_t i = 0; i < fanout; ++i) {
-    args.partition_offsets[i] = 0;
+    tmp_partition_offsets[i] =
+        args.partition_offsets[i] - partitioned_data_offset;
   }
 
-  // 1. Compute local histograms per partition
-#pragma GCC unroll 16
-  for (size_t i = 0; i < args.data_length; ++i) {
-    auto key = join_attr_data[i];
-    M p_index = key_to_partition(key, mask, 0);
-    args.partition_offsets[p_index] += 1;
-  }
-
-  // 2. Compute offsets with exclusive prefix sum
-  for (size_t i = 0, sum = 0, offset = 0; i < fanout; ++i, offset = sum) {
-    sum += args.partition_offsets[i];
-    offset += (i + 1) * args.padding_length;
-    args.partition_offsets[i] = offset;
-    args.tmp_partition_offsets[i] = offset;
-  }
-
-  // 3. Partition
+  // Partition.
 #pragma GCC unroll 16
   for (size_t i = 0; i < args.data_length; ++i) {
     Tuple<K, V> tuple;
@@ -248,7 +374,7 @@ void cpu_chunked_radix_partition(RadixPartitionArgs &args) {
     tuple.value = payload_attr_data[i];
 
     M p_index = key_to_partition(tuple.key, mask, 0);
-    auto &offset = args.tmp_partition_offsets[p_index];
+    auto &offset = tmp_partition_offsets[p_index];
     partitioned_relation[offset] = tuple;
     offset += 1;
   }
@@ -296,11 +422,10 @@ void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
   constexpr size_t tuples_per_buffer =
       WriteCombineBuffer<Tuple<K, V>, SWWC_BUFFER_SIZE>::tuples_per_buffer();
 
-  // 512-bit intrinsics require 64-byte alignment
-  assert(reinterpret_cast<size_t>(args.write_combine_buffer) % 64 == 0);
-
-  // Padding must be a multiple of the buffer length.
-  assert(args.padding_length % tuples_per_buffer == 0);
+  assert(reinterpret_cast<size_t>(args.write_combine_buffer) % 64UL == 0 &&
+         "512-bit intrinsics require 64-byte alignment");
+  assert(args.padding_length % tuples_per_buffer == 0 &&
+         "Padding must be a multiple of the buffer length");
 
   auto join_attr_data =
       static_cast<const K *const __restrict__>(args.join_attr_data);
@@ -314,29 +439,14 @@ void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
 
   const size_t fanout = 1UL << args.radix_bits;
   const M mask = static_cast<M>(fanout - 1UL);
+  const size_t partitioned_data_offset = args.partition_offsets[0];
 
-  // Ensure counters are all zeroed
+  // Load partition offsets.
   for (size_t i = 0; i < fanout; ++i) {
-    args.partition_offsets[i] = 0;
+    buffers[i].meta.slot = args.partition_offsets[i] - partitioned_data_offset;
   }
 
-  // 1. Compute local histograms per partition
-#pragma GCC unroll 16
-  for (size_t i = 0; i < args.data_length; ++i) {
-    auto key = join_attr_data[i];
-    M p_index = key_to_partition(key, mask, 0);
-    args.partition_offsets[p_index] += 1;
-  }
-
-  // 2. Compute offsets with exclusive prefix sum
-  for (size_t i = 0, sum = 0, offset = 0; i < fanout; ++i, offset = sum) {
-    sum += args.partition_offsets[i];
-    offset += (i + 1) * args.padding_length;
-    args.partition_offsets[i] = offset;
-    buffers[i].meta.slot = offset;
-  }
-
-  // 3. Partition into software write combine buffers
+  // Partition into software write combine buffers.
 #pragma GCC unroll 16
   for (size_t i = 0; i < args.data_length; ++i) {
     K key = join_attr_data[i];
@@ -359,7 +469,8 @@ void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
 }
 
 #if defined(__ALTIVEC__)
-// Chunked radix partitioning with software write-combining.
+// Chunked radix partitioning with software write-combining and SIMD
+// optimizations.
 //
 // See the Rust module for details.
 template <typename K, typename V, typename M>
@@ -368,11 +479,12 @@ void cpu_chunked_radix_partition_swwc_simd(RadixPartitionArgs &args) {
       WriteCombineBuffer<Tuple<K, V>, SWWC_BUFFER_SIZE>::tuples_per_buffer();
   constexpr size_t vec_len = sizeof(vector int) / sizeof(K);
 
-  // 512-bit intrinsics require 64-byte alignment
-  assert(reinterpret_cast<size_t>(args.write_combine_buffer) % 64 == 0);
-
-  // Padding must be a multiple of the buffer length.
-  assert(args.padding_length % tuples_per_buffer == 0);
+  assert(reinterpret_cast<size_t>(args.write_combine_buffer) %
+                 SWWC_BUFFER_SIZE ==
+             0 &&
+         "SWWC buffer not sufficiently aligned");
+  assert(args.padding_length % tuples_per_buffer == 0 &&
+         "Padding must be a multiple of the buffer length");
 
   auto join_attr_data =
       static_cast<const K *const __restrict__>(args.join_attr_data);
@@ -392,59 +504,18 @@ void cpu_chunked_radix_partition_swwc_simd(RadixPartitionArgs &args) {
 
   const size_t fanout = 1UL << args.radix_bits;
   const M mask = static_cast<M>(fanout - 1UL);
+  const size_t partitioned_data_offset = args.partition_offsets[0];
 
   const vector M mask_vsx = vec_splats(mask);
   const vector M ignore_bits_vsx = vec_splats(static_cast<M>(0U));
   size_t i;
 
-  // Ensure counters are all zeroed
+  // Load partition offsets
   for (size_t i = 0; i < fanout; ++i) {
-    args.partition_offsets[i] = 0;
+    buffers[i].meta.slot = args.partition_offsets[i] - partitioned_data_offset;
   }
 
-  // 1. Compute local histograms per partition
-  i = 0;
-  if (args.data_length > vec_len * 4) {
-    for (; i < (args.data_length - vec_len * 4); i += vec_len * 4) {
-      const K *const base = &join_attr_data[i];
-
-      vector K key0 = vec_ld(0, base);
-      vector K key1 = vec_ld(16, base);
-      vector K key2 = vec_ld(32, base);
-      vector K key3 = vec_ld(48, base);
-
-      vector M p_index0 =
-          key_to_partition_simd(key0, mask_vsx, ignore_bits_vsx);
-      vector M p_index1 =
-          key_to_partition_simd(key1, mask_vsx, ignore_bits_vsx);
-      vector M p_index2 =
-          key_to_partition_simd(key2, mask_vsx, ignore_bits_vsx);
-      vector M p_index3 =
-          key_to_partition_simd(key3, mask_vsx, ignore_bits_vsx);
-
-      for (uint32_t v = 0; v < vec_len; ++v) {
-        args.partition_offsets[p_index0[v]] += 1;
-        args.partition_offsets[p_index1[v]] += 1;
-        args.partition_offsets[p_index2[v]] += 1;
-        args.partition_offsets[p_index3[v]] += 1;
-      }
-    }
-  }
-  for (; i < args.data_length; ++i) {
-    auto key = join_attr_data[i];
-    auto p_index = key_to_partition(key, mask, 0);
-    args.partition_offsets[p_index] += 1;
-  }
-
-  // 2. Compute offsets with exclusive prefix sum
-  for (size_t i = 0, sum = 0, offset = 0; i < fanout; ++i, offset = sum) {
-    sum += args.partition_offsets[i];
-    offset += (i + 1) * args.padding_length;
-    args.partition_offsets[i] = offset;
-    buffers[i].meta.slot = offset;
-  }
-
-  // 3. Partition into software write combine buffers
+  // Partition into software write combine buffers
   i = 0;
   if (args.data_length > vec_len * 4) {
     for (; i < (args.data_length - vec_len * 4); i += vec_len * 4) {
@@ -505,6 +576,48 @@ void cpu_chunked_radix_partition_swwc_simd(RadixPartitionArgs &args) {
 
 // Exports the the size of all SWWC buffers.
 extern "C" size_t cpu_swwc_buffer_bytes() { return SWWC_BUFFER_SIZE; }
+
+// Exports the prefix sum function for 4-byte keys.
+extern "C" void cpu_chunked_prefix_sum_int32(PrefixSumArgs *const args,
+                                             uint32_t const chunk_id,
+                                             uint32_t const num_chunks) {
+  cpu_chunked_prefix_sum<int, unsigned>(*args, chunk_id, num_chunks);
+}
+
+// Exports the prefix sum function for 8-byte keys.
+extern "C" void cpu_chunked_prefix_sum_int64(PrefixSumArgs *const args,
+                                             uint32_t const chunk_id,
+                                             uint32_t const num_chunks) {
+  cpu_chunked_prefix_sum<long long, unsigned long long>(*args, chunk_id,
+                                                        num_chunks);
+}
+
+#if defined(__ALTIVEC__)
+// Exports the SIMD prefix sum function for 4-byte keys.
+extern "C" void cpu_chunked_prefix_sum_simd_int32(PrefixSumArgs *const args,
+                                                  uint32_t const chunk_id,
+                                                  uint32_t const num_chunks) {
+  cpu_chunked_prefix_sum_simd<int, unsigned>(*args, chunk_id, num_chunks);
+}
+
+// Exports the SIMD prefix sum function for 8-byte keys.
+extern "C" void cpu_chunked_prefix_sum_simd_int64(PrefixSumArgs *const args,
+                                                  uint32_t const chunk_id,
+                                                  uint32_t const num_chunks) {
+  cpu_chunked_prefix_sum_simd<long long, unsigned long long>(*args, chunk_id,
+                                                             num_chunks);
+}
+#else  // define dummy function symbols
+// Exports the SIMD prefix sum function for 4-byte keys.
+extern "C" void cpu_chunked_prefix_sum_simd_int32(PrefixSumArgs *const,
+                                                  uint32_t const,
+                                                  uint32_t const) {}
+
+// Exports the SIMD prefix sum function for 8-byte keys.
+extern "C" void cpu_chunked_prefix_sum_simd_int64(PrefixSumArgs *const,
+                                                  uint32_t const,
+                                                  uint32_t const) {}
+#endif /* defined(__ALTIVEC__) */
 
 // Exports the partitioning function for 8-byte key/value tuples.
 extern "C" void cpu_chunked_radix_partition_int32_int32(

@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2020 Clemens Lutz, German Research Center for Artificial Intelligence
+ * Copyright 2019-2021 Clemens Lutz, German Research Center for Artificial Intelligence
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,16 +15,33 @@
  * limitations under the License.
  */
 
-use super::fanout;
-use super::gpu_radix_partition::GpuHistogramAlgorithm;
+use super::{fanout, HistogramAlgorithmType};
 use crate::error::{ErrorKind, Result};
 use numa_gpu::runtime::allocator::MemAllocFn;
-use numa_gpu::runtime::memory::{LaunchableMem, LaunchableMutSlice, LaunchableSlice, Mem};
+use numa_gpu::runtime::memory::{LaunchableMem, LaunchableMutSlice, Mem};
+use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 use rustacuda::memory::DeviceCopy;
 use std::convert::TryInto;
 use std::mem;
 use std::ops::{Index, IndexMut};
-use std::slice::{Chunks, ChunksMut};
+use std::slice::ChunksMut;
+
+/// Defines the padding bytes between partitions.
+///
+/// Padding is necessary for partitioning algorithms to align writes. Aligned writes have fixed
+/// length and may overwrite the padding space in front of their partition.  For this reason,
+/// also the first partition includes padding in front.
+///
+/// # Invariants
+///
+/// * The padding length must be equal to or larger than the alignment:
+///   padding_bytes >= align_bytes
+const PADDING_BYTES: u32 = 128;
+
+/// Convert padding bytes into padding length for the type `T`
+fn padding_len<T: Sized>() -> u32 {
+    PADDING_BYTES / mem::size_of::<T>() as u32
+}
 
 /// Partition offsets for an array of chunked partitions.
 ///
@@ -58,8 +75,8 @@ use std::slice::{Chunks, ChunksMut};
 ///     (e.g., the grid size)
 #[derive(Debug)]
 pub struct PartitionOffsets<T: DeviceCopy> {
-    pub offsets: Mem<u64>,
-    pub local_offsets: Option<Mem<u64>>,
+    pub(super) offsets: Mem<u64>,
+    pub(super) local_offsets: Option<Mem<u64>>,
     chunks: u32,
     radix_bits: u32,
     phantom_data: std::marker::PhantomData<T>,
@@ -67,24 +84,22 @@ pub struct PartitionOffsets<T: DeviceCopy> {
 
 impl<T: DeviceCopy> PartitionOffsets<T> {
     /// Creates a new partition offsets array.
-    // TODO: remove dependency on GpuHistogramAlgorithm
     pub fn new(
-        histogram_algorithm: GpuHistogramAlgorithm,
+        histogram_algorithm_type: HistogramAlgorithmType,
         max_chunks: u32,
         radix_bits: u32,
         alloc_fn: MemAllocFn<u64>,
     ) -> Self {
-        let chunks: u32 = match histogram_algorithm {
-            GpuHistogramAlgorithm::CpuChunked => max_chunks,
-            GpuHistogramAlgorithm::GpuChunked => max_chunks,
-            GpuHistogramAlgorithm::GpuContiguous => 1,
+        let chunks: u32 = match histogram_algorithm_type {
+            HistogramAlgorithmType::Chunked => max_chunks,
+            HistogramAlgorithmType::Contiguous => 1,
         };
 
         let num_partitions = fanout(radix_bits) as usize;
         let offsets = alloc_fn(num_partitions * chunks as usize);
 
-        let local_offsets = match histogram_algorithm {
-            GpuHistogramAlgorithm::GpuContiguous => {
+        let local_offsets = match histogram_algorithm_type {
+            HistogramAlgorithmType::Contiguous => {
                 Some(alloc_fn(num_partitions * max_chunks as usize))
             }
             _ => None,
@@ -100,7 +115,7 @@ impl<T: DeviceCopy> PartitionOffsets<T> {
     }
 
     /// Returs the number of chunks.
-    pub fn chunks(&self) -> u32 {
+    pub fn num_chunks(&self) -> u32 {
         self.chunks
     }
 
@@ -123,8 +138,14 @@ impl<T: DeviceCopy> PartitionOffsets<T> {
     }
 
     /// Returns the number of padding elements per partition.
-    pub fn padding_len(&self) -> u32 {
-        super::GPU_PADDING_BYTES / mem::size_of::<T>() as u32
+    pub(super) fn padding_len(&self) -> u32 {
+        padding_len::<T>()
+    }
+}
+
+impl<T: DeviceCopy> EnsurePhysicallyBacked for PartitionOffsets<T> {
+    fn ensure_physically_backed(&mut self) {
+        self.offsets.ensure_physically_backed();
     }
 }
 
@@ -186,17 +207,18 @@ impl<'a, T: DeviceCopy> Iterator for PartitionOffsetsChunksMut<'a, T> {
 /// The purpose is to allow thread-safe writes to `PartitionOffsets`.
 #[derive(Debug)]
 pub struct PartitionOffsetsMutSlice<'a, T: DeviceCopy> {
-    pub(crate) offsets: LaunchableMutSlice<'a, u64>,
-    pub(crate) chunk_id: u32,
-    pub(crate) chunks: u32,
-    pub(crate) radix_bits: u32,
+    // FIXME: convert to normal slice, and check that not DevMem in chunks_mut()
+    pub(super) offsets: LaunchableMutSlice<'a, u64>,
+    pub(super) chunk_id: u32,
+    pub(super) chunks: u32,
+    pub(super) radix_bits: u32,
     phantom_data: std::marker::PhantomData<T>,
 }
 
 impl<'a, T: DeviceCopy> PartitionOffsetsMutSlice<'a, T> {
     /// Returns the number of padding elements per partition.
-    pub fn padding_len(&self) -> u32 {
-        super::GPU_PADDING_BYTES / mem::size_of::<T>() as u32
+    pub(super) fn padding_len(&self) -> u32 {
+        padding_len::<T>()
     }
 }
 
@@ -214,10 +236,10 @@ impl<'a, T: DeviceCopy> PartitionOffsetsMutSlice<'a, T> {
 ///     (e.g., the grid size).
 #[derive(Debug)]
 pub struct PartitionedRelation<T: DeviceCopy> {
-    pub(crate) relation: Mem<T>,
-    pub(crate) offsets: Mem<u64>,
-    pub(crate) chunks: u32,
-    pub(crate) radix_bits: u32,
+    pub relation: Mem<T>,
+    pub offsets: Mem<u64>,
+    pub(super) chunks: u32,
+    pub(super) radix_bits: u32,
 }
 
 impl<T: DeviceCopy> PartitionedRelation<T> {
@@ -225,19 +247,18 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
     /// necessary padding and metadata.
     pub fn new(
         len: usize,
-        histogram_algorithm: GpuHistogramAlgorithm,
+        histogram_algorithm_type: HistogramAlgorithmType,
         radix_bits: u32,
         max_chunks: u32,
         partition_alloc_fn: MemAllocFn<T>,
         offsets_alloc_fn: MemAllocFn<u64>,
     ) -> Self {
-        let chunks: u32 = match histogram_algorithm {
-            GpuHistogramAlgorithm::CpuChunked => max_chunks,
-            GpuHistogramAlgorithm::GpuChunked => max_chunks,
-            GpuHistogramAlgorithm::GpuContiguous => 1,
+        let chunks: u32 = match histogram_algorithm_type {
+            HistogramAlgorithmType::Chunked => max_chunks,
+            HistogramAlgorithmType::Contiguous => 1,
         };
 
-        let padding_len = super::GPU_PADDING_BYTES / mem::size_of::<T>() as u32;
+        let padding_len = padding_len::<T>();
         let num_partitions = fanout(radix_bits) as usize;
         let relation_len = len + (num_partitions * chunks as usize) * padding_len as usize;
 
@@ -315,8 +336,8 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
     }
 
     /// Returns the number of padding elements per partition.
-    pub(crate) fn padding_len(&self) -> u32 {
-        super::GPU_PADDING_BYTES / mem::size_of::<T>() as u32
+    pub fn padding_len(&self) -> u32 {
+        padding_len::<T>()
     }
 
     /// Returns the internal representation of the relation data as a slice.
@@ -411,13 +432,20 @@ impl<T: DeviceCopy> IndexMut<(u32, u32)> for PartitionedRelation<T> {
     }
 }
 
+impl<T: DeviceCopy> EnsurePhysicallyBacked for PartitionedRelation<T> {
+    fn ensure_physically_backed(&mut self) {
+        self.relation.ensure_physically_backed();
+        self.offsets.ensure_physically_backed();
+    }
+}
+
 /// An iterator that generates `PartitionedRelationMutSlice`.
 #[derive(Debug)]
 pub struct PartitionedRelationChunksMut<'a, T: DeviceCopy> {
     // Note: unsafe slices, must convert back to LaunchableMutSlice
     relation_chunks: ChunksMut<'a, T>,
     // Note: unsafe slices, must convert back to LaunchableSlice
-    offsets_chunks: Chunks<'a, u64>,
+    offsets_chunks: ChunksMut<'a, u64>,
     chunk_id: u32,
     chunks: u32,
     radix_bits: u32,
@@ -438,9 +466,9 @@ impl<'a, T: DeviceCopy> PartitionedRelationChunksMut<'a, T> {
                 .chunks_mut(rel_chunk_size);
             let offsets_chunks = rel
                 .offsets
-                .as_launchable_slice()
-                .as_slice()
-                .chunks(off_chunk_size);
+                .as_launchable_mut_slice()
+                .as_mut_slice()
+                .chunks_mut(off_chunk_size);
 
             Self {
                 relation_chunks,
@@ -468,7 +496,7 @@ impl<'a, T: DeviceCopy> Iterator for PartitionedRelationChunksMut<'a, T> {
 
             Some(PartitionedRelationMutSlice {
                 relation: r.as_launchable_mut_slice(),
-                offsets: o.as_launchable_slice(),
+                offsets: o.as_launchable_mut_slice(),
                 chunk_id,
                 chunks: self.chunks,
                 radix_bits: self.radix_bits,
@@ -483,9 +511,17 @@ impl<'a, T: DeviceCopy> Iterator for PartitionedRelationChunksMut<'a, T> {
 /// The purpose is to allow thread-safe writes to a `PartitionedRelation`.
 #[derive(Debug)]
 pub struct PartitionedRelationMutSlice<'a, T> {
-    pub relation: LaunchableMutSlice<'a, T>,
-    pub offsets: LaunchableSlice<'a, u64>,
-    pub chunk_id: u32,
-    pub chunks: u32,
-    pub radix_bits: u32,
+    // FIXME: convert to normal slice, and check that not DevMem in chunks_mut()
+    pub(super) relation: LaunchableMutSlice<'a, T>,
+    pub(super) offsets: LaunchableMutSlice<'a, u64>,
+    pub(super) chunk_id: u32,
+    pub(super) chunks: u32,
+    pub(super) radix_bits: u32,
+}
+
+impl<'a, T: DeviceCopy> PartitionedRelationMutSlice<'a, T> {
+    /// Returns the number of padding elements per partition.
+    pub(super) fn padding_len(&self) -> u32 {
+        padding_len::<T>()
+    }
 }

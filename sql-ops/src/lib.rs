@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019-2020, Clemens Lutz <lutzcle@cml.li>
+ * Copyright (c) 2019-2021, Clemens Lutz <lutzcle@cml.li>
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
@@ -12,3 +12,8 @@ pub mod error;
 pub mod join;
 pub mod partition;
 pub mod prefix_scan;
+
+#[allow(dead_code)]
+pub(crate) mod constants {
+    include!(concat!(env!("OUT_DIR"), "/constants.rs"));
+}

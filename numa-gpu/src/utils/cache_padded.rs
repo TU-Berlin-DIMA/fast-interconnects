@@ -12,7 +12,7 @@
 ///
 /// Pads the value to 128 bytes, because Intel Sandy Bridge and later pre-fetch
 /// two 64-byte cache lines, and IBM POWER processors have 128-byte cache lines.
-#[derive(Clone, Copy, Default, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 #[repr(align(128))]
 pub struct CachePadded<T> {
     pub value: T,

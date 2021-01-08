@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2019 NVIDIA CORPORATION. All rights reserved.
- * Copyright (c) 2019-2020 Clemens Lutz, German Research Center for Artificial
+ * Copyright (c) 2019-2021 Clemens Lutz, German Research Center for Artificial
  * Intelligence
  *
  * Redistribution and use in source and binary forms, with or without
@@ -31,6 +31,11 @@
 #ifndef PREFIX_SCAN_H
 #define PREFIX_SCAN_H
 
+#include <constants.h>
+
+#include "prefix_scan_state.h"
+#include "ptx_memory.h"
+
 #ifndef SIZE_T
 #define SIZE_T unsigned int
 #endif
@@ -40,9 +45,6 @@
 #endif
 
 #include <cstdint>
-
-#include "prefix_scan_state.h"
-#include "ptx_memory.h"
 
 // Grid synchronization is only supported on Pascal and higher, and will not
 // compile on Maxwell or lower.

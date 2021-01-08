@@ -597,6 +597,10 @@ impl<'a, T> LaunchableSlice<'a, T> {
         self.0.len()
     }
 
+    pub fn as_ptr(&self) -> *const T {
+        self.0.as_ptr()
+    }
+
     /// Returns a launchable pointer to the beginning of the slice.
     pub fn as_launchable_ptr(&self) -> LaunchablePtr<T> {
         LaunchablePtr(self.0.as_ptr())
@@ -623,6 +627,14 @@ impl<'a, T> LaunchableMutSlice<'a, T> {
     /// Returns the length of the slice.
     pub fn len(&self) -> usize {
         self.0.len()
+    }
+
+    pub fn as_ptr(&self) -> *const T {
+        self.0.as_ptr()
+    }
+
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        self.0.as_mut_ptr()
     }
 
     /// Returns a launchable pointer to the beginning of the slice.

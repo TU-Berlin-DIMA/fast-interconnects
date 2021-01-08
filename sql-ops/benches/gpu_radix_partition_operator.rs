@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2019-2020 Clemens Lutz, German Research Center for Artificial Intelligence
+ * Copyright 2019-2021 Clemens Lutz, German Research Center for Artificial Intelligence
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
@@ -24,11 +24,15 @@ use rustacuda::memory::DeviceCopy;
 use rustacuda::stream::{Stream, StreamFlags};
 use serde_derive::Serialize;
 use serde_repr::Serialize_repr;
+use sql_ops::partition::cpu_radix_partition::{
+    CpuHistogramAlgorithm, CpuRadixPartitionAlgorithm, CpuRadixPartitionable, CpuRadixPartitioner,
+};
 use sql_ops::partition::gpu_radix_partition::{
     GpuHistogramAlgorithm, GpuRadixPartitionAlgorithm, GpuRadixPartitionable, GpuRadixPartitioner,
-    RadixPartitionInputChunkable,
 };
-use sql_ops::partition::{PartitionOffsets, PartitionedRelation, RadixPass};
+use sql_ops::partition::{
+    PartitionOffsets, PartitionedRelation, RadixPartitionInputChunkable, RadixPass,
+};
 use std::convert::TryInto;
 use std::error::Error;
 use std::fs;
@@ -310,7 +314,14 @@ fn gpu_radix_partition_benchmark<T, W>(
     csv_writer: &mut csv::Writer<W>,
 ) -> Result<(), Box<dyn Error>>
 where
-    T: Clone + Default + Send + Sync + DeviceCopy + FromPrimitive + GpuRadixPartitionable,
+    T: Clone
+        + Default
+        + Send
+        + Sync
+        + DeviceCopy
+        + FromPrimitive
+        + CpuRadixPartitionable
+        + GpuRadixPartitionable,
     W: Write,
 {
     CurrentContext::set_cache_config(CacheConfig::PreferShared)?;
@@ -361,7 +372,7 @@ where
 
             let mut partitioned_relation = PartitionedRelation::new(
                 input_data.0.len(),
-                histogram_algorithm,
+                histogram_algorithm.into(),
                 radix_bits.into(),
                 grid_size.x,
                 Allocator::mem_alloc_fn(output_mem_type.clone()),
@@ -370,7 +381,7 @@ where
 
             let result: Result<(), Box<dyn Error>> = (0..repeat).into_iter().try_for_each(|_| {
                 let mut partition_offsets = PartitionOffsets::new(
-                    histogram_algorithm,
+                    histogram_algorithm.into(),
                     grid_size.x,
                     radix_bits,
                     Allocator::mem_alloc_fn(MemType::CudaPinnedMem),
@@ -383,15 +394,22 @@ where
                         let key_slice: &[T] = (&input_data.0)
                             .try_into()
                             .map_err(|_| "Failed to run CPU prefix sum on device memory")?;
-                        let key_chunks = key_slice.input_chunks::<T>(&radix_prnr)?;
+                        let key_chunks = key_slice.input_chunks::<T>(grid_size.x)?;
                         let out_chunks = partition_offsets.chunks_mut();
 
                         thread_pool.scope(|s| {
-                            for (input, mut output) in key_chunks.iter().zip(out_chunks) {
-                                let radix_prnr_ref = &radix_prnr;
+                            for (input, output) in key_chunks.into_iter().zip(out_chunks) {
                                 s.spawn(move |_| {
-                                    radix_prnr_ref
-                                        .cpu_prefix_sum(RadixPass::First, input, &mut output)
+                                    // FIXME: don't hard-code histogram algorithm
+                                    let mut radix_prnr = CpuRadixPartitioner::new(
+                                        CpuHistogramAlgorithm::Chunked,
+                                        CpuRadixPartitionAlgorithm::NC,
+                                        radix_bits,
+                                        // FIXME: use processor-local local NUMA memory
+                                        DerefMemType::NumaMem(0, None),
+                                    );
+                                    radix_prnr
+                                        .prefix_sum(input, output)
                                         .expect("Failed to run CPU prefix sum");
                                 })
                             }

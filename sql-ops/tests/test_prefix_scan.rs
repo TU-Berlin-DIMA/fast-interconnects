@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019-2020 Clemens Lutz, German Research Center for Artificial
+ * Copyright (c) 2019-2021 Clemens Lutz, German Research Center for Artificial
  * Intelligence
  * Author: Clemens Lutz, DFKI GmbH <clemens.lutz@dfki.de>
  */
@@ -21,6 +21,11 @@ use std::error::Error;
 use std::ffi::CString;
 use std::mem::size_of;
 
+#[allow(dead_code)]
+mod constants {
+    include!(concat!(env!("OUT_DIR"), "/constants.rs"));
+}
+
 fn block_prefix_sum<G, B>(
     data_len: usize,
     grid_size: G,
@@ -34,7 +39,6 @@ where
     let module_path = CString::new(env!("CUDAUTILS_PATH"))?;
     let module = Module::load_from_file(&module_path)?;
     let _warp_size = CurrentContext::get_device()?.get_attribute(DeviceAttribute::WarpSize)? as u32;
-    let log2_num_banks = env!("LOG2_NUM_BANKS").parse::<u32>()?;
 
     let data: Vec<u64> = (0..data_len)
         .into_iter()
@@ -45,7 +49,7 @@ where
     let bs: BlockSize = block_size.into();
     // let shared_mem_size = bs.x / warp_size;
     let mut shared_mem_size = bs.x * size_of::<u64>() as u32;
-    shared_mem_size += shared_mem_size >> log2_num_banks;
+    shared_mem_size += shared_mem_size >> constants::LOG2_NUM_BANKS;
     let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
     let data_len_u32 = data_len as u32;
 

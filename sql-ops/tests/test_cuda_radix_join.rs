@@ -58,14 +58,14 @@ fn gpu_verify_join_aggregate(
         .for_each(|(i, x)| *x = (i + 1) as i32);
 
     let mut inner_rel_partition_offsets = PartitionOffsets::new(
-        histogram_algorithm,
+        histogram_algorithm.into(),
         num_chunks.x,
         radix_bits.into(),
         Allocator::mem_alloc_fn(MemType::CudaUniMem),
     );
 
     let mut outer_rel_partition_offsets = PartitionOffsets::new(
-        histogram_algorithm,
+        histogram_algorithm.into(),
         num_chunks.x,
         radix_bits.into(),
         Allocator::mem_alloc_fn(MemType::CudaUniMem),
@@ -73,7 +73,7 @@ fn gpu_verify_join_aggregate(
 
     let mut inner_rel_partitions = PartitionedRelation::new(
         inner_rel_key.len(),
-        histogram_algorithm,
+        histogram_algorithm.into(),
         radix_bits.into(),
         num_chunks.x,
         Allocator::mem_alloc_fn(MemType::CudaUniMem),
@@ -82,7 +82,7 @@ fn gpu_verify_join_aggregate(
 
     let mut outer_rel_partitions = PartitionedRelation::new(
         outer_rel_key.len(),
-        histogram_algorithm,
+        histogram_algorithm.into(),
         radix_bits.into(),
         num_chunks.x,
         Allocator::mem_alloc_fn(MemType::CudaUniMem),

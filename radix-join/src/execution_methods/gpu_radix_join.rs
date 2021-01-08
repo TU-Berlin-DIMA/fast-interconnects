@@ -4,14 +4,14 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2020, Clemens Lutz <lutzcle@cml.li>
+ * Copyright (c) 2020-2021, Clemens Lutz <lutzcle@cml.li>
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
 use crate::error::{ErrorKind, Result};
 use crate::measurement::harness::RadixJoinPoint;
 use data_store::join_data::JoinData;
-use numa_gpu::runtime::allocator::{self, Allocator, MemType};
+use numa_gpu::runtime::allocator::{self, Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::memory::*;
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
@@ -19,11 +19,15 @@ use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
 use rustacuda::stream::{Stream, StreamFlags};
 use sql_ops::join::{cuda_radix_join, no_partitioning_join, HashingScheme};
+use sql_ops::partition::cpu_radix_partition::{
+    CpuHistogramAlgorithm, CpuRadixPartitionAlgorithm, CpuRadixPartitionable, CpuRadixPartitioner,
+};
 use sql_ops::partition::gpu_radix_partition::{
     GpuHistogramAlgorithm, GpuRadixPartitionAlgorithm, GpuRadixPartitionable, GpuRadixPartitioner,
-    RadixPartitionInputChunkable,
 };
-use sql_ops::partition::{PartitionOffsets, PartitionedRelation, RadixBits, RadixPass};
+use sql_ops::partition::{
+    PartitionOffsets, PartitionedRelation, RadixBits, RadixPartitionInputChunkable, RadixPass,
+};
 use std::cmp;
 use std::convert::TryInto;
 use std::sync::Arc;
@@ -47,6 +51,7 @@ where
         + DeviceCopy
         + Sync
         + Send
+        + CpuRadixPartitionable
         + GpuRadixPartitionable
         + no_partitioning_join::NullKey
         + no_partitioning_join::CudaHashJoinable
@@ -95,7 +100,7 @@ where
 
     let mut inner_rel_partitions = PartitionedRelation::new(
         data.build_relation_key.len(),
-        histogram_algorithms[0],
+        histogram_algorithms[0].into(),
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         max_chunks_1st,
         Allocator::mem_alloc_fn(partitions_mem_type.clone()),
@@ -104,7 +109,7 @@ where
 
     let mut outer_rel_partitions = PartitionedRelation::new(
         data.probe_relation_key.len(),
-        histogram_algorithms[0],
+        histogram_algorithms[0].into(),
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         max_chunks_1st,
         Allocator::mem_alloc_fn(partitions_mem_type.clone()),
@@ -112,14 +117,14 @@ where
     );
 
     let mut inner_rel_partition_offsets = PartitionOffsets::new(
-        histogram_algorithms[0],
+        histogram_algorithms[0].into(),
         max_chunks_1st,
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         Allocator::mem_alloc_fn(MemType::CudaUniMem),
     );
 
     let mut outer_rel_partition_offsets = PartitionOffsets::new(
-        histogram_algorithms[0],
+        histogram_algorithms[0].into(),
         max_chunks_1st,
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         Allocator::mem_alloc_fn(MemType::CudaUniMem),
@@ -146,28 +151,35 @@ where
             let inner_key_slice: &[T] = (&data.build_relation_key).try_into().map_err(|_| {
                 ErrorKind::RuntimeError("Failed to run CPU prefix sum on device memory".into())
             })?;
-            let inner_key_chunks = inner_key_slice.input_chunks::<T>(&radix_prnr)?;
+            let inner_key_chunks = inner_key_slice.input_chunks::<T>(max_chunks_1st)?;
             let inner_offsets_chunks = inner_rel_partition_offsets.chunks_mut();
 
             let outer_key_slice: &[T] = (&data.probe_relation_key).try_into().map_err(|_| {
                 ErrorKind::RuntimeError("Failed to run CPU prefix sum on device memory".into())
             })?;
-            let outer_key_chunks = outer_key_slice.input_chunks::<T>(&radix_prnr)?;
+            let outer_key_chunks = outer_key_slice.input_chunks::<T>(max_chunks_1st)?;
             let outer_offsets_chunks = outer_rel_partition_offsets.chunks_mut();
 
             thread_pool.scope(|s| {
                 // First outer and then inner, because inner is smaller. Both have equal amount
                 // of chunks, thus inner chunks are smaller. Scheduling the smaller chunks last
                 // potentially mitigates stragglers.
-                for (input, mut output) in outer_key_chunks
-                    .iter()
+                for (input, output) in outer_key_chunks
+                    .into_iter()
                     .zip(outer_offsets_chunks)
-                    .chain(inner_key_chunks.iter().zip(inner_offsets_chunks))
+                    .chain(inner_key_chunks.into_iter().zip(inner_offsets_chunks))
                 {
-                    let radix_prnr_ref = &radix_prnr;
                     s.spawn(move |_| {
-                        radix_prnr_ref
-                            .cpu_prefix_sum(RadixPass::First, input, &mut output)
+                        // FIXME: don't hard-code histogram algorithm
+                        let mut radix_prnr = CpuRadixPartitioner::new(
+                            CpuHistogramAlgorithm::Chunked,
+                            CpuRadixPartitionAlgorithm::NC,
+                            radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
+                            // FIXME: use processor-local local NUMA memory
+                            DerefMemType::NumaMem(0, None),
+                        );
+                        radix_prnr
+                            .prefix_sum(input, output)
                             .expect("Failed to run CPU prefix sum");
                     })
                 }
@@ -239,13 +251,13 @@ where
 
     for partition_id in 0..radix_bits.pass_fanout(RadixPass::First).unwrap() {
         let mut inner_rel_partition_offsets_2nd = PartitionOffsets::new(
-            histogram_algorithms[1],
+            histogram_algorithms[1].into(),
             max_chunks_2nd,
             radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
             Allocator::mem_alloc_fn(MemType::CudaDevMem),
         );
         let mut outer_rel_partition_offsets_2nd = PartitionOffsets::new(
-            histogram_algorithms[1],
+            histogram_algorithms[1].into(),
             max_chunks_2nd,
             radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
             Allocator::mem_alloc_fn(MemType::CudaDevMem),
@@ -256,7 +268,7 @@ where
 
         let mut inner_rel_partitions_2nd = PartitionedRelation::new(
             inner_partition_len,
-            histogram_algorithms[1],
+            histogram_algorithms[1].into(),
             radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
             max_chunks_2nd,
             Allocator::mem_alloc_fn(MemType::CudaDevMem),
@@ -264,7 +276,7 @@ where
         );
         let mut outer_rel_partitions_2nd = PartitionedRelation::new(
             outer_partition_len,
-            histogram_algorithms[1],
+            histogram_algorithms[1].into(),
             radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
             max_chunks_2nd,
             Allocator::mem_alloc_fn(MemType::CudaDevMem),

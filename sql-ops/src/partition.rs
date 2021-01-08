@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2019-2020 Clemens Lutz, German Research Center for Artificial Intelligence
+ * Copyright 2019-2021 Clemens Lutz, German Research Center for Artificial Intelligence
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
@@ -14,32 +14,30 @@ use std::convert::TryFrom;
 
 pub mod cpu_radix_partition;
 pub mod gpu_radix_partition;
+mod partition_input_chunk;
 mod partitioned_relation;
 
 // Export structs
+pub use partition_input_chunk::{RadixPartitionInputChunk, RadixPartitionInputChunkable};
 pub use partitioned_relation::{
     PartitionOffsets, PartitionOffsetsChunksMut, PartitionOffsetsMutSlice, PartitionedRelation,
     PartitionedRelationChunksMut, PartitionedRelationMutSlice,
 };
 
-/// Defines the alignment of each partition in bytes.
-///
-/// Typically, alignment should be a multiple of the cache line size. Reasons
-/// for this size are:
-///
-/// 1. Non-temporal store instructions
-/// 2. Vector load and store intructions
-/// 3. Coalesced loads and stores on GPUs
-const ALIGN_BYTES: u32 = 128;
+/// Histogram algorithm type
+#[derive(Copy, Clone, Debug)]
+pub enum HistogramAlgorithmType {
+    /// A class of algorithms that split partitions over multiple chunks.
+    ///
+    /// Typically, each chunk is the result of a thread.
+    Chunked,
 
-/// Defines the padding bytes between partitions.
-///
-/// Padding is necessary for partitioning algorithms to align writes. Aligned writes have fixed
-/// length and may overwrite the padding space in front of their partition.  For this reason,
-/// also the first partition includes padding in front.
-///
-/// Note that the padding length must be equal to or larger than the alignment.
-const GPU_PADDING_BYTES: u32 = 128;
+    /// A class of algorithms that output contiguous partitions.
+    ///
+    /// The result is one single, contiguous sequence of partitions.  Thus, in multi-threaded
+    /// implementations, threads cooperate to make the output contiguous.
+    Contiguous,
+}
 
 /// Compute the fanout (i.e., the number of partitions) from the number of radix
 /// bits.

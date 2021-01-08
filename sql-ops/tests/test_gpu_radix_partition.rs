@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2020 Clemens Lutz, German Research Center for Artificial
+ * Copyright (c) 2020-2021 Clemens Lutz, German Research Center for Artificial
  * Intelligence
  * Author: Clemens Lutz, DFKI GmbH <clemens.lutz@dfki.de>
  */
@@ -15,11 +15,16 @@ use numa_gpu::runtime::memory::{LaunchableMem, Mem};
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::LockedBuffer;
 use rustacuda::stream::{Stream, StreamFlags};
+use sql_ops::partition::cpu_radix_partition::{
+    CpuHistogramAlgorithm, CpuRadixPartitionAlgorithm, CpuRadixPartitioner,
+};
 use sql_ops::partition::gpu_radix_partition::{
     GpuHistogramAlgorithm, GpuRadixPartitionAlgorithm, GpuRadixPartitioner,
-    RadixPartitionInputChunkable,
 };
-use sql_ops::partition::{PartitionOffsets, PartitionedRelation, RadixBits, RadixPass, Tuple};
+use sql_ops::partition::{
+    PartitionOffsets, PartitionedRelation, RadixBits, RadixPartitionInputChunkable, RadixPass,
+    Tuple,
+};
 use std::collections::hash_map::{Entry, HashMap};
 use std::error::Error;
 use std::iter;
@@ -75,7 +80,7 @@ where
     });
 
     let mut partition_offsets = PartitionOffsets::new(
-        histogram_algorithm,
+        histogram_algorithm.into(),
         grid_size.x,
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         Allocator::mem_alloc_fn(MemType::CudaUniMem),
@@ -83,7 +88,7 @@ where
 
     let mut partitioned_relation = PartitionedRelation::new(
         tuples,
-        histogram_algorithm,
+        histogram_algorithm.into(),
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         grid_size.x,
         alloc_fn,
@@ -104,11 +109,19 @@ where
     match histogram_algorithm {
         GpuHistogramAlgorithm::CpuChunked => {
             let key_slice = data_key.as_slice();
-            let key_chunks = key_slice.input_chunks::<i32>(&partitioner)?;
+            let key_chunks = key_slice.input_chunks::<i32>(grid_size.x)?;
             let offset_chunks = partition_offsets.chunks_mut();
 
-            for (key_chunk, mut offset_chunk) in key_chunks.iter().zip(offset_chunks) {
-                partitioner.cpu_prefix_sum(RadixPass::First, key_chunk, &mut offset_chunk)?;
+            // FIXME: don't hard-code histogram algorithm
+            let mut radix_prnr = CpuRadixPartitioner::new(
+                CpuHistogramAlgorithm::Chunked,
+                CpuRadixPartitionAlgorithm::NC,
+                radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
+                DerefMemType::SysMem,
+            );
+
+            for (key_chunk, offset_chunk) in key_chunks.into_iter().zip(offset_chunks) {
+                radix_prnr.prefix_sum(key_chunk, offset_chunk)?;
             }
         }
         _ => {
@@ -186,7 +199,7 @@ where
     });
 
     let mut partition_offsets = PartitionOffsets::new(
-        histogram_algorithm,
+        histogram_algorithm.into(),
         grid_size.x,
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         Allocator::mem_alloc_fn(MemType::CudaUniMem),
@@ -194,7 +207,7 @@ where
 
     let mut partitioned_relation = PartitionedRelation::new(
         tuples,
-        histogram_algorithm,
+        histogram_algorithm.into(),
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         grid_size.x,
         alloc_fn,
@@ -285,7 +298,7 @@ where
     pay_gen(data_pay.as_mut_slice())?;
 
     let mut partition_offsets = PartitionOffsets::new(
-        histogram_algorithm,
+        histogram_algorithm.into(),
         grid_size.x,
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         Allocator::mem_alloc_fn(MemType::CudaUniMem),
@@ -293,7 +306,7 @@ where
 
     let mut partitioned_relation = PartitionedRelation::new(
         tuples,
-        histogram_algorithm,
+        histogram_algorithm.into(),
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         grid_size.x,
         Allocator::mem_alloc_fn(MemType::CudaUniMem),
@@ -345,7 +358,7 @@ where
 
     for partition_id in 0..radix_bits.pass_fanout(RadixPass::First).unwrap() {
         let mut partition_offsets_2nd = PartitionOffsets::new(
-            histogram_algorithm_2nd,
+            histogram_algorithm_2nd.into(),
             grid_size.x,
             radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
@@ -355,7 +368,7 @@ where
 
         let mut partitioned_relation_2nd = PartitionedRelation::new(
             partition_len,
-            histogram_algorithm_2nd,
+            histogram_algorithm_2nd.into(),
             radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
             grid_size.x,
             Allocator::mem_alloc_fn(MemType::CudaUniMem),
