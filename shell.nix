@@ -3,7 +3,7 @@ with import <nixpkgs> {};
 gcc8Stdenv.mkDerivation {
   name = "rust-env";
   nativeBuildInputs = [
-    rustc rustfmt cargo cargo-flamegraph clang numactl cudatoolkit_10_2 linuxPackages.nvidia_x11
+    rustc rustfmt cargo cargo-flamegraph clang numactl cudatoolkit_10_2 linuxPackages.nvidia_x11 valgrind
 
     # Example Build-time Additional Dependencies
     # pkgconfig
