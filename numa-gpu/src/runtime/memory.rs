@@ -44,6 +44,10 @@ pub use self::Mem::*;
 pub enum Mem<T: DeviceCopy> {
     /// System memory allocated with Rust's global allocator
     SysMem(Vec<T>),
+    /// System memory allocated with Rust's global allocator but as a Rust Box
+    ///
+    /// Useful for wrapping aliged memory.
+    BoxedSysMem(Box<[T]>),
     /// NUMA memory allocated on the specified NUMA node
     NumaMem(NumaMemory<T>),
     /// NUMA memory distributed over multiple NUMA nodes
@@ -60,6 +64,7 @@ impl<T: DeviceCopy> Mem<T> {
     pub fn len(&self) -> usize {
         match self {
             SysMem(ref m) => m.len(),
+            BoxedSysMem(ref m) => m.len(),
             NumaMem(ref m) => m.len(),
             DistributedNumaMem(ref m) => m.len(),
             CudaPinnedMem(ref m) => m.len(),
@@ -71,6 +76,7 @@ impl<T: DeviceCopy> Mem<T> {
     pub fn as_ptr(&self) -> *const T {
         match self {
             SysMem(m) => m.as_ptr(),
+            BoxedSysMem(m) => m.as_ptr(),
             NumaMem(m) => m.as_ptr(),
             DistributedNumaMem(m) => m.as_ptr(),
             CudaPinnedMem(m) => m.as_ptr(),
@@ -82,6 +88,7 @@ impl<T: DeviceCopy> Mem<T> {
     pub fn as_mut_ptr(&mut self) -> *mut T {
         match self {
             SysMem(m) => m.as_mut_ptr(),
+            BoxedSysMem(m) => m.as_mut_ptr(),
             NumaMem(m) => m.as_mut_ptr(),
             DistributedNumaMem(m) => m.as_mut_ptr(),
             CudaPinnedMem(m) => m.as_mut_ptr(),
@@ -122,6 +129,7 @@ impl<T: DeviceCopy> Mem<T> {
     pub fn as_launchable_mut_ptr(&mut self) -> LaunchableMutPtr<T> {
         match self {
             SysMem(m) => LaunchableMutPtr(m.as_mut_ptr()),
+            BoxedSysMem(m) => LaunchableMutPtr(m.as_mut_ptr()),
             NumaMem(m) => LaunchableMutPtr(m.as_mut_ptr()),
             DistributedNumaMem(m) => LaunchableMutPtr(m.as_mut_ptr()),
             CudaPinnedMem(m) => LaunchableMutPtr(m.as_mut_ptr()),
@@ -172,6 +180,7 @@ impl<'t, T: DeviceCopy> TryInto<&'t [T]> for &'t Mem<T> {
     fn try_into(self) -> std::result::Result<&'t [T], Self::Error> {
         match self {
             Mem::SysMem(m) => Ok(m.as_slice()),
+            Mem::BoxedSysMem(m) => Ok(m.as_ref()),
             Mem::NumaMem(m) => Ok(m.as_slice()),
             Mem::DistributedNumaMem(m) => Ok(m.as_slice()),
             Mem::CudaPinnedMem(m) => Ok(m.as_slice()),
@@ -190,6 +199,7 @@ impl<'t, T: DeviceCopy> TryInto<&'t mut [T]> for &'t mut Mem<T> {
     fn try_into(self) -> std::result::Result<&'t mut [T], Self::Error> {
         match self {
             Mem::SysMem(m) => Ok(m.as_mut_slice()),
+            Mem::BoxedSysMem(m) => Ok(m.as_mut()),
             Mem::NumaMem(m) => Ok(m.as_mut_slice()),
             Mem::DistributedNumaMem(m) => Ok(m.as_mut_slice()),
             Mem::CudaPinnedMem(m) => Ok(m.as_mut_slice()),
@@ -207,6 +217,7 @@ impl<T: DeviceCopy> From<DerefMem<T>> for Mem<T> {
     fn from(demem: DerefMem<T>) -> Mem<T> {
         match demem {
             DerefMem::SysMem(m) => Mem::SysMem(m),
+            DerefMem::BoxedSysMem(m) => Mem::BoxedSysMem(m),
             DerefMem::NumaMem(m) => Mem::NumaMem(m),
             DerefMem::DistributedNumaMem(m) => Mem::DistributedNumaMem(m),
             DerefMem::CudaPinnedMem(m) => Mem::CudaPinnedMem(m),
@@ -231,6 +242,10 @@ impl<T: DeviceCopy> EnsurePhysicallyBacked for Mem<T> {
 pub enum DerefMem<T: DeviceCopy> {
     /// System memory allocated with Rust's global allocator
     SysMem(Vec<T>),
+    /// System memory allocated with Rust's global allocator but as a Rust Box
+    ///
+    /// Useful for wrapping aliged memory.
+    BoxedSysMem(Box<[T]>),
     /// NUMA memory allocated on the specified NUMA node
     NumaMem(NumaMemory<T>),
     /// NUMA memory distributed over multiple NUMA nodes
@@ -245,6 +260,7 @@ impl<T: DeviceCopy> DerefMem<T> {
     pub fn as_slice(&self) -> &[T] {
         match self {
             DerefMem::SysMem(m) => m.as_slice(),
+            DerefMem::BoxedSysMem(m) => m.as_ref(),
             DerefMem::NumaMem(m) => m.as_slice(),
             DerefMem::DistributedNumaMem(m) => m.as_slice(),
             DerefMem::CudaPinnedMem(m) => m.as_slice(),
@@ -255,6 +271,7 @@ impl<T: DeviceCopy> DerefMem<T> {
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         match self {
             DerefMem::SysMem(m) => m.as_mut_slice(),
+            DerefMem::BoxedSysMem(m) => m.as_mut(),
             DerefMem::NumaMem(m) => m.as_mut_slice(),
             DerefMem::DistributedNumaMem(m) => m.as_mut_slice(),
             DerefMem::CudaPinnedMem(m) => m.as_mut_slice(),
@@ -294,6 +311,7 @@ impl<T: DeviceCopy> DerefMem<T> {
     pub fn as_launchable_mut_ptr(&mut self) -> LaunchableMutPtr<T> {
         match self {
             Self::SysMem(m) => LaunchableMutPtr(m.as_mut_ptr()),
+            Self::BoxedSysMem(m) => LaunchableMutPtr(m.as_mut_ptr()),
             Self::NumaMem(m) => LaunchableMutPtr(m.as_mut_ptr()),
             Self::DistributedNumaMem(m) => LaunchableMutPtr(m.as_mut_ptr()),
             Self::CudaPinnedMem(m) => LaunchableMutPtr(m.as_mut_ptr()),
@@ -308,6 +326,7 @@ impl<T: DeviceCopy> Deref for DerefMem<T> {
     fn deref(&self) -> &[T] {
         match self {
             DerefMem::SysMem(m) => m.as_slice(),
+            DerefMem::BoxedSysMem(m) => m.as_ref(),
             DerefMem::NumaMem(m) => m.as_slice(),
             DerefMem::DistributedNumaMem(m) => m.as_slice(),
             DerefMem::CudaPinnedMem(m) => m.as_slice(),
@@ -320,6 +339,7 @@ impl<T: DeviceCopy> DerefMut for DerefMem<T> {
     fn deref_mut(&mut self) -> &mut [T] {
         match self {
             DerefMem::SysMem(m) => m.as_mut_slice(),
+            DerefMem::BoxedSysMem(m) => m.as_mut(),
             DerefMem::NumaMem(m) => m.as_mut_slice(),
             DerefMem::DistributedNumaMem(m) => m.as_mut_slice(),
             DerefMem::CudaPinnedMem(m) => m.as_mut_slice(),
@@ -334,6 +354,7 @@ impl<T: DeviceCopy> TryFrom<Mem<T>> for DerefMem<T> {
     fn try_from(mem: Mem<T>) -> std::result::Result<Self, Self::Error> {
         match mem {
             Mem::SysMem(m) => Ok(DerefMem::SysMem(m)),
+            Mem::BoxedSysMem(m) => Ok(DerefMem::BoxedSysMem(m)),
             Mem::NumaMem(m) => Ok(DerefMem::NumaMem(m)),
             Mem::DistributedNumaMem(m) => Ok(DerefMem::DistributedNumaMem(m)),
             Mem::CudaPinnedMem(m) => Ok(DerefMem::CudaPinnedMem(m)),

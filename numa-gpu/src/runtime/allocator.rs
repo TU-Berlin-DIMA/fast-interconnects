@@ -19,9 +19,11 @@
 
 use rustacuda::memory::{DeviceBuffer, DeviceCopy, LockedBuffer, UnifiedBuffer};
 
+use std::alloc::{self, Layout};
 use std::convert::TryFrom;
 use std::default::Default;
 use std::mem::size_of;
+use std::slice;
 
 use super::memory::{DerefMem, Mem, PageLock};
 use super::numa::{DistributedNumaMemory, NodeRatio, NumaMemory};
@@ -37,6 +39,10 @@ pub struct Allocator;
 pub enum MemType {
     /// System memory allocated with Rust's global allocator
     SysMem,
+    /// Aligned system memory allocated with Rust's global allocator
+    ///
+    /// Alignment is specified in bytes.
+    AlignedSysMem(usize),
     /// NUMA memory allocated on the specified NUMA node and with the specified huge page option
     NumaMem(u16, Option<bool>),
     /// NUMA memory allocated on the specified NUMA node, with the specified huge page option, and pinned with CUDA
@@ -58,6 +64,10 @@ pub enum MemType {
 pub enum DerefMemType {
     /// System memory allocated with Rust's global allocator
     SysMem,
+    /// Aligned system memory allocated with Rust's global allocator
+    ///
+    /// Alignment is specified in bytes.
+    AlignedSysMem(usize),
     /// NUMA memory allocated on the specified NUMA node and with the specified huge page option
     NumaMem(u16, Option<bool>),
     /// NUMA memory allocated on the specified NUMA node, with the specified huge page option, and pinned with CUDA
@@ -74,6 +84,7 @@ impl From<DerefMemType> for MemType {
     fn from(dmt: DerefMemType) -> Self {
         match dmt {
             DerefMemType::SysMem => MemType::SysMem,
+            DerefMemType::AlignedSysMem(alignment) => MemType::AlignedSysMem(alignment),
             DerefMemType::NumaMem(node, huge_pages) => MemType::NumaMem(node, huge_pages),
             DerefMemType::NumaPinnedMem(node, huge_pages) => {
                 MemType::NumaPinnedMem(node, huge_pages)
@@ -91,6 +102,7 @@ impl TryFrom<MemType> for DerefMemType {
     fn try_from(mt: MemType) -> Result<Self> {
         match mt {
             MemType::SysMem => Ok(DerefMemType::SysMem),
+            MemType::AlignedSysMem(alignment) => Ok(DerefMemType::AlignedSysMem(alignment)),
             MemType::NumaMem(node, huge_pages) => Ok(DerefMemType::NumaMem(node, huge_pages)),
             MemType::NumaPinnedMem(node, huge_pages) => {
                 Ok(DerefMemType::NumaPinnedMem(node, huge_pages))
@@ -125,6 +137,7 @@ impl Allocator {
     pub fn alloc_mem<T: Clone + Default + DeviceCopy>(mem_type: MemType, len: usize) -> Mem<T> {
         match mem_type {
             MemType::SysMem => Self::alloc_system(len).into(),
+            MemType::AlignedSysMem(alignment) => Self::alloc_aligned(len, alignment).into(),
             MemType::NumaMem(node, huge_pages) => Self::alloc_numa(len, node, huge_pages).into(),
             MemType::NumaPinnedMem(node, huge_pages) => {
                 Self::alloc_numa_pinned(len, node, huge_pages).into()
@@ -143,6 +156,7 @@ impl Allocator {
     ) -> DerefMem<T> {
         match mem_type {
             DerefMemType::SysMem => Self::alloc_system(len),
+            DerefMemType::AlignedSysMem(alignment) => Self::alloc_aligned(len, alignment).into(),
             DerefMemType::NumaMem(node, huge_pages) => Self::alloc_numa(len, node, huge_pages),
             DerefMemType::NumaPinnedMem(node, huge_pages) => {
                 Self::alloc_numa_pinned(len, node, huge_pages).into()
@@ -160,6 +174,9 @@ impl Allocator {
     pub fn mem_alloc_fn<T: Clone + Default + DeviceCopy>(mem_type: MemType) -> MemAllocFn<T> {
         match mem_type {
             MemType::SysMem => Box::new(|len| Self::alloc_system(len).into()),
+            MemType::AlignedSysMem(alignment) => {
+                Box::new(move |len| Self::alloc_aligned(len, alignment).into())
+            }
             MemType::NumaMem(node, huge_pages) => {
                 Box::new(move |len| Self::alloc_numa(len, node, huge_pages).into())
             }
@@ -182,6 +199,9 @@ impl Allocator {
     ) -> DerefMemAllocFn<T> {
         match mem_type {
             DerefMemType::SysMem => Box::new(|len| Self::alloc_system(len)),
+            DerefMemType::AlignedSysMem(alignment) => {
+                Box::new(move |len| Self::alloc_aligned(len, alignment).into())
+            }
             DerefMemType::NumaMem(node, huge_pages) => {
                 Box::new(move |len| Self::alloc_numa(len, node, huge_pages))
             }
@@ -199,6 +219,23 @@ impl Allocator {
     /// Allocates system memory using Rust's global allocator.
     fn alloc_system<T: Clone + Default + DeviceCopy>(len: usize) -> DerefMem<T> {
         DerefMem::SysMem(vec![T::default(); len])
+    }
+
+    /// Allocates aligned system memory using Rust's global allocator.
+    fn alloc_aligned<T: Clone + Default + DeviceCopy>(len: usize, alignment: usize) -> DerefMem<T> {
+        let mem = unsafe {
+            let layout = Layout::from_size_align(len * size_of::<T>(), alignment)
+                .expect("Memory alignment must be at least size of T");
+            let ptr = alloc::alloc(layout) as *mut T;
+            assert!(!ptr.is_null(), "Failed to allocate aligned memory");
+
+            let slice = slice::from_raw_parts_mut(ptr, len);
+            slice.iter_mut().for_each(|x| *x = T::default());
+
+            let output: Box<[T]> = Box::from_raw(slice);
+            output
+        };
+        DerefMem::BoxedSysMem(mem)
     }
 
     /// Allocates memory on the specified NUMA node.
