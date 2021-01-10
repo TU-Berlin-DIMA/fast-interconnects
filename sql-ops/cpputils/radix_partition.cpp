@@ -53,6 +53,7 @@
 #elif defined(__ALTIVEC__)
 #include <altivec.h>
 #include <ppc_intrinsics.h>
+#include <unistd.h>
 
 #ifdef bool
 // Workaround for AltiVec redefinition of bool.
@@ -284,9 +285,17 @@ void cpu_chunked_prefix_sum_simd(PrefixSumArgs &args, uint32_t const chunk_id,
   // Disable strided prefetch and set maximum prefetch depth
   __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
 
+  constexpr size_t smp = 4U;
   constexpr size_t vec_len = sizeof(vector int) / sizeof(K);
+  constexpr size_t unroll_len = 4U;
   const size_t fanout = 1UL << args.radix_bits;
   const M mask = static_cast<M>(fanout - 1UL);
+
+  // Performance drops when array is larger than 2 KiB. Might be that L1 cache
+  // set prediction (SETP) is most effective when only one cache slot per set
+  // is occupied (L1 cache is 32 KiB, 8-way set associative). However, there
+  // are 32 sets, i.e., 4 KiB are available if restricted to 1 slot per set.
+  constexpr size_t target_bytes = 2048;
 
   auto partition_attr =
       static_cast<const K *const __restrict__>(args.partition_attr);
@@ -299,35 +308,85 @@ void cpu_chunked_prefix_sum_simd(PrefixSumArgs &args, uint32_t const chunk_id,
   size_t i;
 
   // Ensure counters are all zeroed
-  for (size_t i = 0; i < fanout; ++i) {
+  for (size_t i = 0; i < fanout * vec_len * unroll_len; ++i) {
     args.tmp_partition_offsets[i] = 0;
   }
 
   // Compute local histograms per partition
   i = 0;
-  if (args.data_length > vec_len * 4) {
-    for (; i < (args.data_length - vec_len * 4); i += vec_len * 4) {
-      const K *const base = &partition_attr[i];
+  if (args.data_length > vec_len * unroll_len) {
+    if (sizeof(args.tmp_partition_offsets[0]) * fanout * vec_len * unroll_len *
+            smp <=
+        target_bytes) {
+      for (; i < (args.data_length - vec_len * unroll_len);
+           i += vec_len * unroll_len) {
+        const K *const base = &partition_attr[i];
 
-      vector K key0 = vec_ld(0, base);
-      vector K key1 = vec_ld(16, base);
-      vector K key2 = vec_ld(32, base);
-      vector K key3 = vec_ld(48, base);
+        vector K key0 = vec_ld(0, base);
+        vector K key1 = vec_ld(16, base);
+        vector K key2 = vec_ld(32, base);
+        vector K key3 = vec_ld(48, base);
 
-      vector M p_index0 =
-          key_to_partition_simd(key0, mask_vsx, ignore_bits_vsx);
-      vector M p_index1 =
-          key_to_partition_simd(key1, mask_vsx, ignore_bits_vsx);
-      vector M p_index2 =
-          key_to_partition_simd(key2, mask_vsx, ignore_bits_vsx);
-      vector M p_index3 =
-          key_to_partition_simd(key3, mask_vsx, ignore_bits_vsx);
+        vector M p_index0 =
+            key_to_partition_simd(key0, mask_vsx, ignore_bits_vsx);
+        vector M p_index1 =
+            key_to_partition_simd(key1, mask_vsx, ignore_bits_vsx);
+        vector M p_index2 =
+            key_to_partition_simd(key2, mask_vsx, ignore_bits_vsx);
+        vector M p_index3 =
+            key_to_partition_simd(key3, mask_vsx, ignore_bits_vsx);
 
-      for (uint32_t v = 0; v < vec_len; ++v) {
-        args.tmp_partition_offsets[p_index0[v]] += 1;
-        args.tmp_partition_offsets[p_index1[v]] += 1;
-        args.tmp_partition_offsets[p_index2[v]] += 1;
-        args.tmp_partition_offsets[p_index3[v]] += 1;
+        for (uint32_t v = 0; v < vec_len; ++v) {
+          args.tmp_partition_offsets[p_index0[v] * vec_len * unroll_len +
+                                     v * unroll_len + 0U] += 1;
+          args.tmp_partition_offsets[p_index1[v] * vec_len * unroll_len +
+                                     v * unroll_len + 1U] += 1;
+          args.tmp_partition_offsets[p_index2[v] * vec_len * unroll_len +
+                                     v * unroll_len + 2U] += 1;
+          args.tmp_partition_offsets[p_index3[v] * vec_len * unroll_len +
+                                     v * unroll_len + 3U] += 1;
+        }
+      }
+
+      // Combine sub-histograms
+      for (uint32_t i = 0; i < fanout; ++i) {
+        for (uint32_t vu = 1; vu < vec_len * unroll_len; ++vu) {
+          args.tmp_partition_offsets[i * vec_len * unroll_len] +=
+              args.tmp_partition_offsets[i * vec_len * unroll_len + vu];
+        }
+      }
+      // Transpose; measurements showed that column-oriented layout is faster
+      // than row-oriented layout. Guessing that we might be avoiding bank
+      // conflicts?
+      for (uint32_t i = 1; i < fanout; ++i) {
+        args.tmp_partition_offsets[i] =
+            args.tmp_partition_offsets[i * vec_len * unroll_len];
+      }
+    } else {
+      for (; i < (args.data_length - vec_len * unroll_len);
+           i += vec_len * unroll_len) {
+        const K *const base = &partition_attr[i];
+
+        vector K key0 = vec_ld(0, base);
+        vector K key1 = vec_ld(16, base);
+        vector K key2 = vec_ld(32, base);
+        vector K key3 = vec_ld(48, base);
+
+        vector M p_index0 =
+            key_to_partition_simd(key0, mask_vsx, ignore_bits_vsx);
+        vector M p_index1 =
+            key_to_partition_simd(key1, mask_vsx, ignore_bits_vsx);
+        vector M p_index2 =
+            key_to_partition_simd(key2, mask_vsx, ignore_bits_vsx);
+        vector M p_index3 =
+            key_to_partition_simd(key3, mask_vsx, ignore_bits_vsx);
+
+        for (uint32_t v = 0; v < vec_len; ++v) {
+          args.tmp_partition_offsets[p_index0[v]] += 1;
+          args.tmp_partition_offsets[p_index1[v]] += 1;
+          args.tmp_partition_offsets[p_index2[v]] += 1;
+          args.tmp_partition_offsets[p_index3[v]] += 1;
+        }
       }
     }
   }

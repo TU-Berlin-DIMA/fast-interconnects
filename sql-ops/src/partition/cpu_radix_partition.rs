@@ -304,19 +304,22 @@ impl CpuRadixPartitioner {
         state_mem_type: DerefMemType,
     ) -> Self {
         let num_partitions = fanout(radix_bits) as usize;
+        let vec_len = 4;
+        let unroll_len = 4;
 
-        // FIXME: pad to cacheline
         let prefix_sum_state = match prefix_sum_algorithm {
             CpuHistogramAlgorithm::Chunked => PrefixSumState::Chunked(Allocator::alloc_deref_mem(
                 state_mem_type.clone(),
                 num_partitions,
             )),
-            CpuHistogramAlgorithm::ChunkedSimd => PrefixSumState::ChunkedSimd(
-                Allocator::alloc_deref_mem(state_mem_type.clone(), num_partitions),
-            ),
+            CpuHistogramAlgorithm::ChunkedSimd => {
+                PrefixSumState::ChunkedSimd(Allocator::alloc_deref_mem(
+                    state_mem_type.clone(),
+                    num_partitions * vec_len * unroll_len,
+                ))
+            }
         };
 
-        // FIXME: pad to cacheline
         let radix_partition_state = match partition_algorithm {
             CpuRadixPartitionAlgorithm::NC => RadixPartitionState::NC(Allocator::alloc_deref_mem(
                 state_mem_type.clone(),
