@@ -372,7 +372,8 @@ void cpu_chunked_radix_partition(RadixPartitionArgs &args) {
 
   const size_t fanout = 1UL << args.radix_bits;
   const M mask = static_cast<M>(fanout - 1UL);
-  const size_t partitioned_data_offset = args.partition_offsets[0];
+  const size_t partitioned_data_offset =
+      args.partition_offsets[0] - args.padding_length;
 
   // Load partition offsets.
   for (size_t i = 0; i < fanout; ++i) {
@@ -457,7 +458,8 @@ void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
 
   const size_t fanout = 1UL << args.radix_bits;
   const M mask = static_cast<M>(fanout - 1UL);
-  const size_t partitioned_data_offset = args.partition_offsets[0];
+  const size_t partitioned_data_offset =
+      args.partition_offsets[0] - args.padding_length;
 
   // Load partition offsets.
   for (size_t i = 0; i < fanout; ++i) {
@@ -524,7 +526,8 @@ void cpu_chunked_radix_partition_swwc_simd(RadixPartitionArgs &args) {
 
   const size_t fanout = 1UL << args.radix_bits;
   const M mask = static_cast<M>(fanout - 1UL);
-  const size_t partitioned_data_offset = args.partition_offsets[0];
+  const size_t partitioned_data_offset =
+      args.partition_offsets[0] - args.padding_length;
 
   const vector M mask_vsx = vec_splats(mask);
   const vector M ignore_bits_vsx = vec_splats(static_cast<M>(0U));

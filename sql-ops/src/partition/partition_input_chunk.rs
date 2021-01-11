@@ -95,14 +95,3 @@ impl<T: Sized + DeviceCopy> RadixPartitionInputChunkable for DerefMem<T> {
         self.as_slice().input_chunks::<Key>(num_chunks)
     }
 }
-
-impl<'a, T: Sized> From<&'a [T]> for RadixPartitionInputChunk<'a, T> {
-    fn from(data: &'a [T]) -> Self {
-        Self {
-            data,
-            canonical_chunk_len: data.len(),
-            chunk_id: 0,
-            num_chunks: 1,
-        }
-    }
-}

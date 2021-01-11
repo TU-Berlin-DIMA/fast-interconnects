@@ -545,8 +545,7 @@ macro_rules! impl_cpu_radix_partition_for_type {
                         );
                     }
 
-                    // Move ownership of offsets to PartitionedRelation.
-                    // PartitionOffsets will be destroyed.
+                    // Copy offsets to PartitionedRelation.
                     unsafe {
                         partitioned_relation.offsets
                             .as_mut_slice()
@@ -566,7 +565,7 @@ impl_cpu_radix_partition_for_type!(i64, int64);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::partition::{PartitionOffsets, PartitionedRelation};
+    use crate::partition::{PartitionOffsets, PartitionedRelation, RadixPartitionInputChunkable};
     use datagen::relation::UniformRelation;
     use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
     use std::collections::hash_map::{Entry, HashMap};
@@ -615,6 +614,10 @@ mod tests {
                         Allocator::mem_alloc_fn(MemType::SysMem),
                     );
 
+                    unsafe {
+                        partitioned_relation.as_raw_relation_mut_slice()?.iter_mut().for_each(|x| *x = Tuple::default() );
+                    }
+
                     let mut partitioner = CpuRadixPartitioner::new(
                         prefix_sum_algorithm,
                         $algorithm,
@@ -623,13 +626,13 @@ mod tests {
                     );
 
                     partitioner.prefix_sum(
-                        data_key.as_slice().into(),
+                        data_key.as_slice().input_chunks::<$type>(THREADS)?.pop().unwrap(),
                         partition_offsets.chunks_mut().nth(0).unwrap(),
                     )?;
 
                     partitioner.partition(
-                        data_key.as_slice().into(),
-                        data_pay.as_slice().into(),
+                        data_key.as_slice().input_chunks::<$type>(THREADS)?.pop().unwrap(),
+                        data_pay.as_slice().input_chunks::<$type>(THREADS)?.pop().unwrap(),
                         partition_offsets.chunks_mut().nth(0).unwrap(),
                         partitioned_relation.chunks_mut().nth(0).unwrap(),
                     )?;
@@ -704,6 +707,10 @@ mod tests {
                         Allocator::mem_alloc_fn(MemType::SysMem),
                     );
 
+                    unsafe {
+                        partitioned_relation.as_raw_relation_mut_slice()?.iter_mut().for_each(|x| *x = Tuple::default() );
+                    }
+
                     let mut partitioner = CpuRadixPartitioner::new(
                         prefix_sum_algorithm,
                         $algorithm,
@@ -712,13 +719,13 @@ mod tests {
                     );
 
                     partitioner.prefix_sum(
-                        data_key.as_slice().into(),
+                        data_key.as_slice().input_chunks::<$type>(THREADS)?.pop().unwrap(),
                         partition_offsets.chunks_mut().nth(0).unwrap(),
                     )?;
 
                     partitioner.partition(
-                        data_key.as_slice().into(),
-                        data_pay.as_slice().into(),
+                        data_key.as_slice().input_chunks::<$type>(THREADS)?.pop().unwrap(),
+                        data_pay.as_slice().input_chunks::<$type>(THREADS)?.pop().unwrap(),
                         partition_offsets.chunks_mut().nth(0).unwrap(),
                         partitioned_relation.chunks_mut().nth(0).unwrap(),
                     )?;
