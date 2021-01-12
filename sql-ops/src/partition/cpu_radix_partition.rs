@@ -567,6 +567,7 @@ mod tests {
     use super::*;
     use crate::partition::{PartitionOffsets, PartitionedRelation, RadixPartitionInputChunkable};
     use datagen::relation::UniformRelation;
+    use itertools::izip;
     use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
     use std::collections::hash_map::{Entry, HashMap};
     use std::error::Error;
@@ -582,7 +583,7 @@ mod tests {
                 #[test]
                 fn [<cpu_tuple_loss_or_duplicates_ $fn_suffix>]() -> Result<(), Box<dyn Error>> {
                     const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
-                    const THREADS: u32 = 1;
+                    const THREADS: u32 = 4;
 
                     let prefix_sum_algorithm = CpuHistogramAlgorithm::Chunked;
 
@@ -625,17 +626,39 @@ mod tests {
                         DerefMemType::SysMem,
                     );
 
-                    partitioner.prefix_sum(
-                        data_key.as_slice().input_chunks::<$type>(THREADS)?.pop().unwrap(),
-                        partition_offsets.chunks_mut().nth(0).unwrap(),
-                    )?;
+                    let data_key_chunks = data_key.as_slice().input_chunks::<$type>(THREADS)?;
 
-                    partitioner.partition(
-                        data_key.as_slice().input_chunks::<$type>(THREADS)?.pop().unwrap(),
-                        data_pay.as_slice().input_chunks::<$type>(THREADS)?.pop().unwrap(),
-                        partition_offsets.chunks_mut().nth(0).unwrap(),
-                        partitioned_relation.chunks_mut().nth(0).unwrap(),
-                    )?;
+                    for (key_chunk, offsets_chunk) in izip!(
+                        data_key_chunks.into_iter(),
+                        partition_offsets.chunks_mut(),
+                    ) {
+                        partitioner.prefix_sum(
+                            key_chunk,
+                            offsets_chunk,
+                        )?;
+                    }
+
+                    let data_key_chunks = data_key.as_slice().input_chunks::<$type>(THREADS)?;
+                    let data_pay_chunks = data_pay.as_slice().input_chunks::<$type>(THREADS)?;
+
+                    for (
+                        key_chunk,
+                        pay_chunk,
+                        offsets_chunk,
+                        partitioned_chunk
+                    ) in izip!(
+                        data_key_chunks.into_iter(),
+                        data_pay_chunks.into_iter(),
+                        partition_offsets.chunks_mut(),
+                        partitioned_relation.chunks_mut()
+                    ) {
+                        partitioner.partition(
+                            key_chunk,
+                            pay_chunk,
+                            offsets_chunk,
+                            partitioned_chunk,
+                        )?;
+                    }
 
                     unsafe {
                         partitioned_relation
@@ -681,7 +704,7 @@ mod tests {
                 #[test]
                 fn [<cpu_verify_partitions_ $fn_suffix>]() -> Result<(), Box<dyn Error>> {
                     const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
-                    const THREADS: u32 = 1;
+                    const THREADS: u32 = 4;
 
                     let prefix_sum_algorithm = CpuHistogramAlgorithm::Chunked;
 
@@ -718,17 +741,39 @@ mod tests {
                         DerefMemType::SysMem,
                     );
 
-                    partitioner.prefix_sum(
-                        data_key.as_slice().input_chunks::<$type>(THREADS)?.pop().unwrap(),
-                        partition_offsets.chunks_mut().nth(0).unwrap(),
-                    )?;
+                    let data_key_chunks = data_key.as_slice().input_chunks::<$type>(THREADS)?;
 
-                    partitioner.partition(
-                        data_key.as_slice().input_chunks::<$type>(THREADS)?.pop().unwrap(),
-                        data_pay.as_slice().input_chunks::<$type>(THREADS)?.pop().unwrap(),
-                        partition_offsets.chunks_mut().nth(0).unwrap(),
-                        partitioned_relation.chunks_mut().nth(0).unwrap(),
-                    )?;
+                    for (key_chunk, offsets_chunk) in izip!(
+                        data_key_chunks.into_iter(),
+                        partition_offsets.chunks_mut(),
+                    ) {
+                        partitioner.prefix_sum(
+                            key_chunk,
+                            offsets_chunk,
+                        )?;
+                    }
+
+                    let data_key_chunks = data_key.as_slice().input_chunks::<$type>(THREADS)?;
+                    let data_pay_chunks = data_pay.as_slice().input_chunks::<$type>(THREADS)?;
+
+                    for (
+                        key_chunk,
+                        pay_chunk,
+                        offsets_chunk,
+                        partitioned_chunk
+                    ) in izip!(
+                        data_key_chunks.into_iter(),
+                        data_pay_chunks.into_iter(),
+                        partition_offsets.chunks_mut(),
+                        partitioned_relation.chunks_mut()
+                    ) {
+                        partitioner.partition(
+                            key_chunk,
+                            pay_chunk,
+                            offsets_chunk,
+                            partitioned_chunk,
+                        )?;
+                    }
 
                     let mask = fanout($radix_bits) - 1;
                     let partition_id: Option<u32> = None;

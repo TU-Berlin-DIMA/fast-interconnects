@@ -461,6 +461,13 @@ void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
   const size_t partitioned_data_offset =
       args.partition_offsets[0] - args.padding_length;
 
+  // Zero the buffers so that we don't write out uninitialized data
+  for (size_t p = 0; p < fanout; ++p) {
+    for (size_t i = 0; i < tuples_per_buffer; ++i) {
+      buffers[p].tuples.data[i] = {};
+    }
+  }
+
   // Load partition offsets.
   for (size_t i = 0; i < fanout; ++i) {
     buffers[i].meta.slot = args.partition_offsets[i] - partitioned_data_offset;
@@ -532,6 +539,13 @@ void cpu_chunked_radix_partition_swwc_simd(RadixPartitionArgs &args) {
   const vector M mask_vsx = vec_splats(mask);
   const vector M ignore_bits_vsx = vec_splats(static_cast<M>(0U));
   size_t i;
+
+  // Zero the buffers so that we don't write out uninitialized data
+  for (size_t p = 0; p < fanout; ++p) {
+    for (size_t i = 0; i < tuples_per_buffer; ++i) {
+      buffers[p].tuples.data[i] = {};
+    }
+  }
 
   // Load partition offsets
   for (size_t i = 0; i < fanout; ++i) {
