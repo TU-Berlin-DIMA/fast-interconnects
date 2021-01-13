@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-use super::{fanout, HistogramAlgorithmType};
+use super::{fanout, HistogramAlgorithmType, Tuple};
 use crate::error::{ErrorKind, Result};
 use numa_gpu::runtime::allocator::MemAllocFn;
 use numa_gpu::runtime::memory::{LaunchableMem, LaunchableMutSlice, Mem};
@@ -286,14 +286,6 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
         self.chunks
     }
 
-    /// Returns an iterator over the chunks contained inside the relation.
-    ///
-    /// Chunks are non-overlapping and can safely be used for parallel
-    /// processing.
-    pub fn chunks_mut(&mut self) -> PartitionedRelationChunksMut<'_, T> {
-        PartitionedRelationChunksMut::new(self)
-    }
-
     /// Returns the number of partitions.
     pub fn fanout(&self) -> u32 {
         fanout(self.radix_bits)
@@ -373,6 +365,16 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
     }
 }
 
+impl<K: DeviceCopy, V: DeviceCopy> PartitionedRelation<Tuple<K, V>> {
+    /// Returns an iterator over the chunks contained inside the relation.
+    ///
+    /// Chunks are non-overlapping and can safely be used for parallel
+    /// processing.
+    pub fn chunks_mut(&mut self) -> PartitionedRelationChunksMut<'_, Tuple<K, V>> {
+        PartitionedRelationChunksMut::new(self)
+    }
+}
+
 /// Returns the specified chunk and partition as a subslice of the relation.
 impl<T: DeviceCopy> Index<(u32, u32)> for PartitionedRelation<T> {
     type Output = [T];
@@ -442,28 +444,25 @@ impl<T: DeviceCopy> EnsurePhysicallyBacked for PartitionedRelation<T> {
 /// An iterator that generates `PartitionedRelationMutSlice`.
 #[derive(Debug)]
 pub struct PartitionedRelationChunksMut<'a, T: DeviceCopy> {
-    // Note: unsafe slices, must convert back to LaunchableMutSlice
-    relation_chunks: ChunksMut<'a, T>,
-    // Note: unsafe slices, must convert back to LaunchableSlice
+    relation_remainder: Option<&'a mut [T]>,
+    canonical_chunk_len: usize,
     offsets_chunks: ChunksMut<'a, u64>,
     chunk_id: u32,
     chunks: u32,
     radix_bits: u32,
 }
 
-impl<'a, T: DeviceCopy> PartitionedRelationChunksMut<'a, T> {
+impl<'a, K: DeviceCopy, V: DeviceCopy> PartitionedRelationChunksMut<'a, Tuple<K, V>> {
     /// Creates a new chunk iterator for a `PartitionedRelation`.
-    fn new(rel: &'a mut PartitionedRelation<T>) -> Self {
-        unsafe {
-            let rel_chunks = rel.chunks as usize;
-            let rel_chunk_size = (rel.relation.len() + rel_chunks - 1) / rel_chunks;
-            let off_chunk_size = rel.offsets.len() / rel_chunks;
+    fn new(rel: &'a mut PartitionedRelation<Tuple<K, V>>) -> Self {
+        let canonical_chunk_len =
+            super::partition_input_chunk::input_chunk_size::<K>(rel.len(), rel.num_chunks())
+                .unwrap()
+                + rel.fanout() as usize * rel.padding_len() as usize;
+        let off_chunk_size = rel.offsets.len() / rel.num_chunks() as usize;
 
-            let relation_chunks = rel
-                .relation
-                .as_launchable_mut_slice()
-                .as_mut_slice()
-                .chunks_mut(rel_chunk_size);
+        unsafe {
+            let relation_remainder = Some(rel.relation.as_launchable_mut_slice().as_mut_slice());
             let offsets_chunks = rel
                 .offsets
                 .as_launchable_mut_slice()
@@ -471,7 +470,8 @@ impl<'a, T: DeviceCopy> PartitionedRelationChunksMut<'a, T> {
                 .chunks_mut(off_chunk_size);
 
             Self {
-                relation_chunks,
+                relation_remainder,
+                canonical_chunk_len,
                 offsets_chunks,
                 chunk_id: 0,
                 chunks: rel.chunks,
@@ -486,10 +486,17 @@ impl<'a, T: DeviceCopy> Iterator for PartitionedRelationChunksMut<'a, T> {
 
     #[inline]
     fn next(&mut self) -> Option<PartitionedRelationMutSlice<'a, T>> {
-        let zipped = self
-            .relation_chunks
-            .next()
-            .and_then(|rel| self.offsets_chunks.next().and_then(|off| Some((rel, off))));
+        let chunk = if let Some(remainder) = self.relation_remainder.take() {
+            let mid = std::cmp::min(self.canonical_chunk_len, remainder.len());
+            let (c, r) = remainder.split_at_mut(mid);
+            self.relation_remainder = if r.len() == 0 { None } else { Some(r) };
+            Some(c)
+        } else {
+            None
+        };
+
+        let zipped =
+            chunk.and_then(|rel| self.offsets_chunks.next().and_then(|off| Some((rel, off))));
         zipped.and_then(|(r, o)| {
             let chunk_id = self.chunk_id;
             self.chunk_id = self.chunk_id + 1;
