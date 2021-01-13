@@ -9,9 +9,12 @@
  * Author: Clemens Lutz, DFKI GmbH <clemens.lutz@dfki.de>
  */
 
+mod radix_partition;
+
 use datagen::relation::UniformRelation;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::memory::{LaunchableMem, Mem};
+use radix_partition::*;
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::LockedBuffer;
 use rustacuda::stream::{Stream, StreamFlags};
@@ -25,19 +28,9 @@ use sql_ops::partition::{
     PartitionOffsets, PartitionedRelation, RadixBits, RadixPartitionInputChunkable, RadixPass,
     Tuple,
 };
-use std::collections::hash_map::{Entry, HashMap};
 use std::error::Error;
-use std::iter;
 use std::mem;
 use std::result::Result;
-
-fn key_to_partition(key: i32, radix_bits: &RadixBits, radix_pass: RadixPass) -> u32 {
-    let ignore_bits = radix_bits.pass_ignore_bits(radix_pass);
-    let fanout = radix_bits.pass_fanout(radix_pass).unwrap();
-    let mask = (fanout - 1) << ignore_bits;
-    let partition = (key as u32 & mask) >> ignore_bits;
-    partition
-}
 
 fn run_gpu_partitioning<KeyGenFn, PayGenFn, ValidatorFn>(
     tuples: usize,
@@ -421,189 +414,6 @@ where
     Ok(())
 }
 
-fn gpu_tuple_loss_or_duplicates(
-    _radix_pass: RadixPass,
-    _radix_bits: &RadixBits,
-    data_key: &[i32],
-    data_pay: &[i32],
-    partitioned_relation: &PartitionedRelation<Tuple<i32, i32>>,
-    partition_id: Option<u32>,
-) -> Result<(), Box<dyn Error>> {
-    let mut original_tuples: HashMap<_, _> = data_key
-        .iter()
-        .cloned()
-        .zip(data_pay.iter().cloned().zip(std::iter::repeat(0)))
-        .collect();
-
-    let relation = unsafe { partitioned_relation.as_raw_relation_slice()? };
-
-    relation.iter().cloned().for_each(|Tuple { key, value }| {
-        let entry = original_tuples.entry(key);
-        match entry {
-            entry @ Entry::Occupied(_) => {
-                let key = *entry.key();
-                entry.and_modify(|(original_value, counter)| {
-                    let id_str = partition_id
-                        .map_or_else(|| "".to_string(), |id| format!(" in partition {}", id));
-                    assert_eq!(
-                        value, *original_value,
-                        "Invalid payload{}: {}; expected: {}",
-                        id_str, value, *original_value
-                    );
-                    assert_eq!(*counter, 0, "Duplicate key: {}", key);
-                    *counter = *counter + 1;
-                });
-            }
-            entry @ Entry::Vacant(_) => {
-                // skip padding entries
-                if *entry.key() != 0 {
-                    assert!(false, "Invalid key: {}", entry.key());
-                }
-            }
-        };
-    });
-
-    original_tuples.iter().for_each(|(&key, &(_, counter))| {
-        assert_eq!(
-            counter, 1,
-            "Key {} occurs {} times; expected exactly once",
-            key, counter
-        );
-    });
-
-    Ok(())
-}
-
-fn gpu_verify_partitions(
-    radix_pass: RadixPass,
-    radix_bits: &RadixBits,
-    _data_key: &[i32],
-    _data_pay: &[i32],
-    partitioned_relation: &PartitionedRelation<Tuple<i32, i32>>,
-    partition_id: Option<u32>,
-) -> Result<(), Box<dyn Error>> {
-    (0..partitioned_relation.num_chunks())
-        .flat_map(|c| iter::repeat(c).zip(0..partitioned_relation.fanout()))
-        .flat_map(|(c, p)| iter::repeat((c, p)).zip(partitioned_relation[(c, p)].iter()))
-        .enumerate()
-        .for_each(|(i, ((c, p), &tuple))| {
-            let dst_partition = key_to_partition(tuple.key, radix_bits, radix_pass);
-            let id_str = partition_id.map_or_else(|| "".to_string(), |id| format!("{}:", id));
-            assert_eq!(
-                dst_partition, p,
-                "Wrong partitioning detected in chunk {} at position {}: \
-                key {} in partition {}{}; expected partition {}{}",
-                c, i, tuple.key, id_str, p, id_str, dst_partition
-            );
-        });
-
-    Ok(())
-}
-
-fn gpu_check_copy_with_payload(
-    _radix_pass: RadixPass,
-    _radix_bits: &RadixBits,
-    data_key: &[i32],
-    data_pay: &[i32],
-    _partitioned_relation: &PartitionedRelation<Tuple<i32, i32>>,
-    cached_key: &[i32],
-    cached_pay: &[i32],
-) -> Result<(), Box<dyn Error>> {
-    data_key
-        .iter()
-        .zip(cached_key.iter())
-        .enumerate()
-        .for_each(|(i, (&original, &cached))| {
-            assert_eq!(
-                original, cached,
-                "Wrong key detected at position {}: {}",
-                i, cached
-            );
-        });
-
-    data_pay
-        .iter()
-        .zip(cached_pay.iter())
-        .enumerate()
-        .for_each(|(i, (&original, &cached))| {
-            assert_eq!(
-                original, cached,
-                "Wrong payload detected at position {}: {}",
-                i, cached
-            );
-        });
-
-    Ok(())
-}
-
-fn gpu_two_pass_tuple_loss_or_duplicates(
-    radix_pass: RadixPass,
-    radix_bits: &RadixBits,
-    _partitioned_relation_1st: &PartitionedRelation<Tuple<i32, i32>>,
-    partition_id: u32,
-    partitioned_relation_2nd: &PartitionedRelation<Tuple<i32, i32>>,
-    cached_key_slice: &[i32],
-    cached_pay_slice: &[i32],
-) -> Result<(), Box<dyn Error>> {
-    gpu_tuple_loss_or_duplicates(
-        radix_pass,
-        radix_bits,
-        cached_key_slice,
-        cached_pay_slice,
-        partitioned_relation_2nd,
-        Some(partition_id),
-    )
-}
-
-fn gpu_two_pass_verify_partitions(
-    radix_pass: RadixPass,
-    radix_bits: &RadixBits,
-    _partitioned_relation_1st: &PartitionedRelation<Tuple<i32, i32>>,
-    partition_id: u32,
-    partitioned_relation_2nd: &PartitionedRelation<Tuple<i32, i32>>,
-    cached_key_slice: &[i32],
-    cached_pay_slice: &[i32],
-) -> Result<(), Box<dyn Error>> {
-    gpu_verify_partitions(
-        radix_pass,
-        radix_bits,
-        cached_key_slice,
-        cached_pay_slice,
-        partitioned_relation_2nd,
-        Some(partition_id),
-    )
-}
-
-fn gpu_verify_transformed_input(
-    _radix_pass: RadixPass,
-    _radix_bits: &RadixBits,
-    partitioned_relation_1st: &PartitionedRelation<Tuple<i32, i32>>,
-    partition_id: u32,
-    _partitioned_relation_2nd: &PartitionedRelation<Tuple<i32, i32>>,
-    cached_key_slice: &[i32],
-    cached_pay_slice: &[i32],
-) -> Result<(), Box<dyn Error>> {
-    (0..partitioned_relation_1st.num_chunks())
-        .flat_map(|c| partitioned_relation_1st[(c, partition_id)].iter())
-        .zip(cached_key_slice.iter())
-        .zip(cached_pay_slice.iter())
-        .enumerate()
-        .for_each(|(i, ((&tuple, &key), &pay))| {
-            assert_eq!(
-                tuple.key, key,
-                "Wrong key detected in partition {} at position {}: {}",
-                partition_id, i, key
-            );
-            assert_eq!(
-                tuple.value, pay,
-                "Wrong payload detected in partition {} at position {}: {}",
-                partition_id, i, pay
-            );
-        });
-
-    Ok(())
-}
-
 #[test]
 fn gpu_tuple_loss_or_duplicates_cpu_chunked_i32_2_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
@@ -615,7 +425,7 @@ fn gpu_tuple_loss_or_duplicates_cpu_chunked_i32_2_bits() -> Result<(), Box<dyn E
         RadixBits::from(2),
         GridSize::from(10),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -630,7 +440,7 @@ fn gpu_verify_partitions_cpu_chunked_i32_2_bits() -> Result<(), Box<dyn Error>> 
         RadixBits::from(2),
         GridSize::from(10),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -645,7 +455,7 @@ fn gpu_tuple_loss_or_duplicates_small_chunked_i32_2_bits() -> Result<(), Box<dyn
         RadixBits::from(2),
         GridSize::from(4),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -660,7 +470,7 @@ fn gpu_verify_partitions_small_chunked_i32_2_bits() -> Result<(), Box<dyn Error>
         RadixBits::from(2),
         GridSize::from(4),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -675,7 +485,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_i32_2_bits() -> Result<(), Box<dyn Error
         RadixBits::from(2),
         GridSize::from(10),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -690,7 +500,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_i32_10_bits() -> Result<(), Box<dyn Erro
         RadixBits::from(10),
         GridSize::from(10),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -705,7 +515,7 @@ fn gpu_verify_partitions_chunked_i32_2_bits() -> Result<(), Box<dyn Error>> {
         RadixBits::from(2),
         GridSize::from(10),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -720,7 +530,7 @@ fn gpu_verify_partitions_chunked_i32_10_bits() -> Result<(), Box<dyn Error>> {
         RadixBits::from(10),
         GridSize::from(10),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -735,7 +545,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_i32_12_bits() -> Result<(), Box<dyn Erro
         RadixBits::from(12),
         GridSize::from(10),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -750,7 +560,7 @@ fn gpu_verify_partitions_chunked_i32_12_bits() -> Result<(), Box<dyn Error>> {
         RadixBits::from(12),
         GridSize::from(10),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -765,7 +575,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_non_power_two() -> Result<(), Box<dyn Er
         RadixBits::from(10),
         GridSize::from(10),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -780,7 +590,7 @@ fn gpu_verify_partitions_chunked_non_power_two() -> Result<(), Box<dyn Error>> {
         RadixBits::from(10),
         GridSize::from(10),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -795,7 +605,7 @@ fn gpu_tuple_loss_or_duplicates_contiguous_i32_2_bits() -> Result<(), Box<dyn Er
         RadixBits::from(2),
         GridSize::from(10),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -810,7 +620,7 @@ fn gpu_tuple_loss_or_duplicates_contiguous_i32_10_bits() -> Result<(), Box<dyn E
         RadixBits::from(10),
         GridSize::from(10),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -825,7 +635,7 @@ fn gpu_verify_partitions_contiguous_i32_2_bits() -> Result<(), Box<dyn Error>> {
         RadixBits::from(2),
         GridSize::from(10),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -840,7 +650,7 @@ fn gpu_verify_partitions_contiguous_i32_10_bits() -> Result<(), Box<dyn Error>> 
         RadixBits::from(10),
         GridSize::from(10),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -855,7 +665,7 @@ fn gpu_tuple_loss_or_duplicates_contiguous_i32_12_bits() -> Result<(), Box<dyn E
         RadixBits::from(12),
         GridSize::from(10),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -870,7 +680,7 @@ fn gpu_verify_partitions_contiguous_i32_12_bits() -> Result<(), Box<dyn Error>> 
         RadixBits::from(12),
         GridSize::from(10),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -885,7 +695,7 @@ fn gpu_tuple_loss_or_duplicates_contiguous_non_power_two() -> Result<(), Box<dyn
         RadixBits::from(10),
         GridSize::from(10),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -900,7 +710,7 @@ fn gpu_verify_partitions_contiguous_non_power_two() -> Result<(), Box<dyn Error>
         RadixBits::from(10),
         GridSize::from(10),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -915,7 +725,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_laswwc_i32_2_bits() -> Result<(), Box<dy
         RadixBits::from(2),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -930,7 +740,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_laswwc_i32_10_bits() -> Result<(), Box<d
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -945,7 +755,7 @@ fn gpu_verify_partitions_chunked_laswwc_i32_2_bits() -> Result<(), Box<dyn Error
         RadixBits::from(2),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -960,7 +770,7 @@ fn gpu_verify_partitions_chunked_laswwc_i32_10_bits() -> Result<(), Box<dyn Erro
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -975,7 +785,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_laswwc_non_power_two() -> Result<(), Box
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -990,7 +800,7 @@ fn gpu_verify_partitions_chunked_laswwc_non_power_two() -> Result<(), Box<dyn Er
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -1005,7 +815,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_i32_2_bits() -> Result<(), Box<dyn
         RadixBits::from(2),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -1020,7 +830,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_i32_10_bits() -> Result<(), Box<dy
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -1035,7 +845,7 @@ fn gpu_verify_partitions_chunked_sswwc_i32_2_bits() -> Result<(), Box<dyn Error>
         RadixBits::from(2),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -1050,7 +860,7 @@ fn gpu_verify_partitions_chunked_sswwc_i32_10_bits() -> Result<(), Box<dyn Error
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -1065,7 +875,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_non_power_two() -> Result<(), Box<
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -1080,7 +890,7 @@ fn gpu_verify_partitions_chunked_sswwc_non_power_two() -> Result<(), Box<dyn Err
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -1096,7 +906,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_non_temporal_i32_10_bits(
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -1111,7 +921,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_v2_i32_2_bits() -> Result<(), Box<
         RadixBits::from(2),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -1126,7 +936,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_v2_i32_10_bits() -> Result<(), Box
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -1141,7 +951,7 @@ fn gpu_verify_partitions_chunked_sswwc_v2_i32_2_bits() -> Result<(), Box<dyn Err
         RadixBits::from(2),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -1156,7 +966,7 @@ fn gpu_verify_partitions_chunked_sswwc_v2_i32_10_bits() -> Result<(), Box<dyn Er
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -1171,7 +981,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_v2_non_power_two() -> Result<(), B
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -1186,7 +996,7 @@ fn gpu_verify_partitions_chunked_sswwc_v2_non_power_two() -> Result<(), Box<dyn 
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -1201,7 +1011,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_i32_2_bits() -> Result<(), Box<dy
         RadixBits::from(2),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -1216,7 +1026,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_i32_10_bits() -> Result<(), Box<d
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -1231,7 +1041,7 @@ fn gpu_verify_partitions_chunked_hsswwc_i32_2_bits() -> Result<(), Box<dyn Error
         RadixBits::from(2),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -1246,7 +1056,7 @@ fn gpu_verify_partitions_chunked_hsswwc_i32_10_bits() -> Result<(), Box<dyn Erro
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -1261,7 +1071,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_non_power_two() -> Result<(), Box
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -1276,7 +1086,7 @@ fn gpu_verify_partitions_chunked_hsswwc_non_power_two() -> Result<(), Box<dyn Er
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -1291,7 +1101,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v2_i32_2_bits() -> Result<(), Box
         RadixBits::from(2),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -1306,7 +1116,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v2_i32_10_bits() -> Result<(), Bo
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -1321,7 +1131,7 @@ fn gpu_verify_partitions_chunked_hsswwc_v2_i32_2_bits() -> Result<(), Box<dyn Er
         RadixBits::from(2),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -1336,7 +1146,7 @@ fn gpu_verify_partitions_chunked_hsswwc_v2_i32_10_bits() -> Result<(), Box<dyn E
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -1351,7 +1161,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v2_non_power_two() -> Result<(), 
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -1366,7 +1176,7 @@ fn gpu_verify_partitions_chunked_hsswwc_v2_non_power_two() -> Result<(), Box<dyn
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -1381,7 +1191,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v3_i32_2_bits() -> Result<(), Box
         RadixBits::from(2),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -1396,7 +1206,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v3_i32_10_bits() -> Result<(), Bo
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -1411,7 +1221,7 @@ fn gpu_verify_partitions_chunked_hsswwc_v3_i32_2_bits() -> Result<(), Box<dyn Er
         RadixBits::from(2),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -1426,7 +1236,7 @@ fn gpu_verify_partitions_chunked_hsswwc_v3_i32_10_bits() -> Result<(), Box<dyn E
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -1441,7 +1251,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v3_non_power_two() -> Result<(), 
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -1456,7 +1266,7 @@ fn gpu_verify_partitions_chunked_hsswwc_v3_non_power_two() -> Result<(), Box<dyn
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -1471,7 +1281,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v4_i32_2_bits() -> Result<(), Box
         RadixBits::from(2),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -1486,7 +1296,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v4_i32_10_bits() -> Result<(), Bo
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -1501,7 +1311,7 @@ fn gpu_verify_partitions_chunked_hsswwc_v4_i32_2_bits() -> Result<(), Box<dyn Er
         RadixBits::from(2),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -1516,7 +1326,7 @@ fn gpu_verify_partitions_chunked_hsswwc_v4_i32_10_bits() -> Result<(), Box<dyn E
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -1531,7 +1341,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v4_non_power_two() -> Result<(), 
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_tuple_loss_or_duplicates),
+        Box::new(&tuple_loss_or_duplicates),
     )
 }
 
@@ -1546,7 +1356,7 @@ fn gpu_verify_partitions_chunked_hsswwc_v4_non_power_two() -> Result<(), Box<dyn
         RadixBits::from(10),
         GridSize::from(1),
         BlockSize::from(128),
-        Box::new(&gpu_verify_partitions),
+        Box::new(&verify_partitions),
     )
 }
 
@@ -1563,7 +1373,7 @@ fn gpu_tuple_loss_or_duplicates_copy_with_payload_contiguous_i32_2_bits(
         GridSize::from(10),
         BlockSize::from(128),
         Box::new(|pass, rb: &_, dk: &_, dp: &_, pr: &_, _: &_, _: &_| {
-            gpu_tuple_loss_or_duplicates(pass, rb, dk, dp, pr, None)
+            tuple_loss_or_duplicates(pass, rb, dk, dp, pr, None)
         }),
     )
 }
@@ -1581,7 +1391,7 @@ fn gpu_tuple_loss_or_duplicates_copy_with_payload_contiguous_i32_10_bits(
         GridSize::from(10),
         BlockSize::from(128),
         Box::new(|pass, rb: &_, dk: &_, dp: &_, pr: &_, _: &_, _: &_| {
-            gpu_tuple_loss_or_duplicates(pass, rb, dk, dp, pr, None)
+            tuple_loss_or_duplicates(pass, rb, dk, dp, pr, None)
         }),
     )
 }
@@ -1598,7 +1408,7 @@ fn gpu_verify_partitions_copy_with_payload_contiguous_i32_2_bits() -> Result<(),
         GridSize::from(10),
         BlockSize::from(128),
         Box::new(|pass, rb: &_, dk: &_, dp: &_, pr: &_, _: &_, _: &_| {
-            gpu_verify_partitions(pass, rb, dk, dp, pr, None)
+            verify_partitions(pass, rb, dk, dp, pr, None)
         }),
     )
 }
@@ -1615,7 +1425,7 @@ fn gpu_verify_partitions_copy_with_payload_contiguous_i32_10_bits() -> Result<()
         GridSize::from(10),
         BlockSize::from(128),
         Box::new(|pass, rb: &_, dk: &_, dp: &_, pr: &_, _: &_, _: &_| {
-            gpu_verify_partitions(pass, rb, dk, dp, pr, None)
+            verify_partitions(pass, rb, dk, dp, pr, None)
         }),
     )
 }
@@ -1631,7 +1441,7 @@ fn gpu_check_copy_with_payload_contiguous_i32_2_bits() -> Result<(), Box<dyn Err
         RadixBits::from(2),
         GridSize::from(10),
         BlockSize::from(128),
-        Box::new(&gpu_check_copy_with_payload),
+        Box::new(&check_copy_with_payload),
     )
 }
 
@@ -1646,7 +1456,7 @@ fn gpu_check_copy_with_payload_contiguous_i32_10_bits() -> Result<(), Box<dyn Er
         RadixBits::from(10),
         GridSize::from(10),
         BlockSize::from(128),
-        Box::new(&gpu_check_copy_with_payload),
+        Box::new(&check_copy_with_payload),
     )
 }
 
@@ -1663,7 +1473,7 @@ fn gpu_loss_or_duplicates_two_pass_chunked_contiguous_i32_0_0_bits() -> Result<(
         RadixBits::new(Some(0), Some(0), None),
         GridSize::from(8),
         BlockSize::from(128),
-        Box::new(&gpu_two_pass_tuple_loss_or_duplicates),
+        Box::new(&two_pass_tuple_loss_or_duplicates),
     )
 }
 
@@ -1680,7 +1490,7 @@ fn gpu_loss_or_duplicates_two_pass_chunked_contiguous_i32_2_2_bits() -> Result<(
         RadixBits::new(Some(2), Some(2), None),
         GridSize::from(8),
         BlockSize::from(128),
-        Box::new(&gpu_two_pass_tuple_loss_or_duplicates),
+        Box::new(&two_pass_tuple_loss_or_duplicates),
     )
 }
 
@@ -1698,7 +1508,7 @@ fn gpu_loss_or_duplicates_two_pass_chunked_contiguous_i32_10_10_bits() -> Result
         RadixBits::new(Some(10), Some(10), None),
         GridSize::from(8),
         BlockSize::from(128),
-        Box::new(&gpu_two_pass_tuple_loss_or_duplicates),
+        Box::new(&two_pass_tuple_loss_or_duplicates),
     )
 }
 
@@ -1716,7 +1526,7 @@ fn gpu_loss_or_duplicates_two_pass_contiguous_contiguous_i32_2_2_bits() -> Resul
         RadixBits::new(Some(2), Some(2), None),
         GridSize::from(8),
         BlockSize::from(128),
-        Box::new(&gpu_two_pass_tuple_loss_or_duplicates),
+        Box::new(&two_pass_tuple_loss_or_duplicates),
     )
 }
 
@@ -1733,7 +1543,7 @@ fn gpu_verify_two_pass_chunked_contiguous_i32_0_0_bits() -> Result<(), Box<dyn E
         RadixBits::new(Some(0), Some(0), None),
         GridSize::from(8),
         BlockSize::from(128),
-        Box::new(&gpu_two_pass_verify_partitions),
+        Box::new(&two_pass_verify_partitions),
     )
 }
 
@@ -1750,7 +1560,7 @@ fn gpu_verify_two_pass_chunked_contiguous_i32_2_2_bits() -> Result<(), Box<dyn E
         RadixBits::new(Some(2), Some(2), None),
         GridSize::from(8),
         BlockSize::from(128),
-        Box::new(&gpu_two_pass_verify_partitions),
+        Box::new(&two_pass_verify_partitions),
     )
 }
 
@@ -1767,7 +1577,7 @@ fn gpu_verify_two_pass_chunked_contiguous_i32_10_10_bits() -> Result<(), Box<dyn
         RadixBits::new(Some(10), Some(10), None),
         GridSize::from(8),
         BlockSize::from(128),
-        Box::new(&gpu_two_pass_verify_partitions),
+        Box::new(&two_pass_verify_partitions),
     )
 }
 
@@ -1784,7 +1594,7 @@ fn gpu_verify_two_pass_contiguous_contiguous_i32_2_2_bits() -> Result<(), Box<dy
         RadixBits::new(Some(2), Some(2), None),
         GridSize::from(8),
         BlockSize::from(128),
-        Box::new(&gpu_two_pass_verify_partitions),
+        Box::new(&two_pass_verify_partitions),
     )
 }
 
@@ -1801,7 +1611,7 @@ fn gpu_transform_two_pass_chunked_contiguous_i32_0_0_bits() -> Result<(), Box<dy
         RadixBits::new(Some(0), Some(0), None),
         GridSize::from(8),
         BlockSize::from(128),
-        Box::new(&gpu_verify_transformed_input),
+        Box::new(&verify_transformed_input),
     )
 }
 
@@ -1818,7 +1628,7 @@ fn gpu_transform_two_pass_chunked_contiguous_i32_2_2_bits() -> Result<(), Box<dy
         RadixBits::new(Some(2), Some(2), None),
         GridSize::from(8),
         BlockSize::from(128),
-        Box::new(&gpu_verify_transformed_input),
+        Box::new(&verify_transformed_input),
     )
 }
 
@@ -1835,7 +1645,7 @@ fn gpu_transform_two_pass_chunked_contiguous_i32_10_10_bits() -> Result<(), Box<
         RadixBits::new(Some(10), Some(10), None),
         GridSize::from(8),
         BlockSize::from(128),
-        Box::new(&gpu_verify_transformed_input),
+        Box::new(&verify_transformed_input),
     )
 }
 
@@ -1852,7 +1662,7 @@ fn gpu_transform_two_pass_contiguous_contiguous_i32_2_2_bits() -> Result<(), Box
         RadixBits::new(Some(2), Some(2), None),
         GridSize::from(8),
         BlockSize::from(128),
-        Box::new(&gpu_verify_transformed_input),
+        Box::new(&verify_transformed_input),
     )
 }
 
@@ -1869,7 +1679,7 @@ fn gpu_loss_or_duplicates_two_pass_laswwc_i32_6_6_bits() -> Result<(), Box<dyn E
         RadixBits::new(Some(6), Some(6), None),
         GridSize::from(8),
         BlockSize::from(128),
-        Box::new(&gpu_two_pass_tuple_loss_or_duplicates),
+        Box::new(&two_pass_tuple_loss_or_duplicates),
     )
 }
 
@@ -1886,7 +1696,7 @@ fn gpu_verify_partitions_two_pass_laswwc_i32_6_6_bits() -> Result<(), Box<dyn Er
         RadixBits::new(Some(6), Some(6), None),
         GridSize::from(8),
         BlockSize::from(128),
-        Box::new(&gpu_two_pass_verify_partitions),
+        Box::new(&two_pass_verify_partitions),
     )
 }
 
@@ -1903,7 +1713,7 @@ fn gpu_loss_or_duplicates_two_pass_sswwc_i32_6_6_bits() -> Result<(), Box<dyn Er
         RadixBits::new(Some(6), Some(6), None),
         GridSize::from(8),
         BlockSize::from(128),
-        Box::new(&gpu_two_pass_tuple_loss_or_duplicates),
+        Box::new(&two_pass_tuple_loss_or_duplicates),
     )
 }
 
@@ -1920,7 +1730,7 @@ fn gpu_verify_partitions_two_pass_sswwc_i32_6_6_bits() -> Result<(), Box<dyn Err
         RadixBits::new(Some(6), Some(6), None),
         GridSize::from(8),
         BlockSize::from(128),
-        Box::new(&gpu_two_pass_verify_partitions),
+        Box::new(&two_pass_verify_partitions),
     )
 }
 
@@ -1937,7 +1747,7 @@ fn gpu_loss_or_duplicates_two_pass_sswwc_v2_i32_6_6_bits() -> Result<(), Box<dyn
         RadixBits::new(Some(6), Some(6), None),
         GridSize::from(8),
         BlockSize::from(128),
-        Box::new(&gpu_two_pass_tuple_loss_or_duplicates),
+        Box::new(&two_pass_tuple_loss_or_duplicates),
     )
 }
 
@@ -1954,6 +1764,6 @@ fn gpu_verify_partitions_two_pass_sswwc_v2_i32_6_6_bits() -> Result<(), Box<dyn 
         RadixBits::new(Some(6), Some(6), None),
         GridSize::from(8),
         BlockSize::from(128),
-        Box::new(&gpu_two_pass_verify_partitions),
+        Box::new(&two_pass_verify_partitions),
     )
 }
