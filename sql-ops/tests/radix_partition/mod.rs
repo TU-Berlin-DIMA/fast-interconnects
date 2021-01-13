@@ -9,9 +9,12 @@
  * Author: Clemens Lutz, DFKI GmbH <clemens.lutz@dfki.de>
  */
 
+use rustacuda::memory::DeviceCopy;
 use sql_ops::partition::{PartitionedRelation, RadixBits, RadixPass, Tuple};
 use std::collections::hash_map::{Entry, HashMap};
 use std::error::Error;
+use std::fmt::{Debug, Display};
+use std::hash::Hash;
 use std::iter;
 use std::result::Result;
 
@@ -23,14 +26,17 @@ pub fn key_to_partition(key: i32, radix_bits: &RadixBits, radix_pass: RadixPass)
     partition
 }
 
-pub fn tuple_loss_or_duplicates(
+pub fn tuple_loss_or_duplicates<T>(
     _radix_pass: RadixPass,
     _radix_bits: &RadixBits,
-    data_key: &[i32],
-    data_pay: &[i32],
-    partitioned_relation: &PartitionedRelation<Tuple<i32, i32>>,
+    data_key: &[T],
+    data_pay: &[T],
+    partitioned_relation: &PartitionedRelation<Tuple<T, T>>,
     partition_id: Option<u32>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn Error>>
+where
+    T: Clone + Debug + Default + Display + DeviceCopy + Eq + Hash,
+{
     let mut original_tuples: HashMap<_, _> = data_key
         .iter()
         .cloned()
@@ -43,7 +49,7 @@ pub fn tuple_loss_or_duplicates(
         let entry = original_tuples.entry(key);
         match entry {
             entry @ Entry::Occupied(_) => {
-                let key = *entry.key();
+                let key = entry.key().clone();
                 entry.and_modify(|(original_value, counter)| {
                     let id_str = partition_id
                         .map_or_else(|| "".to_string(), |id| format!(" in partition {}", id));
@@ -58,14 +64,14 @@ pub fn tuple_loss_or_duplicates(
             }
             entry @ Entry::Vacant(_) => {
                 // skip padding entries
-                if *entry.key() != 0 {
+                if *entry.key() != T::default() {
                     assert!(false, "Invalid key: {}", entry.key());
                 }
             }
         };
     });
 
-    original_tuples.iter().for_each(|(&key, &(_, counter))| {
+    original_tuples.iter().for_each(|(key, &(_, counter))| {
         assert_eq!(
             counter, 1,
             "Key {} occurs {} times; expected exactly once",
@@ -76,6 +82,7 @@ pub fn tuple_loss_or_duplicates(
     Ok(())
 }
 
+// FIXME: Convert i32 to a generic type
 pub fn verify_partitions(
     radix_pass: RadixPass,
     radix_bits: &RadixBits,
