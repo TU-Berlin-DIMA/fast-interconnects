@@ -99,6 +99,14 @@ where
         dmem_buffer_bytes,
     )?;
 
+    let radix_join = cuda_radix_join::CudaRadixJoin::new(
+        RadixPass::Second,
+        radix_bits.clone(),
+        hashing_scheme,
+        grid_size,
+        block_size,
+    )?;
+
     let mut inner_rel_partitions = PartitionedRelation::new(
         data.build_relation_key.len(),
         histogram_algorithms[0].into(),
@@ -121,25 +129,29 @@ where
         histogram_algorithms[0].into(),
         max_chunks_1st,
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
-        Allocator::mem_alloc_fn(MemType::CudaUniMem),
+        Allocator::mem_alloc_fn(partitions_mem_type.clone()),
     );
 
     let mut outer_rel_partition_offsets = PartitionOffsets::new(
         histogram_algorithms[0].into(),
         max_chunks_1st,
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
-        Allocator::mem_alloc_fn(MemType::CudaUniMem),
+        Allocator::mem_alloc_fn(partitions_mem_type.clone()),
     );
 
     let mut result_sums = allocator::Allocator::alloc_mem(
-        MemType::CudaUniMem,
+        MemType::CudaDevMem,
         (join_dim.0.x * join_dim.1.x) as usize,
     );
 
     // Initialize result
-    if let CudaUniMem(ref mut c) = result_sums {
-        c.iter_mut().map(|sum| *sum = 0).for_each(drop);
-    }
+    match (&mut result_sums).try_into() {
+        Ok(mem) => {
+            let _: &mut [_] = mem;
+            mem.iter_mut().map(|sum| *sum = 0).for_each(drop)
+        }
+        Err(ref mut _devmem) => {} // FIXME: cuda memset to zero
+    };
 
     let partitions_malloc_time = partitions_malloc_timer.elapsed();
 
@@ -339,13 +351,6 @@ where
 
         let mut join_task_assignments =
             Allocator::alloc_mem(MemType::CudaDevMem, join_dim.0.x as usize + 1);
-        let radix_join = cuda_radix_join::CudaRadixJoin::new(
-            RadixPass::Second,
-            radix_bits.clone(),
-            hashing_scheme,
-            grid_size,
-            block_size,
-        )?;
         radix_join.join(
             &inner_rel_partitions_2nd,
             &outer_rel_partitions_2nd,
