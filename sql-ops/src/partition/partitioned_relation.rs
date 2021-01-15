@@ -26,21 +26,9 @@ use std::mem;
 use std::ops::{Index, IndexMut};
 use std::slice::ChunksMut;
 
-/// Defines the padding bytes between partitions.
-///
-/// Padding is necessary for partitioning algorithms to align writes. Aligned writes have fixed
-/// length and may overwrite the padding space in front of their partition.  For this reason,
-/// also the first partition includes padding in front.
-///
-/// # Invariants
-///
-/// * The padding length must be equal to or larger than the alignment:
-///   padding_bytes >= align_bytes
-const PADDING_BYTES: u32 = 128;
-
 /// Convert padding bytes into padding length for the type `T`
 fn padding_len<T: Sized>() -> u32 {
-    PADDING_BYTES / mem::size_of::<T>() as u32
+    crate::constants::PADDING_BYTES / mem::size_of::<T>() as u32
 }
 
 /// Partition offsets for an array of chunked partitions.
