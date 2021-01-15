@@ -139,6 +139,19 @@ where
         Allocator::mem_alloc_fn(partitions_mem_type.clone()),
     );
 
+    let mut inner_rel_partition_offsets_2nd = PartitionOffsets::new(
+        histogram_algorithms[1].into(),
+        max_chunks_2nd,
+        radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
+        Allocator::mem_alloc_fn(MemType::CudaDevMem),
+    );
+    let mut outer_rel_partition_offsets_2nd = PartitionOffsets::new(
+        histogram_algorithms[1].into(),
+        max_chunks_2nd,
+        radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
+        Allocator::mem_alloc_fn(MemType::CudaDevMem),
+    );
+
     let mut result_sums = allocator::Allocator::alloc_mem(
         MemType::CudaDevMem,
         (join_dim.0.x * join_dim.1.x) as usize,
@@ -243,6 +256,7 @@ where
 
     stream.synchronize()?;
     let partition_time = partition_timer.elapsed();
+    let partitions_malloc_timer = Instant::now();
 
     let max_inner_partition_len =
         (0..inner_rel_partitions.fanout()).try_fold(0, |max, partition_id| {
@@ -262,41 +276,34 @@ where
     let mut cached_outer_key = Allocator::alloc_mem(MemType::CudaDevMem, max_outer_partition_len);
     let mut cached_outer_pay = Allocator::alloc_mem(MemType::CudaDevMem, max_outer_partition_len);
 
+    let mut inner_rel_partitions_2nd = PartitionedRelation::new(
+        max_inner_partition_len,
+        histogram_algorithms[1].into(),
+        radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
+        max_chunks_2nd,
+        Allocator::mem_alloc_fn(MemType::CudaDevMem),
+        Allocator::mem_alloc_fn(MemType::CudaDevMem),
+    );
+    let mut outer_rel_partitions_2nd = PartitionedRelation::new(
+        max_outer_partition_len,
+        histogram_algorithms[1].into(),
+        radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
+        max_chunks_2nd,
+        Allocator::mem_alloc_fn(MemType::CudaDevMem),
+        Allocator::mem_alloc_fn(MemType::CudaDevMem),
+    );
+    let mut join_task_assignments =
+        Allocator::alloc_mem(MemType::CudaDevMem, join_dim.0.x as usize + 1);
+
+    let partitions_malloc_time = partitions_malloc_time + partitions_malloc_timer.elapsed();
     let join_timer = Instant::now();
 
     for partition_id in 0..radix_bits.pass_fanout(RadixPass::First).unwrap() {
-        let mut inner_rel_partition_offsets_2nd = PartitionOffsets::new(
-            histogram_algorithms[1].into(),
-            max_chunks_2nd,
-            radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
-            Allocator::mem_alloc_fn(MemType::CudaDevMem),
-        );
-        let mut outer_rel_partition_offsets_2nd = PartitionOffsets::new(
-            histogram_algorithms[1].into(),
-            max_chunks_2nd,
-            radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
-            Allocator::mem_alloc_fn(MemType::CudaDevMem),
-        );
-
         let inner_partition_len = inner_rel_partitions.partition_len(partition_id)?;
         let outer_partition_len = outer_rel_partitions.partition_len(partition_id)?;
 
-        let mut inner_rel_partitions_2nd = PartitionedRelation::new(
-            inner_partition_len,
-            histogram_algorithms[1].into(),
-            radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
-            max_chunks_2nd,
-            Allocator::mem_alloc_fn(MemType::CudaDevMem),
-            Allocator::mem_alloc_fn(MemType::CudaDevMem),
-        );
-        let mut outer_rel_partitions_2nd = PartitionedRelation::new(
-            outer_partition_len,
-            histogram_algorithms[1].into(),
-            radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
-            max_chunks_2nd,
-            Allocator::mem_alloc_fn(MemType::CudaDevMem),
-            Allocator::mem_alloc_fn(MemType::CudaDevMem),
-        );
+        inner_rel_partitions_2nd.resize(inner_partition_len)?;
+        outer_rel_partitions_2nd.resize(outer_partition_len)?;
 
         let cached_inner_key_slice = unsafe {
             &mut cached_inner_key.as_launchable_mut_slice().as_mut_slice()[0..inner_partition_len]
@@ -349,8 +356,6 @@ where
             &stream,
         )?;
 
-        let mut join_task_assignments =
-            Allocator::alloc_mem(MemType::CudaDevMem, join_dim.0.x as usize + 1);
         radix_join.join(
             &inner_rel_partitions_2nd,
             &outer_rel_partitions_2nd,
