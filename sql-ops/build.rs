@@ -21,6 +21,8 @@ fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();
     let cpp_compiler = env::var("CXX");
 
+    println!("cargo:rerun-if-env-changed=CXX");
+
     #[cfg(target_arch = "aarch64")]
     let cache_line_size: u32 = 64;
     #[cfg(target_arch = "x86_64")]
@@ -93,6 +95,16 @@ fn main() {
             .as_bytes(),
         )
         .unwrap();
+
+    // List of include files for Cargo build script to check if recompile is needed
+    let include_files = vec![
+        "include/gpu_common.h",
+        "include/gpu_radix_partition.h",
+        "include/ppc_intrinsics.h",
+        "include/prefix_scan.h",
+        "include/prefix_scan_state.h",
+        "include/ptx_memory.h",
+    ];
 
     // Add CUDA utils
     let cuda_lib_file = format!("{}/cudautils.fatbin", out_dir);
@@ -190,6 +202,12 @@ fn main() {
     println!("cargo:rustc-link-search=native=/usr/local/cuda/lib64");
     println!("cargo:rustc-link-lib=cudart");
 
+    // CPP files
+    let cpp_files = vec![
+        "cpputils/no_partitioning_join.cpp",
+        "cpputils/radix_partition.cpp",
+    ];
+
     // Add CPP utils
     cc::Build::new()
         .include(include_path)
@@ -207,7 +225,13 @@ fn main() {
         // See also "Linux on Power Porting Guide - Vector Intrinsics"
         .define("NO_WARN_X86_INTRINSICS", None)
         .pic(true)
-        .file("cpputils/no_partitioning_join.cpp")
-        .file("cpputils/radix_partition.cpp")
+        .files(&cpp_files)
         .compile("libcpputils.a");
+
+    vec!["include/", "cpputils/", "cudautils/"]
+        .iter()
+        .chain(include_files.iter())
+        .chain(cuda_files.iter())
+        .chain(cpp_files.iter())
+        .for_each(|file| println!("cargo:rerun-if-changed={}", file));
 }
