@@ -849,7 +849,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
 
                     // Only checking for contiguous partitioned relations, as
                     // chunked aren't supported.
-                    if src_relation.relation.len() >= std::u32::MAX as usize {
+                    if src_relation.padded_len() >= std::u32::MAX as usize {
                             let msg = "Relation is too large and causes an integer overflow.";
                             Err(ErrorKind::IntegerOverflow(msg.to_string(),))?
                     }
@@ -874,7 +874,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         src_offsets: src_relation.offsets.as_launchable_ptr(),
                         src_chunks: src_relation.chunks,
                         src_radix_bits: src_relation.radix_bits,
-                        data_len: src_relation.relation.len(),
+                        data_len: src_relation.padded_len(),
                         padding_len: partition_offsets.padding_len(),
                         radix_bits,
                         ignore_bits,

@@ -28,6 +28,7 @@ use sql_ops::partition::{
     PartitionOffsets, PartitionedRelation, RadixBits, RadixPartitionInputChunkable, RadixPass,
     Tuple,
 };
+use std::cmp;
 use std::error::Error;
 use std::mem;
 use std::result::Result;
@@ -345,28 +346,40 @@ where
     )?;
     stream.synchronize()?;
 
-    // TODO: compute size of largest partition from partition_offsets
-    let mut cached_key: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
-    let mut cached_pay: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
+    // FIXME: compute size of largest partition from partition_offsets instead of
+    // partitioned_relation. That would enable length comutation in parallel to partitioning.
+    let max_partition_len =
+        (0..partitioned_relation.fanout()).try_fold(0, |max, partition_id| {
+            partitioned_relation
+                .partition_len(partition_id)
+                .map(|len| cmp::max(max, len))
+        })?;
+
+    let mut cached_key: LockedBuffer<i32> = LockedBuffer::new(&0, max_partition_len)?;
+    let mut cached_pay: LockedBuffer<i32> = LockedBuffer::new(&0, max_partition_len)?;
+
+    let mut partition_offsets_2nd = PartitionOffsets::new(
+        histogram_algorithm_2nd.into(),
+        grid_size.x,
+        radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
+        Allocator::mem_alloc_fn(MemType::CudaUniMem),
+    );
+
+    let mut partitioned_relation_2nd = PartitionedRelation::new(
+        max_partition_len,
+        histogram_algorithm_2nd.into(),
+        radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
+        grid_size.x,
+        Allocator::mem_alloc_fn(MemType::CudaUniMem),
+        Allocator::mem_alloc_fn(MemType::CudaUniMem),
+    );
 
     for partition_id in 0..radix_bits.pass_fanout(RadixPass::First).unwrap() {
-        let mut partition_offsets_2nd = PartitionOffsets::new(
-            histogram_algorithm_2nd.into(),
-            grid_size.x,
-            radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
-            Allocator::mem_alloc_fn(MemType::CudaUniMem),
-        );
-
         let partition_len = partitioned_relation.partition_len(partition_id)?;
+        partitioned_relation_2nd.resize(partition_len)?;
 
-        let mut partitioned_relation_2nd = PartitionedRelation::new(
-            partition_len,
-            histogram_algorithm_2nd.into(),
-            radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
-            grid_size.x,
-            Allocator::mem_alloc_fn(MemType::CudaUniMem),
-            Allocator::mem_alloc_fn(MemType::CudaUniMem),
-        );
+        let cached_key_slice = &mut cached_key.as_mut_slice()[0..partition_len];
+        let cached_pay_slice = &mut cached_pay.as_mut_slice()[0..partition_len];
 
         // Ensure that padded entries are zero for testing
         unsafe {
@@ -375,9 +388,6 @@ where
                 .iter_mut()
                 .for_each(|x| *x = Tuple::default());
         }
-
-        let cached_key_slice = &mut cached_key.as_mut_slice()[0..partition_len];
-        let cached_pay_slice = &mut cached_pay.as_mut_slice()[0..partition_len];
 
         partitioner_2nd.prefix_sum_and_transform(
             RadixPass::Second,

@@ -238,6 +238,7 @@ impl<'a, T: DeviceCopy> PartitionOffsetsMutSlice<'a, T> {
 pub struct PartitionedRelation<T: DeviceCopy> {
     pub relation: Mem<T>,
     pub offsets: Mem<u64>,
+    len: usize,
     pub(super) chunks: u32,
     pub(super) radix_bits: u32,
 }
@@ -270,15 +271,49 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
             offsets,
             chunks,
             radix_bits,
+            len,
         }
     }
 
     /// Returns the total number of elements in the relation (excluding padding).
     pub fn len(&self) -> usize {
-        let num_partitions = fanout(self.radix_bits) as usize;
+        self.len
+    }
 
+    /// Returns the total number of elements in the relation including padding.
+    pub(super) fn padded_len(&self) -> usize {
+        let num_partitions = fanout(self.radix_bits) as usize;
+        self.len + num_partitions * self.num_chunks() as usize * self.padding_len() as usize
+    }
+
+    /// Returns the number of elements allocated in memory (excluding padding).
+    ///
+    /// The capacity includes unused elements, but excludes padding.
+    pub fn capacity(&self) -> usize {
+        let num_partitions = fanout(self.radix_bits) as usize;
         self.relation.len()
-            - (num_partitions * self.num_chunks() as usize) * self.padding_len() as usize
+            - num_partitions * self.num_chunks() as usize * self.padding_len() as usize
+    }
+
+    /// Resizes the `PartitionedRelation` in-place so that `len` is equal to `new_len`.
+    ///
+    /// If `new_len` is greater than the allocated memory capacity, then the
+    /// resize will abort and return `Err`.
+    ///
+    /// ## Post-conditions
+    ///
+    /// - The resize invalidates all data contained in `relation` and the `offsets`.
+    /// - However, an aborted resize leaves `PartitionedRelation` intact and unmodified.
+    pub fn resize(&mut self, new_len: usize) -> Result<()> {
+        if new_len <= self.capacity() {
+            self.len = new_len;
+            Ok(())
+        } else {
+            Err(ErrorKind::InvalidArgument(
+                "Insufficient capacity to resize to new length".to_string(),
+            )
+            .into())
+        }
     }
 
     /// Returs the number of chunks.
@@ -318,7 +353,7 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
                 let end = if ofi + 1 < offsets.len() {
                     offsets[ofi + 1] as usize - padding_len
                 } else {
-                    self.relation.len()
+                    self.padded_len()
                 };
                 end - begin
             })
@@ -399,7 +434,7 @@ impl<T: DeviceCopy> Index<(u32, u32)> for PartitionedRelation<T> {
         let end = if ofi + 1 < self.offsets.len() {
             offsets[ofi + 1] as usize - self.padding_len() as usize
         } else {
-            relation.len()
+            self.padded_len()
         };
 
         &relation[begin..end]
@@ -410,6 +445,7 @@ impl<T: DeviceCopy> Index<(u32, u32)> for PartitionedRelation<T> {
 /// relation.
 impl<T: DeviceCopy> IndexMut<(u32, u32)> for PartitionedRelation<T> {
     fn index_mut(&mut self, (chunk_id, partition_id): (u32, u32)) -> &mut Self::Output {
+        let padded_len = self.padded_len();
         let padding_len = self.padding_len();
         let offsets_len = self.offsets.len();
         let partitions = self.fanout();
@@ -427,7 +463,7 @@ impl<T: DeviceCopy> IndexMut<(u32, u32)> for PartitionedRelation<T> {
         let end = if ofi + 1 < offsets_len {
             offsets[ofi + 1] as usize - padding_len as usize
         } else {
-            relation.len()
+            padded_len
         };
 
         &mut relation[begin..end]
