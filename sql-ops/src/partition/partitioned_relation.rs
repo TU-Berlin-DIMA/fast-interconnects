@@ -239,8 +239,8 @@ pub struct PartitionedRelation<T: DeviceCopy> {
     pub relation: Mem<T>,
     pub offsets: Mem<u64>,
     len: usize,
-    pub(super) chunks: u32,
-    pub(super) radix_bits: u32,
+    chunks: u32,
+    radix_bits: u32,
 }
 
 impl<T: DeviceCopy> PartitionedRelation<T> {
@@ -324,6 +324,11 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
     /// Returns the number of partitions.
     pub fn fanout(&self) -> u32 {
         fanout(self.radix_bits)
+    }
+
+    /// Returns the number of radix bits.
+    pub fn radix_bits(&self) -> u32 {
+        self.radix_bits
     }
 
     /// Returns the length of the requested partition.

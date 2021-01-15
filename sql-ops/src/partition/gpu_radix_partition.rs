@@ -872,8 +872,8 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         partition_id,
                         src_relation: src_relation.relation.as_launchable_ptr().as_void(),
                         src_offsets: src_relation.offsets.as_launchable_ptr(),
-                        src_chunks: src_relation.chunks,
-                        src_radix_bits: src_relation.radix_bits,
+                        src_chunks: src_relation.num_chunks(),
+                        src_radix_bits: src_relation.radix_bits(),
                         data_len: src_relation.padded_len(),
                         padding_len: partition_offsets.padding_len(),
                         radix_bits,
@@ -892,7 +892,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             let shared_mem_bytes = (
                                 (block_size.x + (block_size.x >> constants::LOG2_NUM_BANKS))
                                 + fanout_u32
-                                + 2 * src_relation.chunks
+                                + 2 * src_relation.num_chunks()
                                 ) * mem::size_of::<u64>() as u32;
                             assert!(
                                 shared_mem_bytes <= max_shared_mem_bytes,
@@ -942,7 +942,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 "Partition and payload attributes have different sizes".to_string(),
                                 ))?;
                     }
-                    if partitioned_relation.radix_bits != radix_bits {
+                    if partitioned_relation.radix_bits() != radix_bits {
                         Err(ErrorKind::InvalidArgument(
                                 "PartitionedRelation has mismatching radix bits".to_string(),
                                 ))?;
