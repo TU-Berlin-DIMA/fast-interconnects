@@ -132,7 +132,7 @@ fn gpu_verify_join_aggregate(
         RadixPass::First,
         inner_rel_key.as_launchable_slice(),
         inner_rel_pay.as_launchable_slice(),
-        inner_rel_partition_offsets,
+        &mut inner_rel_partition_offsets,
         &mut inner_rel_partitions,
         &stream,
     )?;
@@ -140,7 +140,7 @@ fn gpu_verify_join_aggregate(
         RadixPass::First,
         outer_rel_key.as_launchable_slice(),
         outer_rel_pay.as_launchable_slice(),
-        outer_rel_partition_offsets,
+        &mut outer_rel_partition_offsets,
         &mut outer_rel_partitions,
         &stream,
     )?;

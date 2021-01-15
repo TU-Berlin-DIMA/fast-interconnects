@@ -36,6 +36,21 @@ pub trait PageLock {
     fn page_unlock(&mut self) -> Result<()>;
 }
 
+/// A `MemType` represents the memory type of `Mem`
+///
+/// Each `Mem` instance has a memory type, e.g., `CudaDevMem`. `MemType` enables
+/// comparisons to determine if two `Mem` instances are of the same type.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum MemType {
+    SysMem,
+    BoxedSysMem,
+    NumaMem,
+    DistributedNumaMem,
+    CudaPinnedMem,
+    CudaDevMem,
+    CudaUniMem,
+}
+
 /// A heterogeneous memory type
 ///
 /// Some memory types cannot be directly accessed on the host, e.g., CudaDevMem.
@@ -70,6 +85,18 @@ impl<T: DeviceCopy> Mem<T> {
             CudaPinnedMem(ref m) => m.len(),
             CudaDevMem(ref m) => m.len(),
             CudaUniMem(ref m) => m.len(),
+        }
+    }
+
+    pub fn mem_type(&self) -> MemType {
+        match self {
+            SysMem(_) => MemType::SysMem,
+            BoxedSysMem(_) => MemType::BoxedSysMem,
+            NumaMem(_) => MemType::NumaMem,
+            DistributedNumaMem(_) => MemType::DistributedNumaMem,
+            CudaPinnedMem(_) => MemType::CudaPinnedMem,
+            CudaDevMem(_) => MemType::CudaDevMem,
+            CudaUniMem(_) => MemType::CudaUniMem,
         }
     }
 
@@ -257,6 +284,17 @@ pub enum DerefMem<T: DeviceCopy> {
 }
 
 impl<T: DeviceCopy> DerefMem<T> {
+    pub fn mem_type(&self) -> MemType {
+        match self {
+            DerefMem::SysMem(_) => MemType::SysMem,
+            DerefMem::BoxedSysMem(_) => MemType::BoxedSysMem,
+            DerefMem::NumaMem(_) => MemType::NumaMem,
+            DerefMem::DistributedNumaMem(_) => MemType::DistributedNumaMem,
+            DerefMem::CudaPinnedMem(_) => MemType::CudaPinnedMem,
+            DerefMem::CudaUniMem(_) => MemType::CudaUniMem,
+        }
+    }
+
     pub fn as_slice(&self) -> &[T] {
         match self {
             DerefMem::SysMem(m) => m.as_slice(),

@@ -182,7 +182,7 @@ pub trait GpuRadixPartitionable: Sized + DeviceCopy {
         pass: RadixPass,
         partition_attr: LaunchableSlice<'_, Self>,
         payload_attr: LaunchableSlice<'_, Self>,
-        partition_offsets: PartitionOffsets<Tuple<Self, Self>>,
+        partition_offsets: &mut PartitionOffsets<Tuple<Self, Self>>,
         partitioned_relation: &mut PartitionedRelation<Tuple<Self, Self>>,
         stream: &Stream,
     ) -> Result<()>;
@@ -508,12 +508,17 @@ impl GpuRadixPartitioner {
     /// Radix-partitions a relation by its key attribute.
     ///
     /// See the module-level documentation for details on the algorithm.
+    ///
+    /// ## Post-conditions
+    ///
+    /// - `partition_offsets` becomes uninitialized due to memory swap. However,
+    ///   can be reused for `prefix_sum`.
     pub fn partition<T: DeviceCopy + GpuRadixPartitionable>(
         &mut self,
         pass: RadixPass,
         partition_attr: LaunchableSlice<'_, T>,
         payload_attr: LaunchableSlice<'_, T>,
-        partition_offsets: PartitionOffsets<Tuple<T, T>>,
+        partition_offsets: &mut PartitionOffsets<Tuple<T, T>>,
         partitioned_relation: &mut PartitionedRelation<Tuple<T, T>>,
         stream: &Stream,
     ) -> Result<()> {
@@ -920,7 +925,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     pass: RadixPass,
                     partition_attr: LaunchableSlice<'_, $Type>,
                     payload_attr: LaunchableSlice<'_, $Type>,
-                    partition_offsets: PartitionOffsets<Tuple<$Type, $Type>>,
+                    partition_offsets: &mut PartitionOffsets<Tuple<$Type, $Type>>,
                     partitioned_relation: &mut PartitionedRelation<Tuple<$Type, $Type>>,
                     stream: &Stream,
                     ) -> Result<()> {
@@ -947,7 +952,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             let msg = "Relation is too large and causes an integer overflow. Try using more chunks by setting a higher CUDA grid size";
                             Err(ErrorKind::IntegerOverflow(msg.to_string(),))?
                     }
-                    if (partition_offsets.num_chunks() != partitioned_relation.chunks) {
+                    if (partition_offsets.num_chunks() != partitioned_relation.num_chunks()) {
                         Err(ErrorKind::InvalidArgument(
                                 "PartitionOffsets and PartitionedRelation have mismatching chunks".to_string(),
                                 ))?;
@@ -955,6 +960,11 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     if (partition_offsets.radix_bits() != radix_bits) {
                         Err(ErrorKind::InvalidArgument(
                                 "PartitionOffsets has mismatching radix bits".to_string(),
+                                ))?;
+                    }
+                    if partitioned_relation.offsets.mem_type() != partition_offsets.offsets.mem_type() {
+                        Err(ErrorKind::InvalidArgument(
+                                "PartitionedRelation offsets and PartitionOffsets have mismatching memory::Mem types".to_string()
                                 ))?;
                     }
 
@@ -1209,9 +1219,11 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         }
                     }
 
-                    // Move ownership of offsets to PartitionedRelation.
-                    // PartitionOffsets will be destroyed.
-                    partitioned_relation.offsets = partition_offsets.offsets;
+                    // Swap the offsets of PartitionedRelation with PartitionedOffsets.  This
+                    // avoids copying the offsets, as the optimal copy strategy is non-trivial to
+                    // determine (copy using CPU vs. GPU) as it depends on the memory type and NUMA
+                    // node.
+                    mem::swap(&mut partitioned_relation.offsets, &mut partition_offsets.offsets);
 
                     Ok(())
                 }

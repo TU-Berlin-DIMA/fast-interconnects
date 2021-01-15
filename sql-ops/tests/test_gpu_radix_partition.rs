@@ -131,7 +131,7 @@ where
         RadixPass::First,
         data_key.as_launchable_slice(),
         data_pay.as_launchable_slice(),
-        partition_offsets,
+        &mut partition_offsets,
         &mut partitioned_relation,
         &stream,
     )?;
@@ -234,7 +234,7 @@ where
         RadixPass::First,
         cached_key.as_launchable_slice(),
         cached_pay.as_launchable_slice(),
-        partition_offsets,
+        &mut partition_offsets,
         &mut partitioned_relation,
         &stream,
     )?;
@@ -339,7 +339,7 @@ where
         RadixPass::First,
         data_key.as_launchable_slice(),
         data_pay.as_launchable_slice(),
-        partition_offsets,
+        &mut partition_offsets,
         &mut partitioned_relation,
         &stream,
     )?;
@@ -393,7 +393,7 @@ where
             RadixPass::Second,
             cached_key_slice.as_launchable_slice(),
             cached_pay_slice.as_launchable_slice(),
-            partition_offsets_2nd,
+            &mut partition_offsets_2nd,
             &mut partitioned_relation_2nd,
             &stream,
         )?;

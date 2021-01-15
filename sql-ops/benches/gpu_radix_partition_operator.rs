@@ -441,7 +441,7 @@ where
                         RadixPass::First,
                         input_data.0.as_launchable_slice(),
                         input_data.1.as_launchable_slice(),
-                        partition_offsets,
+                        &mut partition_offsets,
                         &mut partitioned_relation,
                         &stream,
                     )?;
