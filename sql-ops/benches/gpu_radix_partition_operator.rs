@@ -378,7 +378,7 @@ where
                 radix_bits.into(),
                 grid_size.x,
                 Allocator::mem_alloc_fn(output_mem_type.clone()),
-                Allocator::mem_alloc_fn(output_mem_type.clone()),
+                Allocator::mem_alloc_fn(MemType::CudaPinnedMem),
             );
 
             let result: Result<(), Box<dyn Error>> = (0..repeat)
