@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019-2020, Clemens Lutz <lutzcle@cml.li>
+ * Copyright (c) 2019-2021, Clemens Lutz <lutzcle@cml.li>
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
@@ -21,7 +21,7 @@ use std::fs::File;
 use std::io::Read;
 use std::time::{Duration, Instant};
 
-pub type JoinDataGenFn<T> = Box<dyn FnMut(&mut [T], &mut [T]) -> Result<()>>;
+pub type JoinDataGenFn<T> = Box<dyn FnMut(&mut [T], &mut [T], &mut [T], &mut [T]) -> Result<()>>;
 
 pub struct JoinData<T: DeviceCopy> {
     pub build_relation_key: Mem<T>,
@@ -133,12 +133,17 @@ impl JoinDataBuilder {
     where
         T: Copy + Default + DeviceCopy,
     {
-        let (mut inner_key, inner_payload, mut outer_key, outer_payload, malloc_time) =
+        let (mut inner_key, mut inner_payload, mut outer_key, mut outer_payload, malloc_time) =
             self.allocate_relations()?;
 
         // Generate dataset
         let gen_timer = Instant::now();
-        data_gen_fn(inner_key.as_mut_slice(), outer_key.as_mut_slice())?;
+        data_gen_fn(
+            inner_key.as_mut_slice(),
+            inner_payload.as_mut_slice(),
+            outer_key.as_mut_slice(),
+            outer_payload.as_mut_slice(),
+        )?;
         let gen_time = gen_timer.elapsed();
 
         Ok((

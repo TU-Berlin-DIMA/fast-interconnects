@@ -187,7 +187,7 @@ __device__ void gpu_radix_join_aggregate_smem_perfect(JoinAggregateArgs &args) {
     __syncthreads();
   }
 
-  args.aggregation_result[blockDim.x * blockIdx.x + threadIdx.x] = sum;
+  args.aggregation_result[blockDim.x * blockIdx.x + threadIdx.x] += sum;
 }
 
 // Bucket chaining hash join in shared memory.
@@ -304,7 +304,7 @@ __device__ void gpu_radix_join_aggregate_smem_chaining(
     __syncthreads();
   }
 
-  args.aggregation_result[blockDim.x * blockIdx.x + threadIdx.x] = sum;
+  args.aggregation_result[blockDim.x * blockIdx.x + threadIdx.x] += sum;
 }
 
 extern "C" __global__ void gpu_join_aggregate_smem_perfect_i32_i32_i32(

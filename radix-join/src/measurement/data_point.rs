@@ -4,16 +4,13 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019-2020, Clemens Lutz <lutzcle@cml.li>
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright (c) 2019-2021, Clemens Lutz <lutzcle@cml.li>
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 use crate::types::*;
-use crate::CmdOpt;
 use data_store::join_data::JoinData;
 use numa_gpu::error::Result;
-use numa_gpu::runtime::hw_info::cpu_codename;
-use rustacuda::device::Device;
 use rustacuda::memory::DeviceCopy;
 use serde::Serializer;
 use serde_derive::Serialize;
@@ -66,44 +63,6 @@ impl DataPoint {
         let dp = DataPoint {
             hostname,
             ..DataPoint::default()
-        };
-
-        Ok(dp)
-    }
-
-    pub(crate) fn fill_from_cmd_options(&self, cmd: &CmdOpt) -> Result<DataPoint> {
-        // Get device information
-        let dev_codename_str = match cmd.execution_method {
-            ArgExecutionMethod::GpuRJ => {
-                let device = Device::get_device(cmd.device_id.into())?;
-                vec![cpu_codename()?, device.name()?]
-            }
-        };
-
-        let dp = DataPoint {
-            data_set: Some(cmd.data_set.to_string()),
-            histogram_algorithm: Some(cmd.histogram_algorithm),
-            partition_algorithm: Some(cmd.partition_algorithm),
-            execution_method: Some(cmd.execution_method),
-            device_codename: Some(dev_codename_str),
-            dmem_buffer_size: Some(cmd.dmem_buffer_size),
-            hashing_scheme: Some(cmd.hashing_scheme),
-            partitions_memory_type: Some(cmd.partitions_mem_type),
-            partitions_memory_location: Some(cmd.partitions_location.clone()),
-            partitions_proportions: Some(cmd.partitions_proportions.clone()),
-            tuple_bytes: Some(cmd.tuple_bytes),
-            relation_memory_type: Some(cmd.mem_type),
-            huge_pages: cmd.huge_pages,
-            inner_relation_memory_location: Some(cmd.inner_rel_location),
-            outer_relation_memory_location: Some(cmd.outer_rel_location),
-            data_distribution: Some(cmd.data_distribution),
-            zipf_exponent: if cmd.data_distribution == ArgDataDistribution::Zipf {
-                cmd.zipf_exponent
-            } else {
-                None
-            },
-            join_selectivity: Some(cmd.selectivity as f64 / 100.0),
-            ..self.clone()
         };
 
         Ok(dp)

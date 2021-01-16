@@ -8,21 +8,18 @@
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-mod error;
-mod execution_methods;
-mod measurement;
-mod types;
-
-use crate::error::Result;
-use crate::execution_methods::gpu_radix_join::gpu_radix_join;
-use crate::measurement::data_point::DataPoint;
-use crate::measurement::harness::{self, RadixJoinPoint};
-use crate::types::*;
 use data_store::join_data::{JoinDataBuilder, JoinDataGenFn};
 use datagen::relation::KeyAttribute;
 use num_rational::Ratio;
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
+use numa_gpu::runtime::hw_info::cpu_codename;
 use numa_gpu::runtime::numa::NodeRatio;
+use radix_join::error::Result;
+use radix_join::execution_methods::gpu_radix_join::gpu_radix_join;
+use radix_join::measurement::data_point::DataPoint;
+use radix_join::measurement::harness::{self, RadixJoinPoint};
+use radix_join::types::*;
+use rustacuda::device::Device;
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
@@ -424,7 +421,7 @@ where
             }
             .into();
 
-            gpu_radix_join(
+            let (_result, data_point) = gpu_radix_join(
                 &mut join_data,
                 hashing_scheme,
                 histogram_algorithms,
@@ -436,7 +433,9 @@ where
                 partitions_mem_type,
                 (&grid_size, &block_size),
                 (&grid_size, &block_size),
-            )
+            )?;
+
+            Ok(data_point)
         }),
     };
 
@@ -457,19 +456,19 @@ where
         ArgDataSet::Blanas => (
             datagen::popular::Blanas::primary_key_len(),
             datagen::popular::Blanas::foreign_key_len(),
-            Box::new(move |pk_rel, fk_rel| {
+            Box::new(move |pk_rel, _, fk_rel, _| {
                 datagen::popular::Blanas::gen(pk_rel, fk_rel, selectivity).map_err(|e| e.into())
             }),
         ),
         ArgDataSet::Kim => (
             datagen::popular::Kim::primary_key_len(),
             datagen::popular::Kim::foreign_key_len(),
-            Box::new(move |pk_rel, fk_rel| {
+            Box::new(move |pk_rel, _, fk_rel, _| {
                 datagen::popular::Kim::gen(pk_rel, fk_rel, selectivity).map_err(|e| e.into())
             }),
         ),
         ArgDataSet::Blanas4MB => {
-            let gen = move |pk_rel: &mut [_], fk_rel: &mut [_]| {
+            let gen = move |pk_rel: &mut [_], _: &mut [_], fk_rel: &mut [_], _: &mut [_]| {
                 datagen::relation::UniformRelation::gen_primary_key_par(pk_rel, selectivity)?;
                 datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
                 Ok(())
@@ -478,7 +477,7 @@ where
             (512 * 2_usize.pow(10), 256 * 2_usize.pow(20), Box::new(gen))
         }
         ArgDataSet::Test => {
-            let gen = move |pk_rel: &mut [_], fk_rel: &mut [_]| {
+            let gen = move |pk_rel: &mut [_], _: &mut [_], fk_rel: &mut [_], _: &mut [_]| {
                 datagen::relation::UniformRelation::gen_primary_key(pk_rel, selectivity)?;
                 datagen::relation::UniformRelation::gen_foreign_key_from_primary_key(
                     fk_rel, pk_rel,
@@ -489,7 +488,7 @@ where
             (1000, 1000, Box::new(gen))
         }
         ArgDataSet::Lutz2Gv32G => {
-            let gen = move |pk_rel: &mut [_], fk_rel: &mut [_]| {
+            let gen = move |pk_rel: &mut [_], _: &mut [_], fk_rel: &mut [_], _: &mut [_]| {
                 datagen::relation::UniformRelation::gen_primary_key_par(pk_rel, selectivity)?;
                 datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
                 Ok(())
@@ -502,7 +501,7 @@ where
             )
         }
         ArgDataSet::Lutz32Gv32G => {
-            let gen = move |pk_rel: &mut [_], fk_rel: &mut [_]| {
+            let gen = move |pk_rel: &mut [_], _: &mut [_], fk_rel: &mut [_], _: &mut [_]| {
                 datagen::relation::UniformRelation::gen_primary_key_par(pk_rel, selectivity)?;
                 datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
                 Ok(())
@@ -515,25 +514,27 @@ where
             )
         }
         ArgDataSet::Custom => {
-            let uniform_gen = Box::new(move |pk_rel: &mut [_], fk_rel: &mut [_]| {
-                datagen::relation::UniformRelation::gen_primary_key_par(pk_rel, selectivity)?;
-                datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
-                Ok(())
-            });
+            let uniform_gen = Box::new(
+                move |pk_rel: &mut [_], _: &mut [_], fk_rel: &mut [_], _: &mut [_]| {
+                    datagen::relation::UniformRelation::gen_primary_key_par(pk_rel, selectivity)?;
+                    datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
+                    Ok(())
+                },
+            );
 
             let gen: JoinDataGenFn<T> = match data_distribution {
                 DataDistribution::Uniform => uniform_gen,
                 DataDistribution::Zipf(exp) if !(exp > 0.0) => uniform_gen,
-                DataDistribution::Zipf(exp) => {
-                    Box::new(move |pk_rel: &mut [_], fk_rel: &mut [_]| {
+                DataDistribution::Zipf(exp) => Box::new(
+                    move |pk_rel: &mut [_], _: &mut [_], fk_rel: &mut [_], _: &mut [_]| {
                         datagen::relation::UniformRelation::gen_primary_key_par(
                             pk_rel,
                             selectivity,
                         )?;
                         datagen::relation::ZipfRelation::gen_attr_par(fk_rel, pk_rel.len(), exp)?;
                         Ok(())
-                    })
-                }
+                    },
+                ),
             };
 
             (
@@ -546,5 +547,49 @@ where
                 gen,
             )
         }
+    }
+}
+
+trait CmdOptToDataPoint {
+    fn fill_from_cmd_options(&self, cmd: &CmdOpt) -> Result<DataPoint>;
+}
+
+impl CmdOptToDataPoint for DataPoint {
+    fn fill_from_cmd_options(&self, cmd: &CmdOpt) -> Result<DataPoint> {
+        // Get device information
+        let dev_codename_str = match cmd.execution_method {
+            ArgExecutionMethod::GpuRJ => {
+                let device = Device::get_device(cmd.device_id.into())?;
+                vec![cpu_codename()?, device.name()?]
+            }
+        };
+
+        let dp = DataPoint {
+            data_set: Some(cmd.data_set.to_string()),
+            histogram_algorithm: Some(cmd.histogram_algorithm),
+            partition_algorithm: Some(cmd.partition_algorithm),
+            execution_method: Some(cmd.execution_method),
+            device_codename: Some(dev_codename_str),
+            dmem_buffer_size: Some(cmd.dmem_buffer_size),
+            hashing_scheme: Some(cmd.hashing_scheme),
+            partitions_memory_type: Some(cmd.partitions_mem_type),
+            partitions_memory_location: Some(cmd.partitions_location.clone()),
+            partitions_proportions: Some(cmd.partitions_proportions.clone()),
+            tuple_bytes: Some(cmd.tuple_bytes),
+            relation_memory_type: Some(cmd.mem_type),
+            huge_pages: cmd.huge_pages,
+            inner_relation_memory_location: Some(cmd.inner_rel_location),
+            outer_relation_memory_location: Some(cmd.outer_rel_location),
+            data_distribution: Some(cmd.data_distribution),
+            zipf_exponent: if cmd.data_distribution == ArgDataDistribution::Zipf {
+                cmd.zipf_exponent
+            } else {
+                None
+            },
+            join_selectivity: Some(cmd.selectivity as f64 / 100.0),
+            ..self.clone()
+        };
+
+        Ok(dp)
     }
 }

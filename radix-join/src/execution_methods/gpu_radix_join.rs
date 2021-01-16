@@ -11,13 +11,13 @@
 use crate::error::{ErrorKind, Result};
 use crate::measurement::harness::RadixJoinPoint;
 use data_store::join_data::JoinData;
-use numa_gpu::runtime::allocator::{self, Allocator, DerefMemType, MemType};
+use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::*;
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
 use rustacuda::function::{BlockSize, GridSize};
-use rustacuda::memory::DeviceCopy;
+use rustacuda::memory::{CopyDestination, DeviceBuffer, DeviceCopy};
 use rustacuda::stream::{Stream, StreamFlags};
 use sql_ops::join::{cuda_radix_join, no_partitioning_join, HashingScheme};
 use sql_ops::partition::cpu_radix_partition::{
@@ -46,7 +46,7 @@ pub fn gpu_radix_join<T>(
     partitions_mem_type: MemType,
     partition_dim: (&GridSize, &BlockSize),
     join_dim: (&GridSize, &BlockSize),
-) -> Result<RadixJoinPoint>
+) -> Result<(i64, RadixJoinPoint)>
 where
     T: Default
         + DeviceCopy
@@ -152,19 +152,7 @@ where
         Allocator::mem_alloc_fn(MemType::CudaDevMem),
     );
 
-    let mut result_sums = allocator::Allocator::alloc_mem(
-        MemType::CudaDevMem,
-        (join_dim.0.x * join_dim.1.x) as usize,
-    );
-
-    // Initialize result
-    match (&mut result_sums).try_into() {
-        Ok(mem) => {
-            let _: &mut [_] = mem;
-            mem.iter_mut().map(|sum| *sum = 0).for_each(drop)
-        }
-        Err(ref mut _devmem) => {} // FIXME: cuda memset to zero
-    };
+    let mut result_sums = unsafe { DeviceBuffer::zeroed((join_dim.0.x * join_dim.1.x) as usize)? };
 
     let partitions_malloc_time = partitions_malloc_timer.elapsed();
 
@@ -369,10 +357,16 @@ where
 
     let join_time = join_timer.elapsed();
 
-    Ok(RadixJoinPoint {
+    let mut result_sums_host = vec![0; result_sums.len()];
+    result_sums.copy_to(&mut result_sums_host)?;
+    let sum = result_sums_host.iter().sum();
+
+    let data_point = RadixJoinPoint {
         prefix_sum_ns: Some(prefix_sum_time.as_nanos() as f64),
         partition_ns: Some(partition_time.as_nanos() as f64),
         join_ns: Some(join_time.as_nanos() as f64),
         partitions_malloc_ns: Some(partitions_malloc_time.as_nanos() as f64),
-    })
+    };
+
+    Ok((sum, data_point))
 }
