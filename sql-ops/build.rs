@@ -30,6 +30,8 @@ fn main() {
     #[cfg(target_arch = "powerpc64")]
     let cache_line_size: u32 = 128;
 
+    let gpu_cache_line_size: u32 = 128;
+
     // Defines the alignment of each partition in bytes.
     //
     // Typically, alignment should be a multiple of the cache line size. Reasons for this size are:
@@ -71,11 +73,16 @@ fn main() {
             format!(
                 "
     #define CACHE_LINE_SIZE {}U\n\
+    #define GPU_CACHE_LINE_SIZE {}U\n\
     #define ALIGN_BYTES {}U\n\
     #define LOG2_NUM_BANKS {}U\n\
     #define LASWWC_TUPLES_PER_THREAD {}U\n\
     ",
-                cache_line_size, align_bytes, log2_num_banks, laswwc_tuples_per_thread,
+                cache_line_size,
+                gpu_cache_line_size,
+                align_bytes,
+                log2_num_banks,
+                laswwc_tuples_per_thread,
             )
             .as_bytes(),
         )
@@ -86,11 +93,12 @@ fn main() {
             format!(
                 "
     pub const CACHE_LINE_SIZE: u32 = {};\n\
+    pub const GPU_CACHE_LINE_SIZE: u32 = {};\n\
     pub const ALIGN_BYTES: u32 = {};\n\
     pub const PADDING_BYTES: u32 = {};\n\
     pub const LOG2_NUM_BANKS: u32 = {};\n\
     ",
-                cache_line_size, align_bytes, padding_bytes, log2_num_banks,
+                cache_line_size, gpu_cache_line_size, align_bytes, padding_bytes, log2_num_banks,
             )
             .as_bytes(),
         )

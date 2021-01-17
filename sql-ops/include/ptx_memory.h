@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2020 Clemens Lutz, German Research Center for Artificial
+ * Copyright (c) 2020-2021 Clemens Lutz, German Research Center for Artificial
  * Intelligence
  * Author: Clemens Lutz, DFKI GmbH <clemens.lutz@dfki.de>
  */
@@ -77,10 +77,29 @@ __device__ __forceinline__ int ptx_load_cache_streaming<>(const int *addr) {
 }
 
 template <>
+__device__ __forceinline__ int2 ptx_load_cache_streaming<>(const int2 *addr) {
+  int2 return_value;
+  asm volatile("ld.global.cs.v2.s32 {%0, %1}, [%2];"
+               : "=r"(return_value.x), "=r"(return_value.y)
+               : "l"(addr));
+  return return_value;
+}
+
+template <>
 __device__ __forceinline__ long long ptx_load_cache_streaming<>(
     const long long *addr) {
   long long return_value;
   asm volatile("ld.global.cs.s64 %0, [%1];" : "=l"(return_value) : "l"(addr));
+  return return_value;
+}
+
+template <>
+__device__ __forceinline__ longlong2
+ptx_load_cache_streaming<>(const longlong2 *addr) {
+  longlong2 return_value;
+  asm volatile("ld.global.cs.v2.s64 {%0, %1}, [%2];"
+               : "=l"(return_value.x), "=l"(return_value.y)
+               : "l"(addr));
   return return_value;
 }
 
@@ -161,9 +180,25 @@ __device__ __forceinline__ void ptx_store_cache_streaming<>(int *addr,
 }
 
 template <>
+__device__ __forceinline__ void ptx_store_cache_streaming<>(int2 *addr,
+                                                            int2 value) {
+  asm volatile("st.global.cs.v2.s32 [%0], {%1, %2};"
+               :
+               : "l"(addr), "r"(value.x), "r"(value.y));
+}
+
+template <>
 __device__ __forceinline__ void ptx_store_cache_streaming<>(long long *addr,
                                                             long long value) {
   asm volatile("st.global.cs.s64 [%0], %1;" : : "l"(addr), "l"(value));
+}
+
+template <>
+__device__ __forceinline__ void ptx_store_cache_streaming<>(longlong2 *addr,
+                                                            longlong2 value) {
+  asm volatile("st.global.cs.v2.s64 [%0], {%1, %2};"
+               :
+               : "l"(addr), "l"(value.x), "l"(value.y));
 }
 
 /*

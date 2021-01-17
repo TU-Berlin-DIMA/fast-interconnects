@@ -385,7 +385,7 @@ __device__ void gpu_contiguous_prefix_sum_and_transform(
   __syncthreads();
 
   // Compute local histograms per partition for thread block.
-  uint32_t chunk = -1;
+  uint32_t chunk = 0xFFFFFFFFU;
   size_t chunk_end = 0;
   for (size_t i = data_offset + threadIdx.x, pos = 0;
        i < data_offset + data_length; i += blockDim.x, pos += blockDim.x) {
@@ -1115,6 +1115,218 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
     auto p_index = key_to_partition(tuple.key, mask, args.ignore_bits);
     auto offset = atomicAdd(&tmp_partition_offsets[p_index], 1U);
     partitioned_relation[offset] = tuple;
+  }
+}
+
+/// SSWWC v2G is the same algorithm variant as v2, but stores the SWWC buffers
+/// in device memory. It tries to keep them in the L2 cache by using cache
+/// bypass instructions when necessary.
+template <typename K, typename V>
+__device__ void gpu_chunked_sswwc_radix_partition_v2g(
+    RadixPartitionArgs &args) {
+  extern __shared__ uint32_t shared_mem[];
+
+  const uint32_t fanout = 1U << args.radix_bits;
+  const uint64_t mask = static_cast<uint64_t>(fanout - 1) << args.ignore_bits;
+  const int lane_id = threadIdx.x % warpSize;
+  constexpr uint32_t warp_mask = 0xFFFFFFFFu;
+  constexpr size_t input_align_mask =
+      ~(static_cast<size_t>(ALIGN_BYTES / sizeof(K)) - 1ULL);
+  constexpr uint32_t align_tuples = ALIGN_BYTES / sizeof(Tuple<K, V>);
+
+  assert(align_tuples <= args.padding_length &&
+         "Padding must be large enough for alignment");
+
+  // Calculate the data_length per block
+  size_t data_length =
+      ((args.data_length + gridDim.x - 1U) / gridDim.x) & input_align_mask;
+  size_t data_offset = data_length * blockIdx.x;
+  if (blockIdx.x + 1U == gridDim.x) {
+    data_length = args.data_length - data_offset;
+  }
+  unsigned long long partitioned_relation_offset =
+      args.partition_offsets[blockIdx.x * fanout];
+
+  auto join_attr_data =
+      reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
+  auto payload_attr_data =
+      reinterpret_cast<const V *>(args.payload_attr_data) + data_offset;
+  // Handle relations larger than 32 GiB that cause integer overflow.  Subtract
+  // chunk offset so that relative value is within range of unsigned int.
+  auto partitioned_relation =
+      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation) +
+      partitioned_relation_offset;
+
+  assert(((size_t)join_attr_data) % (ALIGN_BYTES / sizeof(K)) == 0U &&
+         "Key column should be aligned to ALIGN_BYTES for best performance");
+  assert(
+      ((size_t)payload_attr_data) % (ALIGN_BYTES / sizeof(V)) == 0U &&
+      "Payload column should be aligned to ALIGN_BYTES for best performance");
+
+  const uint32_t tuples_per_buffer = GPU_CACHE_LINE_SIZE / sizeof(Tuple<K, V>);
+  assert(tuples_per_buffer > 0 &&
+         "At least one tuple per partition must fit into SWWC buffer");
+
+  Tuple<K, V> *const buffers =
+      reinterpret_cast<Tuple<K, V> *>(args.l2_cache_buffers) +
+      static_cast<size_t>(tuples_per_buffer) * blockIdx.x;
+  unsigned int *const tmp_partition_offsets =
+      reinterpret_cast<unsigned int *>(shared_mem);
+  unsigned int *const slots =
+      reinterpret_cast<unsigned int *>(&tmp_partition_offsets[fanout]);
+  unsigned int *const signal_slots = &slots[fanout];
+
+  // Load partition offsets from device memory into shared memory.
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    tmp_partition_offsets[i] = static_cast<unsigned int>(
+        args.partition_offsets[blockIdx.x * fanout + i] -
+        partitioned_relation_offset);
+  }
+
+  // Align the initial slots
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    auto offset = tmp_partition_offsets[i];
+    uint32_t aligned_fill_state = offset % min(align_tuples, tuples_per_buffer);
+    tmp_partition_offsets[i] = offset - aligned_fill_state;
+
+    slots[i] = aligned_fill_state;
+    signal_slots[i] = aligned_fill_state;
+  }
+
+  // Zero the buffers so that we don't write out uninitialized data
+  for (uint32_t i = threadIdx.x; i < fanout * tuples_per_buffer;
+       i += blockDim.x) {
+    buffers[i] = {};
+  }
+
+  __syncthreads();
+
+  // Partition
+
+  // All threads in warp must participate in each loop iteration
+  size_t loop_length = (data_length / warpSize) * warpSize;
+  for (size_t i = threadIdx.x; i < loop_length; i += blockDim.x) {
+    Tuple<K, V> tuple;
+    tuple.key = ptx_load_cache_streaming(&join_attr_data[i]);
+    tuple.value = ptx_load_cache_streaming(&payload_attr_data[i]);
+
+    uint32_t p_index = key_to_partition(tuple.key, mask, args.ignore_bits);
+    uint32_t pos = 0;
+    bool done = false;
+    do {
+      // Fetch a position if don't have a valid position yet
+      if (not done) {
+        pos = atomicAdd(&slots[p_index], 1U);
+
+        if (pos < tuples_per_buffer) {
+          buffers[write_combine_slot(tuples_per_buffer, p_index, pos)] = tuple;
+
+          // Wait until tuple write is flushed.
+          __threadfence_block();
+
+          // Signal that we are done writing the tuple.
+          atomicAdd(&signal_slots[p_index], 1U);
+          done = true;
+        }
+      }
+
+      // Must flush the buffer
+      // Cases:
+      //   1. one or more threads in a warp has a full buffer
+      //     a) in same partition -> handled by atomicAdd and retry
+      //     b) in different partitions -> handled by ballot and loop
+      //   2. one or more threads in block but other warp has a full buffer in
+      //        same partition -> handled by atomicAdd and retry
+      uint32_t ballot = 0;
+      int is_candidate = (pos == tuples_per_buffer);
+      if ((ballot = __ballot_sync(warp_mask, is_candidate))) {
+        int leader_id = __ffs(ballot) - 1;
+
+        // Release the lock if not the leader and try again in next round.
+        if (is_candidate && leader_id != lane_id) {
+          atomicExch(&slots[p_index], tuples_per_buffer);
+        }
+
+        // Finish unlocking slots before entering busy-wait.
+        __syncwarp();
+
+        // Wait until all threads are done writing their tuples into the buffer.
+        // Then reset the signal slot to zero.
+        if (leader_id == lane_id) {
+          while (atomicOr(&signal_slots[p_index], 0U) != tuples_per_buffer)
+            ;
+          atomicExch(&signal_slots[p_index], 0U);
+        }
+        __syncwarp();
+
+        uint32_t current_index = __shfl_sync(warp_mask, p_index, leader_id);
+        auto dst = tmp_partition_offsets[current_index];
+
+        // Memcpy from cached buffer to memory
+        for (uint32_t i = lane_id; i < tuples_per_buffer; i += warpSize) {
+          Tuple<K, V> tuple =
+              buffers[write_combine_slot(tuples_per_buffer, current_index, i)];
+          tuple.store_streaming(partitioned_relation[dst + i]);
+        }
+
+        if (lane_id == leader_id) {
+          // Update offsets; this update must be seen by all threads in our
+          // block before setting slot index to zero
+          tmp_partition_offsets[current_index] += tuples_per_buffer;
+          __threadfence_block();
+
+          // Normal write is not visible to other threads
+          //   Use atomic function instead of:
+          //   slots[current_index] = 0;
+          atomicExch(&slots[current_index], 0);
+        }
+      }
+    } while (__any_sync(warp_mask, not done));
+  }
+
+  // Wait until all warps are done
+  __syncthreads();
+
+  // Flush buffers; retain order of tuples as buffer is aligned and may contain
+  // invalid tuples (i.e., don't use atomicAdd to get a destination slot)
+  for (uint32_t i = threadIdx.x; i < fanout * tuples_per_buffer;
+       i += blockDim.x) {
+    uint32_t p_index = i / tuples_per_buffer;
+    uint32_t slot = i % tuples_per_buffer;
+
+    if (slot < slots[p_index]) {
+      auto dst = tmp_partition_offsets[p_index] + slot;
+      auto base_offset = static_cast<unsigned int>(
+          args.partition_offsets[blockIdx.x * fanout + p_index] -
+          partitioned_relation_offset);
+
+      // Consider that buffer flush is aligned; don't invalid tuples in front
+      // of the partition
+      if (dst >= base_offset) {
+        Tuple<K, V> tuple = buffers[i];
+        tuple.store_streaming(partitioned_relation[dst]);
+      }
+    }
+  }
+
+  __syncthreads();
+
+  // Update offsets for partitioning of unbuffered tuples
+  for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    tmp_partition_offsets[i] += slots[i];
+  }
+
+  __syncthreads();
+
+  // Handle case when data_length % warpSize != 0
+  for (size_t i = loop_length + threadIdx.x; i < data_length; i += blockDim.x) {
+    Tuple<K, V> tuple;
+    tuple.key = ptx_load_cache_streaming(&join_attr_data[i]);
+    tuple.value = ptx_load_cache_streaming(&payload_attr_data[i]);
+
+    auto p_index = key_to_partition(tuple.key, mask, args.ignore_bits);
+    auto offset = atomicAdd(&tmp_partition_offsets[p_index], 1U);
+    tuple.store_streaming(partitioned_relation[offset]);
   }
 }
 
@@ -2422,6 +2634,20 @@ extern "C" __launch_bounds__(1024, 1) __global__
         RadixPartitionArgs args, uint32_t shared_mem_bytes) {
   gpu_chunked_sswwc_radix_partition_v2<long long, long long>(args,
                                                              shared_mem_bytes);
+}
+
+// Exports the partitioning function for 8-byte key/value tuples.
+extern "C" __launch_bounds__(1024, 1) __global__
+    void gpu_chunked_sswwc_radix_partition_v2g_int32_int32(
+        RadixPartitionArgs args) {
+  gpu_chunked_sswwc_radix_partition_v2g<int, int>(args);
+}
+
+// Exports the partitioning function for 16-byte key/value tuples.
+extern "C" __launch_bounds__(1024, 1) __global__
+    void gpu_chunked_sswwc_radix_partition_v2g_int64_int64(
+        RadixPartitionArgs args) {
+  gpu_chunked_sswwc_radix_partition_v2g<long long, long long>(args);
 }
 
 // Exports the partitioning function for 8-byte key/value tuples.

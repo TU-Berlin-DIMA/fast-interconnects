@@ -24,7 +24,7 @@ use crate::error::{ErrorKind, Result};
 use crate::prefix_scan::{GpuPrefixScanState, GpuPrefixSum};
 use numa_gpu::runtime::allocator::{Allocator, MemType};
 use numa_gpu::runtime::memory::{
-    LaunchableMutPtr, LaunchableMutSlice, LaunchablePtr, LaunchableSlice, Mem,
+    LaunchableMem, LaunchableMutPtr, LaunchableMutSlice, LaunchablePtr, LaunchableSlice, Mem,
 };
 use rustacuda::context::CurrentContext;
 use rustacuda::device::DeviceAttribute;
@@ -137,6 +137,7 @@ struct RadixPartitionArgs {
     partition_offsets: LaunchablePtr<u64>,
 
     // State
+    l2_cache_buffers: LaunchablePtr<i8>,
     device_memory_buffers: LaunchableMutPtr<i8>,
     device_memory_buffer_bytes: u64,
 
@@ -289,6 +290,18 @@ pub enum GpuRadixPartitionAlgorithm {
     /// one (i.e., the leader's buffer lock).
     SSWWCv2,
 
+    /// Radix partitioning with shared software write combining, version 2G.
+    ///
+    /// Version 2G is exactly the same algorithm as version 2, but stores the
+    /// SWWC buffers in device memory instead of in shared memory. The fanout
+    /// can thus be scaled higher.
+    ///
+    /// Ideally, the buffers are retained in the GPU L2 cache. Storing buffers
+    /// in the L1 cache is infeasible for the targeted use-case of high fanouts,
+    /// as the buffers are too large. To avoid polluting the L2 cache, reading
+    /// input and writing output uses streaming load and store instructions.
+    SSWWCv2G,
+
     /// Radix partitioning with hierarchical shared software write combining.
     ///
     /// This algorithm adds a second level of software write-combine buffers in
@@ -337,11 +350,18 @@ enum PrefixSumState {
 }
 
 #[derive(Debug)]
+enum RadixPartitionState {
+    None,
+    SSWWCv2G(DeviceBuffer<i8>),
+}
+
+#[derive(Debug)]
 pub struct GpuRadixPartitioner {
     radix_bits: RadixBits,
     prefix_sum_algorithm: GpuHistogramAlgorithm,
     partition_algorithm: GpuRadixPartitionAlgorithm,
     prefix_sum_state: PrefixSumState,
+    partition_state: RadixPartitionState,
     module: Module,
     grid_size: GridSize,
     block_size: BlockSize,
@@ -368,6 +388,13 @@ impl GpuRadixPartitioner {
             ),
         };
 
+        let partition_state = match partition_algorithm {
+            GpuRadixPartitionAlgorithm::SSWWCv2G => {
+                RadixPartitionState::SSWWCv2G(unsafe { DeviceBuffer::uninitialized(0)? })
+            }
+            _ => RadixPartitionState::None,
+        };
+
         let module_path = CString::new(env!("CUDAUTILS_PATH")).map_err(|_| {
             ErrorKind::NulCharError(
                 "Failed to load CUDA module, check your CUDAUTILS_PATH".to_string(),
@@ -381,6 +408,7 @@ impl GpuRadixPartitioner {
             prefix_sum_algorithm,
             partition_algorithm,
             prefix_sum_state,
+            partition_state,
             module,
             grid_size: grid_size.clone(),
             block_size: block_size.clone(),
@@ -987,11 +1015,32 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             GpuRadixPartitionAlgorithm::SSWWC => 1024,
                             GpuRadixPartitionAlgorithm::SSWWCNT => 1024,
                             GpuRadixPartitionAlgorithm::SSWWCv2 => 1024,
+                            GpuRadixPartitionAlgorithm::SSWWCv2G => 1024,
                             GpuRadixPartitionAlgorithm::HSSWWC => 512,
                             GpuRadixPartitionAlgorithm::HSSWWCv2 => 512,
                             GpuRadixPartitionAlgorithm::HSSWWCv3 => 512,
                             GpuRadixPartitionAlgorithm::HSSWWCv4 => 512,
                         });
+
+                    let l2_cache_buffers = match rp.partition_state {
+                        RadixPartitionState::SSWWCv2G(ref buffer) => {
+                            let bytes = grid_size.x as usize
+                                * fanout_u32 as usize
+                                * constants::GPU_CACHE_LINE_SIZE as usize
+                                * mem::size_of::<Tuple<$Type, $Type>>();
+
+                            if buffer.len() < bytes {
+                                let new_buffer = unsafe { DeviceBuffer::uninitialized(bytes)? };
+                                let ptr = new_buffer.as_launchable_ptr();
+                                rp.partition_state = RadixPartitionState::SSWWCv2G(new_buffer);
+                                ptr
+                            }
+                            else {
+                                buffer.as_launchable_ptr()
+                            }
+                        },
+                        _ => LaunchablePtr::null(),
+                    };
 
                     let dmem_buffer_bytes_per_block = match rp.partition_algorithm {
                         GpuRadixPartitionAlgorithm::HSSWWC
@@ -1027,6 +1076,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         radix_bits,
                         ignore_bits,
                         partition_offsets: partition_offsets_ptr,
+                        l2_cache_buffers,
                         device_memory_buffers: dmem_buffer
                             .as_mut()
                             .map_or(
@@ -1134,6 +1184,31 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                     >>>(
                                         args.clone(),
                                         max_shared_mem_bytes
+                                       ))?;
+                            }
+                        },
+                        GpuRadixPartitionAlgorithm::SSWWCv2G => {
+                            let shared_mem_bytes = 3 * fanout_u32 * mem::size_of::<u32>() as u32;
+                            assert!(
+                                shared_mem_bytes <= max_shared_mem_bytes,
+                                "Failed to allocate enough shared memory"
+                                );
+
+                            let name = std::ffi::CString::new(
+                                stringify!([<gpu_chunked_sswwc_radix_partition_v2g_ $Suffix _ $Suffix>])
+                                ).unwrap();
+                            let mut function = module.get_function(&name)?;
+                            function.set_max_dynamic_shared_size_bytes(shared_mem_bytes)?;
+
+                            unsafe {
+                                launch!(
+                                    function<<<
+                                    grid_size,
+                                    rp_block_size,
+                                    shared_mem_bytes,
+                                    stream
+                                    >>>(
+                                        args.clone()
                                        ))?;
                             }
                         },

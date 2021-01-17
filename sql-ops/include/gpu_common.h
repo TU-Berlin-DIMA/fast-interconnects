@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2020 Clemens Lutz, German Research Center for Artificial
+ * Copyright (c) 2020-2021 Clemens Lutz, German Research Center for Artificial
  * Intelligence
  * Author: Clemens Lutz, DFKI GmbH <clemens.lutz@dfki.de>
  */
@@ -45,6 +45,20 @@ struct Tuple {
     this->value = tmp.y;
   }
 
+  __device__ __forceinline__ void load_streaming(Tuple<int, int> const &src) {
+    int2 tmp = ptx_load_cache_streaming(reinterpret_cast<int2 const *>(&src));
+    this->key = tmp.x;
+    this->value = tmp.y;
+  }
+
+  __device__ __forceinline__ void load_streaming(
+      Tuple<long long, long long> const &src) {
+    longlong2 tmp =
+        ptx_load_cache_streaming(reinterpret_cast<longlong2 const *>(&src));
+    this->key = tmp.x;
+    this->value = tmp.y;
+  }
+
   __device__ __forceinline__ void store(Tuple<int, int> &dst) {
     int2 tmp = make_int2(this->key, this->value);
     *reinterpret_cast<int2 *>(&dst) = tmp;
@@ -53,6 +67,17 @@ struct Tuple {
   __device__ __forceinline__ void store(Tuple<long long, long long> &dst) {
     longlong2 tmp = make_longlong2(this->key, this->value);
     *reinterpret_cast<longlong2 *>(&dst) = tmp;
+  }
+
+  __device__ __forceinline__ void store_streaming(Tuple<int, int> &dst) {
+    int2 tmp = make_int2(this->key, this->value);
+    ptx_store_cache_streaming(reinterpret_cast<int2 *>(&dst), tmp);
+  }
+
+  __device__ __forceinline__ void store_streaming(
+      Tuple<long long, long long> &dst) {
+    longlong2 tmp = make_longlong2(this->key, this->value);
+    ptx_store_cache_streaming(reinterpret_cast<longlong2 *>(&dst), tmp);
   }
 };
 

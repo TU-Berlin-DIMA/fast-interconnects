@@ -106,6 +106,7 @@ struct RadixPartitionArgs {
   const unsigned long long *const __restrict__ partition_offsets;
 
   // State
+  char *const __restrict__ l2_cache_buffers;
   char *const __restrict__ device_memory_buffers;
   uint64_t const device_memory_buffer_bytes;
 
