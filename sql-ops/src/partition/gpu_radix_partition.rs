@@ -138,7 +138,7 @@ struct RadixPartitionArgs {
 
     // State
     l2_cache_buffers: LaunchablePtr<i8>,
-    device_memory_buffers: LaunchableMutPtr<i8>,
+    device_memory_buffers: LaunchablePtr<i8>,
     device_memory_buffer_bytes: u64,
 
     // Outputs
@@ -353,6 +353,7 @@ enum PrefixSumState {
 enum RadixPartitionState {
     None,
     SSWWCv2G(DeviceBuffer<i8>),
+    HSSWWC(DeviceBuffer<i8>),
 }
 
 #[derive(Debug)]
@@ -391,6 +392,12 @@ impl GpuRadixPartitioner {
         let partition_state = match partition_algorithm {
             GpuRadixPartitionAlgorithm::SSWWCv2G => {
                 RadixPartitionState::SSWWCv2G(unsafe { DeviceBuffer::uninitialized(0)? })
+            }
+            GpuRadixPartitionAlgorithm::HSSWWC
+            | GpuRadixPartitionAlgorithm::HSSWWCv2
+            | GpuRadixPartitionAlgorithm::HSSWWCv3
+            | GpuRadixPartitionAlgorithm::HSSWWCv4 => {
+                RadixPartitionState::HSSWWC(unsafe { DeviceBuffer::uninitialized(0)? })
             }
             _ => RadixPartitionState::None,
         };
@@ -1064,22 +1071,30 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         GpuRadixPartitionAlgorithm::HSSWWC
                             | GpuRadixPartitionAlgorithm::HSSWWCv2
                             | GpuRadixPartitionAlgorithm::HSSWWCv3 => {
-                                Some(rp.dmem_buffer_bytes as u64 * fanout_u32 as u64)
+                                rp.dmem_buffer_bytes as u64 * fanout_u32 as u64
                             },
                         GpuRadixPartitionAlgorithm::HSSWWCv4 => {
                             let warps_per_block = block_size.x / warp_size;
-                            Some(rp.dmem_buffer_bytes as u64 * (fanout_u32 + warps_per_block) as u64)
+                            rp.dmem_buffer_bytes as u64 * (fanout_u32 + warps_per_block) as u64
                         },
-                        _ => None
+                        _ => 0
                     };
 
-                    // FIXME: Add dmem_buffer to RadixPartitionState to avoid freeing the memory
-                    // too early; currently the buffer is owned by the stack
-                    let mut dmem_buffer = if let Some(b) = dmem_buffer_bytes_per_block {
-                        let global_dmem_buffer_bytes = b * grid_size.x as u64;
-                        Some(Mem::CudaDevMem(unsafe { DeviceBuffer::uninitialized(global_dmem_buffer_bytes as usize)? }))
-                    } else {
-                        None
+                    let device_memory_buffers = if let RadixPartitionState::HSSWWC(ref buffer) = rp.partition_state {
+                        let global_dmem_buffer_bytes = dmem_buffer_bytes_per_block as usize * grid_size.x as usize;
+
+                        if buffer.len() < global_dmem_buffer_bytes {
+                            let new_buffer = unsafe { DeviceBuffer::uninitialized(global_dmem_buffer_bytes)? };
+                            let ptr = new_buffer.as_launchable_ptr();
+                            rp.partition_state = RadixPartitionState::HSSWWC(new_buffer);
+                            ptr
+                        }
+                        else {
+                            buffer.as_launchable_ptr()
+                        }
+                    }
+                    else {
+                        LaunchablePtr::null()
                     };
 
                     let partition_offsets_ptr = if let Some(ref local_offsets) = partition_offsets.local_offsets {
@@ -1097,13 +1112,8 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         ignore_bits,
                         partition_offsets: partition_offsets_ptr,
                         l2_cache_buffers,
-                        device_memory_buffers: dmem_buffer
-                            .as_mut()
-                            .map_or(
-                                LaunchableMutPtr::null_mut(),
-                                |b| b.as_launchable_mut_ptr()
-                                ),
-                        device_memory_buffer_bytes: dmem_buffer_bytes_per_block.unwrap_or(0),
+                        device_memory_buffers,
+                        device_memory_buffer_bytes: dmem_buffer_bytes_per_block,
                         partitioned_relation: partitioned_relation.relation.as_launchable_mut_ptr().as_void(),
                     };
 
