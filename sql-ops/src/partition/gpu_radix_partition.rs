@@ -662,9 +662,15 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 "Failed to allocate enough shared memory"
                                 );
 
+                            let name = std::ffi::CString::new(
+                                stringify!([<gpu_chunked_prefix_sum_ $Suffix>])
+                                ).unwrap();
+                            let mut function = module.get_function(&name)?;
+                            function.set_max_dynamic_shared_size_bytes(shared_mem_bytes)?;
+
                             unsafe {
                                 launch!(
-                                    module.[<gpu_chunked_prefix_sum_ $Suffix>]<<<
+                                    function<<<
                                     grid_size.clone(),
                                     block_size.clone(),
                                     shared_mem_bytes,
@@ -801,11 +807,17 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 "Failed to allocate enough shared memory"
                                 );
 
+                            let name = std::ffi::CString::new(
+                                stringify!([<gpu_contiguous_prefix_sum_and_copy_with_payload_ $Suffix _ $Suffix>])
+                                ).unwrap();
+                            let mut function = module.get_function(&name)?;
+                            function.set_max_dynamic_shared_size_bytes(shared_mem_bytes)?;
+
                             args.prefix_scan_state = prefix_scan_state.as_launchable_mut_ptr();
 
                             unsafe {
                                 launch_cooperative!(
-                                    module.[<gpu_contiguous_prefix_sum_and_copy_with_payload_ $Suffix _ $Suffix>]<<<
+                                    function<<<
                                     grid_size.clone(),
                                     block_size.clone(),
                                     shared_mem_bytes,
@@ -927,11 +939,17 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 "Failed to allocate enough shared memory"
                                 );
 
+                            let name = std::ffi::CString::new(
+                                stringify!([<gpu_contiguous_prefix_sum_and_transform_ $Suffix _ $Suffix>])
+                                ).unwrap();
+                            let mut function = module.get_function(&name)?;
+                            function.set_max_dynamic_shared_size_bytes(shared_mem_bytes)?;
+
                             args.prefix_scan_state = prefix_scan_state.as_launchable_mut_ptr();
 
                             unsafe {
                                 launch_cooperative!(
-                                    module.[<gpu_contiguous_prefix_sum_and_transform_ $Suffix _ $Suffix>]<<<
+                                    function<<<
                                     grid_size.clone(),
                                     block_size.clone(),
                                     shared_mem_bytes,
@@ -1055,6 +1073,8 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         _ => None
                     };
 
+                    // FIXME: Add dmem_buffer to RadixPartitionState to avoid freeing the memory
+                    // too early; currently the buffer is owned by the stack
                     let mut dmem_buffer = if let Some(b) = dmem_buffer_bytes_per_block {
                         let global_dmem_buffer_bytes = b * grid_size.x as u64;
                         Some(Mem::CudaDevMem(unsafe { DeviceBuffer::uninitialized(global_dmem_buffer_bytes as usize)? }))
