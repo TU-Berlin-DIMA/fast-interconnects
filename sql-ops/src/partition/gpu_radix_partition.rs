@@ -137,6 +137,7 @@ struct RadixPartitionArgs {
     partition_offsets: LaunchablePtr<u64>,
 
     // State
+    tmp_partition_offsets: LaunchablePtr<u32>,
     l2_cache_buffers: LaunchablePtr<i8>,
     device_memory_buffers: LaunchablePtr<i8>,
     device_memory_buffer_bytes: u64,
@@ -352,7 +353,10 @@ enum PrefixSumState {
 #[derive(Debug)]
 enum RadixPartitionState {
     None,
-    SSWWCv2G(DeviceBuffer<i8>),
+    SSWWCv2G {
+        offsets_buffer: DeviceBuffer<u32>,
+        swwc_buffer: DeviceBuffer<i8>,
+    },
     HSSWWC(DeviceBuffer<i8>),
 }
 
@@ -390,9 +394,12 @@ impl GpuRadixPartitioner {
         };
 
         let partition_state = match partition_algorithm {
-            GpuRadixPartitionAlgorithm::SSWWCv2G => {
-                RadixPartitionState::SSWWCv2G(unsafe { DeviceBuffer::uninitialized(0)? })
-            }
+            GpuRadixPartitionAlgorithm::SSWWCv2G => unsafe {
+                RadixPartitionState::SSWWCv2G {
+                    offsets_buffer: DeviceBuffer::uninitialized(0)?,
+                    swwc_buffer: DeviceBuffer::uninitialized(0)?,
+                }
+            },
             GpuRadixPartitionAlgorithm::HSSWWC
             | GpuRadixPartitionAlgorithm::HSSWWCv2
             | GpuRadixPartitionAlgorithm::HSSWWCv3
@@ -1047,25 +1054,34 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             GpuRadixPartitionAlgorithm::HSSWWCv4 => 512,
                         });
 
-                    let l2_cache_buffers = match rp.partition_state {
-                        RadixPartitionState::SSWWCv2G(ref buffer) => {
-                            let bytes = grid_size.x as usize
+                    let partition_state = mem::replace(&mut rp.partition_state, RadixPartitionState::None);
+                    let (tmp_partition_offsets, l2_cache_buffers, partition_state) = match partition_state {
+                        RadixPartitionState::SSWWCv2G { mut offsets_buffer, mut swwc_buffer } => {
+                            let swwc_bytes = grid_size.x as usize
                                 * fanout_u32 as usize
-                                * constants::GPU_CACHE_LINE_SIZE as usize
-                                * mem::size_of::<Tuple<$Type, $Type>>();
+                                * constants::GPU_CACHE_LINE_SIZE as usize;
+                            let offsets_len = grid_size.x as usize
+                                * fanout_u32 as usize * 3;
 
-                            if buffer.len() < bytes {
-                                let new_buffer = unsafe { DeviceBuffer::uninitialized(bytes)? };
-                                let ptr = new_buffer.as_launchable_ptr();
-                                rp.partition_state = RadixPartitionState::SSWWCv2G(new_buffer);
-                                ptr
-                            }
-                            else {
-                                buffer.as_launchable_ptr()
-                            }
+                            if swwc_buffer.len() < swwc_bytes {
+                                DeviceBuffer::drop(swwc_buffer).map_err(|(e, _)| e)?;
+                                swwc_buffer = unsafe { DeviceBuffer::uninitialized(swwc_bytes)? };
+                            };
+
+                            if offsets_buffer.len() < offsets_len {
+                                DeviceBuffer::drop(offsets_buffer).map_err(|(e, _)| e)?;
+                                offsets_buffer = unsafe { DeviceBuffer::uninitialized(offsets_len)? };
+                            };
+
+                            let offsets_ptr = offsets_buffer.as_launchable_ptr();
+                            let swwc_ptr = swwc_buffer.as_launchable_ptr();
+                            let state = RadixPartitionState::SSWWCv2G { offsets_buffer, swwc_buffer };
+
+                            (offsets_ptr, swwc_ptr, state)
                         },
-                        _ => LaunchablePtr::null(),
+                        state @ _ => (LaunchablePtr::null(), LaunchablePtr::null(), state),
                     };
+                    rp.partition_state = partition_state;
 
                     let dmem_buffer_bytes_per_block = match rp.partition_algorithm {
                         GpuRadixPartitionAlgorithm::HSSWWC
@@ -1111,6 +1127,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         radix_bits,
                         ignore_bits,
                         partition_offsets: partition_offsets_ptr,
+                        tmp_partition_offsets,
                         l2_cache_buffers,
                         device_memory_buffers,
                         device_memory_buffer_bytes: dmem_buffer_bytes_per_block,
@@ -1218,24 +1235,17 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             }
                         },
                         GpuRadixPartitionAlgorithm::SSWWCv2G => {
-                            let shared_mem_bytes = 3 * fanout_u32 * mem::size_of::<u32>() as u32;
-                            assert!(
-                                shared_mem_bytes <= max_shared_mem_bytes,
-                                "Failed to allocate enough shared memory"
-                                );
-
                             let name = std::ffi::CString::new(
                                 stringify!([<gpu_chunked_sswwc_radix_partition_v2g_ $Suffix _ $Suffix>])
                                 ).unwrap();
-                            let mut function = module.get_function(&name)?;
-                            function.set_max_dynamic_shared_size_bytes(shared_mem_bytes)?;
+                            let function = module.get_function(&name)?;
 
                             unsafe {
                                 launch!(
                                     function<<<
                                     grid_size,
                                     rp_block_size,
-                                    shared_mem_bytes,
+                                    0,
                                     stream
                                     >>>(
                                         args.clone()

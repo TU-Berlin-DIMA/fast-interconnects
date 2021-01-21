@@ -1124,8 +1124,6 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
 template <typename K, typename V>
 __device__ void gpu_chunked_sswwc_radix_partition_v2g(
     RadixPartitionArgs &args) {
-  extern __shared__ uint32_t shared_mem[];
-
   const uint32_t fanout = 1U << args.radix_bits;
   const uint64_t mask = static_cast<uint64_t>(fanout - 1) << args.ignore_bits;
   const int lane_id = threadIdx.x % warpSize;
@@ -1169,14 +1167,16 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2g(
 
   Tuple<K, V> *const buffers =
       reinterpret_cast<Tuple<K, V> *>(args.l2_cache_buffers) +
-      static_cast<size_t>(tuples_per_buffer) * blockIdx.x;
+      static_cast<size_t>(tuples_per_buffer) * fanout * blockIdx.x;
   unsigned int *const tmp_partition_offsets =
-      reinterpret_cast<unsigned int *>(shared_mem);
+      reinterpret_cast<unsigned int *>(args.tmp_partition_offsets) +
+      static_cast<size_t>(fanout) * 3UL * blockIdx.x;
   unsigned int *const slots =
       reinterpret_cast<unsigned int *>(&tmp_partition_offsets[fanout]);
   unsigned int *const signal_slots = &slots[fanout];
 
-  // Load partition offsets from device memory into shared memory.
+  // Load partition offsets from host or device memory into a device memory
+  // buffer.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
     tmp_partition_offsets[i] = static_cast<unsigned int>(
         args.partition_offsets[blockIdx.x * fanout + i] -
