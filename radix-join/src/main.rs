@@ -318,6 +318,7 @@ where
 
     let block_size = BlockSize::x(warp_size * warp_overcommit_factor);
     let grid_size = GridSize::x(multiprocessors * grid_overcommit_factor);
+    let stream_grid_size = GridSize::x((multiprocessors / 2) * grid_overcommit_factor);
 
     let huge_pages = cmd.huge_pages;
 
@@ -432,7 +433,7 @@ where
                 cpu_affinity.clone(),
                 partitions_mem_type,
                 (&grid_size, &block_size),
-                (&grid_size, &block_size),
+                (&stream_grid_size, &block_size),
             )?;
 
             Ok(data_point)

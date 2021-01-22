@@ -16,9 +16,10 @@ use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::*;
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
+use rustacuda::event::{Event, EventFlags};
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::{CopyDestination, DeviceBuffer, DeviceCopy};
-use rustacuda::stream::{Stream, StreamFlags};
+use rustacuda::stream::{Stream, StreamFlags, StreamWaitEventFlags};
 use sql_ops::join::{cuda_radix_join, no_partitioning_join, HashingScheme};
 use sql_ops::partition::cpu_radix_partition::{
     CpuHistogramAlgorithm, CpuRadixPartitionAlgorithm, CpuRadixPartitionable, CpuRadixPartitioner,
@@ -28,9 +29,12 @@ use sql_ops::partition::gpu_radix_partition::{
 };
 use sql_ops::partition::{
     PartitionOffsets, PartitionedRelation, RadixBits, RadixPartitionInputChunkable, RadixPass,
+    Tuple,
 };
 use std::cmp;
 use std::convert::TryInto;
+use std::iter;
+use std::mem;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -59,6 +63,8 @@ where
         + no_partitioning_join::CpuHashJoinable
         + cuda_radix_join::CudaRadixJoinable,
 {
+    const NUM_STREAMS: usize = 2;
+
     CurrentContext::set_cache_config(CacheConfig::PreferShared)?;
     CurrentContext::set_shared_memory_config(SharedMemoryConfig::FourByteBankSize)?;
     let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
@@ -77,9 +83,12 @@ where
     let partitions_malloc_timer = Instant::now();
 
     let grid_size = &partition_dim.0;
+    let stream_grid_size = &join_dim.0;
+    let stream_block_size = &join_dim.1;
     let block_size = &partition_dim.1;
     let max_chunks_1st = grid_size.x;
-    let max_chunks_2nd = grid_size.x;
+    let max_chunks_2nd = stream_grid_size.x;
+    let join_result_sums_len = (stream_grid_size.x * stream_block_size.x) as usize;
 
     let mut radix_prnr = GpuRadixPartitioner::new(
         histogram_algorithms[0],
@@ -88,23 +97,6 @@ where
         grid_size,
         block_size,
         dmem_buffer_bytes,
-    )?;
-
-    let mut radix_prnr_2nd = GpuRadixPartitioner::new(
-        histogram_algorithms[1],
-        partition_algorithms[1],
-        radix_bits.clone(),
-        grid_size,
-        block_size,
-        dmem_buffer_bytes,
-    )?;
-
-    let radix_join = cuda_radix_join::CudaRadixJoin::new(
-        RadixPass::Second,
-        radix_bits.clone(),
-        hashing_scheme,
-        grid_size,
-        block_size,
     )?;
 
     let mut inner_rel_partitions = PartitionedRelation::new(
@@ -138,21 +130,6 @@ where
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         Allocator::mem_alloc_fn(partitions_mem_type.clone()),
     );
-
-    let mut inner_rel_partition_offsets_2nd = PartitionOffsets::new(
-        histogram_algorithms[1].into(),
-        max_chunks_2nd,
-        radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
-        Allocator::mem_alloc_fn(MemType::CudaDevMem),
-    );
-    let mut outer_rel_partition_offsets_2nd = PartitionOffsets::new(
-        histogram_algorithms[1].into(),
-        max_chunks_2nd,
-        radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
-        Allocator::mem_alloc_fn(MemType::CudaDevMem),
-    );
-
-    let mut result_sums = unsafe { DeviceBuffer::zeroed((join_dim.0.x * join_dim.1.x) as usize)? };
 
     let partitions_malloc_time = partitions_malloc_timer.elapsed();
 
@@ -259,34 +236,114 @@ where
                 .map(|len| cmp::max(max, len))
         })?;
 
-    let mut cached_inner_key = Allocator::alloc_mem(MemType::CudaDevMem, max_inner_partition_len);
-    let mut cached_inner_pay = Allocator::alloc_mem(MemType::CudaDevMem, max_inner_partition_len);
-    let mut cached_outer_key = Allocator::alloc_mem(MemType::CudaDevMem, max_outer_partition_len);
-    let mut cached_outer_pay = Allocator::alloc_mem(MemType::CudaDevMem, max_outer_partition_len);
+    Stream::drop(stream).map_err(|(e, _)| e)?;
 
-    let mut inner_rel_partitions_2nd = PartitionedRelation::new(
-        max_inner_partition_len,
-        histogram_algorithms[1].into(),
-        radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
-        max_chunks_2nd,
-        Allocator::mem_alloc_fn(MemType::CudaDevMem),
-        Allocator::mem_alloc_fn(MemType::CudaDevMem),
-    );
-    let mut outer_rel_partitions_2nd = PartitionedRelation::new(
-        max_outer_partition_len,
-        histogram_algorithms[1].into(),
-        radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
-        max_chunks_2nd,
-        Allocator::mem_alloc_fn(MemType::CudaDevMem),
-        Allocator::mem_alloc_fn(MemType::CudaDevMem),
-    );
-    let mut join_task_assignments =
-        Allocator::alloc_mem(MemType::CudaDevMem, join_dim.0.x as usize + 1);
+    struct StreamState<T: DeviceCopy> {
+        stream: Stream,
+        event: Event,
+        radix_prnr_2nd: GpuRadixPartitioner,
+        radix_join: cuda_radix_join::CudaRadixJoin,
+        cached_inner_key: Mem<T>,
+        cached_inner_pay: Mem<T>,
+        cached_outer_key: Mem<T>,
+        cached_outer_pay: Mem<T>,
+        inner_rel_partition_offsets_2nd: PartitionOffsets<Tuple<T, T>>,
+        outer_rel_partition_offsets_2nd: PartitionOffsets<Tuple<T, T>>,
+        inner_rel_partitions_2nd: PartitionedRelation<Tuple<T, T>>,
+        outer_rel_partitions_2nd: PartitionedRelation<Tuple<T, T>>,
+        join_task_assignments: Mem<u32>,
+        join_result_sums: DeviceBuffer<i64>,
+    };
+
+    let mut stream_states = iter::repeat_with(|| {
+        Ok(StreamState {
+            stream: Stream::new(StreamFlags::NON_BLOCKING, None)?,
+            event: Event::new(EventFlags::DEFAULT)?,
+            radix_prnr_2nd: GpuRadixPartitioner::new(
+                histogram_algorithms[1],
+                partition_algorithms[1],
+                radix_bits.clone(),
+                stream_grid_size,
+                stream_block_size,
+                dmem_buffer_bytes,
+            )?,
+            radix_join: cuda_radix_join::CudaRadixJoin::new(
+                RadixPass::Second,
+                radix_bits.clone(),
+                hashing_scheme,
+                stream_grid_size,
+                stream_block_size,
+            )?,
+            cached_inner_key: Allocator::alloc_mem(MemType::CudaDevMem, max_inner_partition_len),
+            cached_inner_pay: Allocator::alloc_mem(MemType::CudaDevMem, max_inner_partition_len),
+            cached_outer_key: Allocator::alloc_mem(MemType::CudaDevMem, max_outer_partition_len),
+            cached_outer_pay: Allocator::alloc_mem(MemType::CudaDevMem, max_outer_partition_len),
+            inner_rel_partition_offsets_2nd: PartitionOffsets::new(
+                histogram_algorithms[1].into(),
+                max_chunks_2nd,
+                radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
+                Allocator::mem_alloc_fn(MemType::CudaDevMem),
+            ),
+            outer_rel_partition_offsets_2nd: PartitionOffsets::new(
+                histogram_algorithms[1].into(),
+                max_chunks_2nd,
+                radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
+                Allocator::mem_alloc_fn(MemType::CudaDevMem),
+            ),
+            inner_rel_partitions_2nd: PartitionedRelation::new(
+                max_inner_partition_len,
+                histogram_algorithms[1].into(),
+                radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
+                max_chunks_2nd,
+                Allocator::mem_alloc_fn(MemType::CudaDevMem),
+                Allocator::mem_alloc_fn(MemType::CudaDevMem),
+            ),
+            outer_rel_partitions_2nd: PartitionedRelation::new(
+                max_outer_partition_len,
+                histogram_algorithms[1].into(),
+                radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
+                max_chunks_2nd,
+                Allocator::mem_alloc_fn(MemType::CudaDevMem),
+                Allocator::mem_alloc_fn(MemType::CudaDevMem),
+            ),
+            join_task_assignments: Allocator::alloc_mem(
+                MemType::CudaDevMem,
+                join_dim.0.x as usize + 1,
+            ),
+            join_result_sums: unsafe { DeviceBuffer::zeroed(join_result_sums_len)? },
+        })
+    })
+    .take(NUM_STREAMS)
+    .collect::<Result<Vec<_>>>()?;
 
     let partitions_malloc_time = partitions_malloc_time + partitions_malloc_timer.elapsed();
     let join_timer = Instant::now();
 
-    for partition_id in 0..radix_bits.pass_fanout(RadixPass::First).unwrap() {
+    for (partition_id, stream_id) in
+        (0..radix_bits.pass_fanout(RadixPass::First).unwrap()).zip((0..stream_states.len()).cycle())
+    {
+        let StreamState {
+            stream,
+            event,
+            radix_prnr_2nd,
+            radix_join,
+            cached_inner_key,
+            cached_inner_pay,
+            cached_outer_key,
+            cached_outer_pay,
+            inner_rel_partition_offsets_2nd,
+            outer_rel_partition_offsets_2nd,
+            inner_rel_partitions_2nd,
+            outer_rel_partitions_2nd,
+            join_task_assignments,
+            join_result_sums,
+        } = stream_states
+            .get_mut(stream_id)
+            .ok_or_else(|| ErrorKind::RuntimeError("Failed to get stream state".into()))?;
+
+        let old_event = mem::replace(event, Event::new(EventFlags::DEFAULT)?);
+        stream.wait_event(old_event, StreamWaitEventFlags::DEFAULT)?;
+
         let inner_partition_len = inner_rel_partitions.partition_len(partition_id)?;
         let outer_partition_len = outer_rel_partitions.partition_len(partition_id)?;
 
@@ -312,8 +369,8 @@ where
             &inner_rel_partitions,
             cached_inner_key_slice.as_launchable_mut_slice(),
             cached_inner_pay_slice.as_launchable_mut_slice(),
-            &mut inner_rel_partition_offsets_2nd,
-            &stream,
+            inner_rel_partition_offsets_2nd,
+            stream,
         )?;
 
         radix_prnr_2nd.prefix_sum_and_transform(
@@ -322,43 +379,62 @@ where
             &outer_rel_partitions,
             cached_outer_key_slice.as_launchable_mut_slice(),
             cached_outer_pay_slice.as_launchable_mut_slice(),
-            &mut outer_rel_partition_offsets_2nd,
-            &stream,
+            outer_rel_partition_offsets_2nd,
+            stream,
         )?;
 
         radix_prnr_2nd.partition(
             RadixPass::Second,
             cached_inner_key_slice.as_launchable_slice(),
             cached_inner_pay_slice.as_launchable_slice(),
-            &mut inner_rel_partition_offsets_2nd,
-            &mut inner_rel_partitions_2nd,
-            &stream,
+            inner_rel_partition_offsets_2nd,
+            inner_rel_partitions_2nd,
+            stream,
         )?;
 
         radix_prnr_2nd.partition(
             RadixPass::Second,
             cached_outer_key_slice.as_launchable_slice(),
             cached_outer_pay_slice.as_launchable_slice(),
-            &mut outer_rel_partition_offsets_2nd,
-            &mut outer_rel_partitions_2nd,
-            &stream,
+            outer_rel_partition_offsets_2nd,
+            outer_rel_partitions_2nd,
+            stream,
         )?;
 
         radix_join.join(
             &inner_rel_partitions_2nd,
             &outer_rel_partitions_2nd,
-            &mut result_sums.as_launchable_mut_slice(),
+            &mut join_result_sums.as_launchable_mut_slice(),
             &mut join_task_assignments.as_launchable_mut_slice(),
-            &stream,
+            stream,
         )?;
 
-        stream.synchronize()?;
+        event.record(stream)?;
     }
+
+    let mut result_sums_host = vec![0; join_result_sums_len * NUM_STREAMS];
+
+    stream_states
+        .into_iter()
+        .zip(result_sums_host.chunks_mut(join_result_sums_len))
+        .map(
+            |(
+                StreamState {
+                    stream,
+                    join_result_sums,
+                    ..
+                },
+                host_sums,
+            )| {
+                stream.synchronize()?;
+                join_result_sums.copy_to(host_sums)?;
+                Ok(())
+            },
+        )
+        .collect::<Result<()>>()?;
 
     let join_time = join_timer.elapsed();
 
-    let mut result_sums_host = vec![0; result_sums.len()];
-    result_sums.copy_to(&mut result_sums_host)?;
     let sum = result_sums_host.iter().sum();
 
     let data_point = RadixJoinPoint {
