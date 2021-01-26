@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2020 Clemens Lutz, German Research Center for Artificial Intelligence
+ * Copyright 2020-2021 Clemens Lutz, German Research Center for Artificial Intelligence
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
@@ -20,9 +20,8 @@ use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::launch;
 use rustacuda::memory::DeviceCopy;
-use rustacuda::module::Module;
 use rustacuda::stream::Stream;
-use std::ffi::{self, CString};
+use std::ffi;
 use std::mem;
 
 /// Arguments to the C/C++ join-aggregate function.
@@ -73,7 +72,6 @@ pub trait CudaRadixJoinable: DeviceCopy + NullKey {
 
 #[derive(Debug)]
 pub struct CudaRadixJoin {
-    module: Module,
     radix_pass: RadixPass,
     radix_bits: RadixBits,
     hashing_scheme: HashingScheme,
@@ -89,16 +87,7 @@ impl CudaRadixJoin {
         grid_size: &GridSize,
         block_size: &BlockSize,
     ) -> Result<Self> {
-        let module_path = CString::new(env!("CUDAUTILS_PATH")).map_err(|_| {
-            ErrorKind::NulCharError(
-                "Failed to load CUDA module, check your CUDAUTILS_PATH".to_string(),
-            )
-        })?;
-
-        let module = Module::load_from_file(&module_path)?;
-
         Ok(Self {
-            module,
             radix_pass,
             radix_bits,
             hashing_scheme,
@@ -163,7 +152,7 @@ impl CudaRadixJoinable for i32 {
 
         let build_rel_len = build_rel.relation.len() as u32;
         let probe_rel_len = probe_rel.relation.len() as u32;
-        let module = &rj.module;
+        let module = *crate::MODULE;
         let device = CurrentContext::get_device()?;
         let max_shared_mem_bytes =
             device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;

@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018-2019 Clemens Lutz, German Research Center for Artificial Intelligence
+ * Copyright 2018-2021 Clemens Lutz, German Research Center for Artificial Intelligence
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
@@ -34,11 +34,11 @@ use num_traits::cast::AsPrimitive;
 use numa_gpu::error::ToResult;
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::memory::*;
+use rustacuda::context::CurrentContext;
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::launch;
 use rustacuda::memory::DeviceCopy;
 use rustacuda::prelude::*;
-use std::ffi::CString;
 use std::mem::size_of;
 use std::os::raw::{c_uint, c_void};
 use std::sync::Arc;
@@ -217,7 +217,6 @@ pub trait CpuHashJoinable: DeviceCopy + NullKey {
 /// of `CudaHashJoinable` for details.
 #[derive(Debug)]
 pub struct CudaHashJoin<T: DeviceCopy + NullKey> {
-    ops: Module,
     hashing_scheme: HashingScheme,
     is_selective: bool,
     hash_table: Arc<HashTable<T>>,
@@ -352,7 +351,7 @@ macro_rules! impl_cuda_hash_join_for_type {
 
                     let join_attr_len = join_attr.len() as u64;
                     let hash_table_size = hj.hash_table.size as u64;
-                    let module = &hj.ops;
+                    let module = *crate::MODULE;
 
                     match (&hj.hashing_scheme, &hj.is_selective) {
                         (HashingScheme::Perfect, false) => unsafe{ launch!(
@@ -418,7 +417,7 @@ macro_rules! impl_cuda_hash_join_for_type {
 
                     let join_attr_len = join_attr.len() as u64;
                     let hash_table_size = hj.hash_table.size as u64;
-                    let module = &hj.ops;
+                    let module = *crate::MODULE;
 
                     match &hj.hashing_scheme {
                         HashingScheme::Perfect => unsafe { launch!(
@@ -628,6 +627,11 @@ impl<T: DeviceCopy + NullKey> HashTable<T> {
                     )
                 }
                 .to_result()?;
+
+                // FIXME: use cuMemsetD32Async on a user-given stream, and
+                // remove the context synchronization. Sync is required because
+                // cuMemsetD32_v2 is async if using device memory (see CUDA docs).
+                CurrentContext::synchronize()?;
             }
         }
 
@@ -695,14 +699,6 @@ where
             Err(ErrorKind::InvalidArgument("Hash table not set".to_string()))?;
         }
 
-        let module_path = CString::new(env!("CUDAUTILS_PATH")).map_err(|_| {
-            ErrorKind::NulCharError(
-                "Failed to load CUDA module, check your CUDAUTILS_PATH".to_string(),
-            )
-        })?;
-
-        let ops = Module::load_from_file(&module_path)?;
-
         let hash_table = if let Some(ht) = self.hash_table_i.clone() {
             ht
         } else {
@@ -716,7 +712,6 @@ where
         };
 
         Ok(CudaHashJoin {
-            ops,
             hashing_scheme: self.hashing_scheme,
             is_selective: self.is_selective,
             hash_table,
@@ -811,11 +806,25 @@ mod tests {
     use datagen::relation::UniformRelation;
     use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
     use numa_gpu::runtime::memory::Mem;
+    use once_cell::sync::Lazy;
+    use rustacuda::context::{Context, CurrentContext, UnownedContext};
     use rustacuda::stream::{Stream, StreamFlags};
     use std::convert::TryInto;
     use std::error::Error;
     use std::result::Result;
     use std::sync::Arc;
+
+    static mut CUDA_CONTEXT_OWNER: Option<Context> = None;
+    static CUDA_CONTEXT: Lazy<UnownedContext> = Lazy::new(|| {
+        let context = rustacuda::quick_init().expect("Failed to initialize CUDA context");
+        let unowned = context.get_unowned();
+
+        unsafe {
+            CUDA_CONTEXT_OWNER = Some(context);
+        }
+
+        unowned
+    });
 
     macro_rules! test_cpu_seq {
         ($name:ident, $mem_type:expr, $scheme:expr, $type:ty) => {
@@ -899,7 +908,7 @@ mod tests {
                 const ROWS: usize = (32 << 20) / std::mem::size_of::<$type>();
                 const HT_LEN: usize = 4 * ROWS;
 
-                let _ctx = rustacuda::quick_init()?;
+                CurrentContext::set_current(&*CUDA_CONTEXT)?;
                 let alloc_fn = Allocator::deref_mem_alloc_fn::<$type>($mem_type);
 
                 let mut inner_rel_key = alloc_fn(ROWS);

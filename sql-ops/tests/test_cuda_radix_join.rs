@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2020 Clemens Lutz, German Research Center for Artificial
+ * Copyright (c) 2020-2021 Clemens Lutz, German Research Center for Artificial
  * Intelligence
  * Author: Clemens Lutz, DFKI GmbH <clemens.lutz@dfki.de>
  */
@@ -12,6 +12,8 @@
 use datagen::relation::UniformRelation;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::memory::Mem;
+use once_cell::sync::Lazy;
+use rustacuda::context::{Context, CurrentContext, UnownedContext};
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::stream::{Stream, StreamFlags};
 use sql_ops::join::cuda_radix_join::CudaRadixJoin;
@@ -23,6 +25,18 @@ use sql_ops::partition::RadixPass;
 use sql_ops::partition::{PartitionOffsets, PartitionedRelation};
 use std::error::Error;
 use std::result::Result;
+
+static mut CUDA_CONTEXT_OWNER: Option<Context> = None;
+static CUDA_CONTEXT: Lazy<UnownedContext> = Lazy::new(|| {
+    let context = rustacuda::quick_init().expect("Failed to initialize CUDA context");
+    let unowned = context.get_unowned();
+
+    unsafe {
+        CUDA_CONTEXT_OWNER = Some(context);
+    }
+
+    unowned
+});
 
 fn gpu_verify_join_aggregate(
     build_tuples: usize,
@@ -36,7 +50,7 @@ fn gpu_verify_join_aggregate(
     let partition_algorithm = GpuRadixPartitionAlgorithm::NC;
     let num_chunks = GridSize::from(1); // one contiguous chunk
 
-    let _ctx = rustacuda::quick_init()?;
+    CurrentContext::set_current(&*CUDA_CONTEXT)?;
     let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
     let alloc_fn = Allocator::deref_mem_alloc_fn::<i32>(DerefMemType::CudaUniMem);
 

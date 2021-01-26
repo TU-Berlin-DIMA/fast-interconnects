@@ -14,7 +14,9 @@ mod radix_partition;
 use datagen::relation::UniformRelation;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::memory::{LaunchableMem, Mem};
+use once_cell::sync::Lazy;
 use radix_partition::*;
+use rustacuda::context::{Context, CurrentContext, UnownedContext};
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::LockedBuffer;
 use rustacuda::stream::{Stream, StreamFlags};
@@ -32,6 +34,18 @@ use std::cmp;
 use std::error::Error;
 use std::mem;
 use std::result::Result;
+
+static mut CUDA_CONTEXT_OWNER: Option<Context> = None;
+static CUDA_CONTEXT: Lazy<UnownedContext> = Lazy::new(|| {
+    let context = rustacuda::quick_init().expect("Failed to initialize CUDA context");
+    let unowned = context.get_unowned();
+
+    unsafe {
+        CUDA_CONTEXT_OWNER = Some(context);
+    }
+
+    unowned
+});
 
 fn run_gpu_partitioning<KeyGenFn, PayGenFn, ValidatorFn>(
     tuples: usize,
@@ -58,7 +72,7 @@ where
 {
     const DMEM_BUFFER_BYTES: usize = 8 * 1024;
 
-    let _context = rustacuda::quick_init()?;
+    CurrentContext::set_current(&*CUDA_CONTEXT)?;
 
     let mut data_key = Allocator::alloc_deref_mem::<i32>(DerefMemType::CudaPinnedMem, tuples);
     let mut data_pay = Allocator::alloc_deref_mem::<i32>(DerefMemType::CudaPinnedMem, tuples);
@@ -177,7 +191,7 @@ where
 {
     const DMEM_BUFFER_BYTES: usize = 8 * 1024;
 
-    let _context = rustacuda::quick_init()?;
+    CurrentContext::set_current(&*CUDA_CONTEXT)?;
 
     let mut data_key = Allocator::alloc_deref_mem::<i32>(DerefMemType::CudaPinnedMem, tuples);
     let mut data_pay = Allocator::alloc_deref_mem::<i32>(DerefMemType::CudaPinnedMem, tuples);
@@ -283,7 +297,7 @@ where
 {
     const DMEM_BUFFER_BYTES: usize = 8 * 1024;
 
-    let _context = rustacuda::quick_init()?;
+    CurrentContext::set_current(&*CUDA_CONTEXT)?;
 
     let mut data_key: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;
     let mut data_pay: LockedBuffer<i32> = LockedBuffer::new(&0, tuples)?;

@@ -30,11 +30,10 @@ use rustacuda::context::CurrentContext;
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::{DeviceBuffer, DeviceCopy};
-use rustacuda::module::Module;
 use rustacuda::stream::Stream;
 use rustacuda::{launch, launch_cooperative};
 use std::cmp;
-use std::ffi::{self, CString};
+use std::ffi;
 use std::mem;
 
 /// Arguments to the C/C++ prefix sum function.
@@ -367,7 +366,6 @@ pub struct GpuRadixPartitioner {
     partition_algorithm: GpuRadixPartitionAlgorithm,
     prefix_sum_state: PrefixSumState,
     partition_state: RadixPartitionState,
-    module: Module,
     grid_size: GridSize,
     block_size: BlockSize,
     dmem_buffer_bytes: usize,
@@ -409,21 +407,12 @@ impl GpuRadixPartitioner {
             _ => RadixPartitionState::None,
         };
 
-        let module_path = CString::new(env!("CUDAUTILS_PATH")).map_err(|_| {
-            ErrorKind::NulCharError(
-                "Failed to load CUDA module, check your CUDAUTILS_PATH".to_string(),
-            )
-        })?;
-
-        let module = Module::load_from_file(&module_path)?;
-
         Ok(Self {
             radix_bits,
             prefix_sum_algorithm,
             partition_algorithm,
             prefix_sum_state,
             partition_state,
-            module,
             grid_size: grid_size.clone(),
             block_size: block_size.clone(),
             dmem_buffer_bytes,
@@ -638,7 +627,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             Err(ErrorKind::IntegerOverflow(msg.to_string(),))?
                     }
 
-                    let module = &rp.module;
+                    let module = *crate::MODULE;
                     let max_shared_mem_bytes =
                         device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
                     let fanout_u32 = rp.radix_bits.pass_fanout(pass).unwrap();
@@ -779,7 +768,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             Err(ErrorKind::IntegerOverflow(msg.to_string(),))?
                     }
 
-                    let module = &rp.module;
+                    let module = *crate::MODULE;
                     let max_shared_mem_bytes =
                         device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
                     let fanout_u32 = rp.radix_bits.pass_fanout(pass).unwrap();
@@ -908,7 +897,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             Err(ErrorKind::IntegerOverflow(msg.to_string(),))?
                     }
 
-                    let module = &rp.module;
+                    let module = *crate::MODULE;
                     let max_shared_mem_bytes =
                         device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
                     let fanout_u32 = rp.radix_bits.pass_fanout(pass).unwrap();
@@ -1028,7 +1017,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                 ))?;
                     }
 
-                    let module = &rp.module;
+                    let module = *crate::MODULE;
                     let grid_size = rp.grid_size.clone();
                     let device = CurrentContext::get_device()?;
                     let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
