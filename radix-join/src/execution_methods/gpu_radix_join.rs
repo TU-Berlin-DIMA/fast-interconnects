@@ -13,6 +13,7 @@ use crate::measurement::harness::RadixJoinPoint;
 use data_store::join_data::JoinData;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
+use numa_gpu::runtime::cuda_wrapper;
 use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::*;
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
@@ -99,6 +100,9 @@ where
         dmem_buffer_bytes,
     )?;
 
+    // FIXME: Enable GPU memory caching of partitioned relation
+    //  - Calculate how much space is left over in device memory for partitioned relations
+    //  - Allocate cached keys/payload, partitioned relations, etc
     let mut inner_rel_partitions = PartitionedRelation::new(
         data.build_relation_key.len(),
         histogram_algorithms[0].into(),
@@ -219,10 +223,6 @@ where
         &stream,
     )?;
 
-    stream.synchronize()?;
-    let partition_time = partition_timer.elapsed();
-    let partitions_malloc_timer = Instant::now();
-
     let max_inner_partition_len =
         (0..inner_rel_partitions.fanout()).try_fold(0, |max, partition_id| {
             inner_rel_partitions
@@ -236,8 +236,7 @@ where
                 .map(|len| cmp::max(max, len))
         })?;
 
-    Stream::drop(stream).map_err(|(e, _)| e)?;
-
+    // Memory allocations occur asynchronously in parallel to partitioning
     struct StreamState<T: DeviceCopy> {
         stream: Stream,
         event: Event,
@@ -256,8 +255,12 @@ where
     };
 
     let mut stream_states = iter::repeat_with(|| {
+        let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
+        let mut join_result_sums = unsafe { DeviceBuffer::uninitialized(join_result_sums_len)? };
+        cuda_wrapper::memset_async(join_result_sums.as_launchable_mut_slice(), 0, &stream)?;
+
         Ok(StreamState {
-            stream: Stream::new(StreamFlags::NON_BLOCKING, None)?,
+            stream,
             event: Event::new(EventFlags::DEFAULT)?,
             radix_prnr_2nd: GpuRadixPartitioner::new(
                 histogram_algorithms[1],
@@ -310,13 +313,16 @@ where
                 MemType::CudaDevMem,
                 join_dim.0.x as usize + 1,
             ),
-            join_result_sums: unsafe { DeviceBuffer::zeroed(join_result_sums_len)? },
+            join_result_sums,
         })
     })
     .take(NUM_STREAMS)
     .collect::<Result<Vec<_>>>()?;
 
-    let partitions_malloc_time = partitions_malloc_time + partitions_malloc_timer.elapsed();
+    stream.synchronize()?;
+    Stream::drop(stream).map_err(|(e, _)| e)?;
+
+    let partition_time = partition_timer.elapsed();
     let join_timer = Instant::now();
 
     for (partition_id, stream_id) in

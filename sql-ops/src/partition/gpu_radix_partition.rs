@@ -1108,6 +1108,12 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         partition_offsets.offsets.as_launchable_ptr()
                     };
 
+                    // Swap the offsets of PartitionedRelation with PartitionedOffsets.  This
+                    // avoids copying the offsets, as the optimal copy strategy is non-trivial to
+                    // determine (copy using CPU vs. GPU) as it depends on the memory type and NUMA
+                    // node.
+                    mem::swap(&mut partitioned_relation.offsets, &mut partition_offsets.offsets);
+
                     let args = RadixPartitionArgs {
                         partition_attr_data: partition_attr.as_launchable_ptr().as_void(),
                         payload_attr_data: payload_attr.as_launchable_ptr().as_void(),
@@ -1322,12 +1328,6 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             }
                         }
                     }
-
-                    // Swap the offsets of PartitionedRelation with PartitionedOffsets.  This
-                    // avoids copying the offsets, as the optimal copy strategy is non-trivial to
-                    // determine (copy using CPU vs. GPU) as it depends on the memory type and NUMA
-                    // node.
-                    mem::swap(&mut partitioned_relation.offsets, &mut partition_offsets.offsets);
 
                     Ok(())
                 }

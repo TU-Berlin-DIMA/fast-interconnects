@@ -350,6 +350,9 @@ where
         &stream,
     )?;
 
+    // Wait on offsets for computing max_partition_len
+    stream.synchronize()?;
+
     partitioner.partition(
         RadixPass::First,
         data_key.as_launchable_slice(),
@@ -358,10 +361,7 @@ where
         &mut partitioned_relation,
         &stream,
     )?;
-    stream.synchronize()?;
 
-    // FIXME: compute size of largest partition from partition_offsets instead of
-    // partitioned_relation. That would enable length comutation in parallel to partitioning.
     let max_partition_len =
         (0..partitioned_relation.fanout()).try_fold(0, |max, partition_id| {
             partitioned_relation
