@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018-2020 German Research Center for Artificial Intelligence (DFKI)
+ * Copyright 2018-2021 German Research Center for Artificial Intelligence (DFKI)
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
@@ -225,8 +225,18 @@ unsafe impl<T> Sync for NumaMemory<T> {}
 pub struct NodeRatio {
     /// The NUMA node
     pub node: u16,
+
     /// A ratio smaller or equal than 1
     pub ratio: Ratio<usize>,
+}
+
+/// Specifies the requested memory allocation size on the NUMA node
+pub struct NodeLen {
+    /// The NUMA node
+    pub node: u16,
+
+    /// The allocation size in bytes
+    pub len: usize,
 }
 
 /// A contiguous memory region that is dynamically allocated on multiple NUMA
@@ -245,36 +255,58 @@ pub struct DistributedNumaMemory<T> {
 impl<T> DistributedNumaMemory<T> {
     /// Allocates a new memory region.
     ///
+    /// Memory is allocated on the specified NUMA nodes according to
+    /// `node_lengths`. The actual allocations can slightly differ from the
+    /// specified lengths, because the allocation granularity is a page and the
+    /// lengths are rounded to a page.
+    ///
+    /// Note that the sum of all node lengths must equal `len`.
+    pub fn new_with_len(len: usize, node_lengths: Box<[NodeLen]>) -> Self {
+        assert_ne!(len, 0);
+        {
+            let total: usize = node_lengths.iter().map(|n| n.len).sum();
+            assert_eq!(total, len);
+        }
+
+        let size = len * size_of::<T>();
+        let page_size = ProcessorCache::page_size();
+        let total_pages = (size + page_size - 1) / page_size;
+
+        // Round number of pages up
+        let node_pages: Box<[NodeLen]> = node_lengths
+            .iter()
+            .enumerate()
+            .scan(0, |pages_seen, (i, &NodeLen { node, len })| {
+                let pages = (len * size_of::<T>()) / page_size;
+                *pages_seen += pages;
+                let pages = if i + 1 == node_lengths.len() {
+                    total_pages - *pages_seen
+                } else {
+                    pages
+                };
+                Some(NodeLen { node, len: pages })
+            })
+            .collect();
+
+        Self::new_with_pages(len, node_pages)
+    }
+
+    /// Allocates a new memory region.
+    ///
     /// Memory is allocated proportionally on the specified NUMA nodes according
     /// to their ratios. The actual ratios can slightly differ from the specified
     /// ratios, because the allocation granularity is a page.
     ///
     /// Note that the sum of all ratios must equal 1.
-    pub fn new(len: usize, node_ratios: Box<[NodeRatio]>) -> Self {
+    pub fn new_with_ratio(len: usize, node_ratios: Box<[NodeRatio]>) -> Self {
         assert_ne!(len, 0);
         {
             let total: Ratio<usize> = node_ratios.iter().map(|n| n.ratio).sum();
             assert_eq!(total, 1.into());
         }
 
-        // Allocate memory with mmap
-        let size = len * size_of::<T>();
-        let ptr = unsafe {
-            mmap(
-                ptr::null_mut(),
-                size,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                0,
-                0,
-            )
-        };
-        if ptr == libc::MAP_FAILED {
-            std::result::Result::Err::<(), _>(IoError::last_os_error())
-                .expect("Failed to mmap memory");
-        }
-
         // Calculate number of pages, rounded up
+        let size = len * size_of::<T>();
         let page_size = ProcessorCache::page_size();
         let pages = (size + page_size - 1) / page_size;
 
@@ -298,15 +330,54 @@ impl<T> DistributedNumaMemory<T> {
             scaled_ratios[0].ratio += pages_diff;
         }
 
-        // Bind all pages to their NUMA nodes, and calculate the actual ratios
-        let final_node_ratios = scaled_ratios
+        let node_pages: Box<[NodeLen]> = scaled_ratios
             .iter()
-            .scan(0, |page_offset, NodeRatio { node, ratio }| {
-                let old = *page_offset;
-                let page_len = ratio.to_integer();
-                *page_offset = *page_offset + page_len;
-                Some((*node, old, page_len))
+            .map(|&NodeRatio { node, ratio }| NodeLen {
+                node,
+                len: ratio.to_integer(),
             })
+            .collect();
+
+        Self::new_with_pages(len, node_pages)
+    }
+
+    fn new_with_pages(len: usize, node_pages: Box<[NodeLen]>) -> Self {
+        // Allocate memory with mmap
+        let size = len * size_of::<T>();
+        let ptr = unsafe {
+            mmap(
+                ptr::null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                0,
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            std::result::Result::Err::<(), _>(IoError::last_os_error())
+                .expect("Failed to mmap memory");
+        }
+
+        // Calculate number of pages, rounded up
+        let page_size = ProcessorCache::page_size();
+        let pages = (size + page_size - 1) / page_size;
+
+        // Bind all pages to their NUMA nodes, and calculate the actual ratios
+        let final_node_ratios = node_pages
+            .iter()
+            .scan(
+                0,
+                |page_offset,
+                 &NodeLen {
+                     node,
+                     len: page_len,
+                 }| {
+                    let old = *page_offset;
+                    *page_offset = *page_offset + page_len;
+                    Some((node, old, page_len))
+                },
+            )
             .map(|(node, page_offset, page_len)| {
                 let mut node_set = CpuSet::new();
                 node_set.add(node);

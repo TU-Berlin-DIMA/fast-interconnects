@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2019-2020 German Research Center for Artificial Intelligence (DFKI)
+ * Copyright 2019-2021 German Research Center for Artificial Intelligence (DFKI)
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
@@ -256,7 +256,7 @@ impl Allocator {
 
     /// Allocates memory on multiple, specified NUMA nodes.
     fn alloc_distributed_numa<T: DeviceCopy>(len: usize, nodes: Box<[NodeRatio]>) -> DerefMem<T> {
-        DerefMem::DistributedNumaMem(DistributedNumaMemory::new(len, nodes))
+        DerefMem::DistributedNumaMem(DistributedNumaMemory::new_with_ratio(len, nodes))
     }
 
     /// Allocates CUDA pinned memory using cudaHostAlloc
