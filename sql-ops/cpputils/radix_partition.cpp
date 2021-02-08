@@ -469,7 +469,13 @@ void buffer_tuple(Tuple<K, V> *const __restrict__ partitioned_relation,
   auto &buffer = buffers[p_index];
 
   size_t slot = buffer.meta.slot;
-  size_t buffer_slot = slot % tuples_per_buffer;
+
+  // align the flush destination to tuples_per_buffer (i.e., align to a cache
+  // line)
+  size_t buffer_slot =
+      (reinterpret_cast<size_t>(partitioned_relation) / sizeof(Tuple<K, V>) +
+       slot) %
+      tuples_per_buffer;
 
   // `buffer.meta.slot` is overwritten on buffer_slot == (tuples_per_buffer -
   // 1), and restored after the buffer flush.
@@ -546,7 +552,10 @@ void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
   // Flush remainders of all buffers.
   for (size_t i = 0; i < fanout; ++i) {
     size_t slot = buffers[i].meta.slot;
-    size_t remaining = slot % tuples_per_buffer;
+    size_t remaining =
+        (reinterpret_cast<size_t>(partitioned_relation) / sizeof(Tuple<K, V>) +
+         slot) %
+        tuples_per_buffer;
 
     for (size_t j = slot - remaining, k = 0; k < remaining; ++j, ++k) {
       partitioned_relation[j] = buffers[i].tuples.data[k];
@@ -661,7 +670,10 @@ void cpu_chunked_radix_partition_swwc_simd(RadixPartitionArgs &args) {
   // Flush remainders of all buffers.
   for (size_t i = 0; i < fanout; ++i) {
     size_t slot = buffers[i].meta.slot;
-    size_t remaining = slot % tuples_per_buffer;
+    size_t remaining =
+        (reinterpret_cast<size_t>(partitioned_relation) / sizeof(Tuple<K, V>) +
+         slot) %
+        tuples_per_buffer;
 
     for (size_t j = slot - remaining, k = 0; k < remaining; ++j, ++k) {
       partitioned_relation[j] = buffers[i].tuples.data[k];
