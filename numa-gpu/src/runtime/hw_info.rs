@@ -4,14 +4,21 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018-2020 German Research Center for Artificial Intelligence (DFKI)
+ * Copyright 2018-2021 German Research Center for Artificial Intelligence (DFKI)
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
-use crate::error::Result;
+use crate::error::{ErrorKind, Result};
 use procfs::CpuInfo;
 use rustacuda::device::{Device, DeviceAttribute};
+use std::collections::HashMap;
 use std::fmt;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::mem;
+use std::os::raw::c_int;
+use std::path::PathBuf;
+use std::str::FromStr;
 
 pub struct ProcessorCache {}
 
@@ -141,5 +148,202 @@ impl CudaDeviceInfo for Device {
 
     fn memory_clock_rate(&self) -> Result<u32> {
         Ok(self.get_attribute(DeviceAttribute::MemoryClockRate)? as u32 / 1000)
+    }
+}
+
+/// Extends Rustacuda's Device with hardware information obtained from the Nvidia
+/// device driver
+///
+/// Specifically, `NvidiaDriverInfo` maps the GPU device to the NUMA node on
+/// IBM POWER systems with NVLink.
+pub trait NvidiaDriverInfo {
+    /// Returns the NUMA node associated with this GPU device
+    ///
+    /// # Example
+    /// ```
+    /// # use numa_gpu::runtime::hw_info::NvidiaDriverInfo;
+    /// # use rustacuda::*;
+    /// # use std::error::Error;
+    /// # fn main() -> Result<(), Box<dyn Error>> {
+    /// # init(CudaFlags::empty())?;
+    /// use rustacuda::device::Device;
+    /// let device = Device::get_device(0)?;
+    /// if let Ok(numa_node) = device.numa_node() {
+    ///   println!("NUMA node: {}", numa_node);
+    /// }
+    /// else {
+    ///   println!("GPU isn't a NUMA node");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn numa_node(&self) -> Result<u32>;
+
+    /// Returns if the GPU memory is online as a NUMA node
+    ///
+    /// # Example
+    /// ```
+    /// # use numa_gpu::runtime::hw_info::NvidiaDriverInfo;
+    /// # use rustacuda::*;
+    /// # use std::error::Error;
+    /// # fn main() -> Result<(), Box<dyn Error>> {
+    /// # init(CudaFlags::empty())?;
+    /// use rustacuda::device::Device;
+    /// let device = Device::get_device(0)?;
+    /// if let Ok(is_numa_mem_online) = device.is_numa_mem_online() {
+    ///   println!("Is memory online: {}", is_numa_mem_online);
+    /// }
+    /// else {
+    ///   println!("GPU isn't a NUMA node");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn is_numa_mem_online(&self) -> Result<bool>;
+
+    /// Returns the NUMA memory size in bytes as seen by the Linux driver
+    ///
+    /// # Example
+    /// ```
+    /// # use numa_gpu::runtime::hw_info::NvidiaDriverInfo;
+    /// # use rustacuda::*;
+    /// # use std::error::Error;
+    /// # fn main() -> Result<(), Box<dyn Error>> {
+    /// # init(CudaFlags::empty())?;
+    /// use rustacuda::device::Device;
+    /// let device = Device::get_device(0)?;
+    /// if let Ok(numa_mem_size) = device.numa_mem_size() {
+    ///   println!("Memory size: {}", numa_mem_size);
+    /// }
+    /// else {
+    ///   println!("GPU isn't a NUMA node");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn numa_mem_size(&self) -> Result<usize>;
+}
+
+impl NvidiaDriverInfo for Device {
+    fn numa_node(&self) -> Result<u32> {
+        let nvidia_info = NvidiaDriverInternal::from_device(self)?;
+        Ok(nvidia_info.numa_node)
+    }
+
+    fn is_numa_mem_online(&self) -> Result<bool> {
+        let nvidia_info = NvidiaDriverInternal::from_device(self)?;
+        Ok(nvidia_info.is_mem_online)
+    }
+
+    fn numa_mem_size(&self) -> Result<usize> {
+        let nvidia_info = NvidiaDriverInternal::from_device(self)?;
+        Ok(nvidia_info.mem_size)
+    }
+}
+
+/// A private helper struct to load the GPU driver information
+struct NvidiaDriverInternal {
+    numa_node: u32,
+    is_mem_online: bool,
+    mem_size: usize,
+}
+
+impl NvidiaDriverInternal {
+    fn new(device_id: c_int, pci_id: &str) -> Result<Self> {
+        let mut device_path = PathBuf::from_str("/proc/driver/nvidia/gpus")
+            .expect("Failed to convert string to a path");
+        device_path.push(pci_id);
+        let device_path = device_path;
+
+        let mut information_path = device_path.clone();
+        information_path.push("information");
+        let information_file = File::open(information_path)?;
+        let information_map = Self::read_file(BufReader::new(&information_file))?;
+
+        let driver_device_id: c_int = information_map
+            .get("Device Minor")
+            .expect("Failed to get device ID")
+            .parse()
+            .expect("Failed to parse device ID");
+        if driver_device_id != device_id {
+            return Err(ErrorKind::RuntimeError(
+                "CUDA device ID does not match driver device ID".to_string(),
+            )
+            .into());
+        }
+
+        let mut numa_status_path = device_path.clone();
+        numa_status_path.push("numa_status");
+        let numa_status_file = File::open(numa_status_path);
+
+        if let Ok(numa_status_file) = numa_status_file {
+            let numa_status_map = Self::read_file(BufReader::new(&numa_status_file))?;
+
+            let numa_node = numa_status_map
+                .get("Node")
+                .expect("Failed to get NUMA node")
+                .parse()
+                .expect("Failed to parse NUMA node");
+            let is_mem_online = numa_status_map
+                .get("Status")
+                .expect("Failed to get memory status")
+                .eq_ignore_ascii_case("online");
+            let mem_size_str = numa_status_map
+                .get("Size")
+                .expect("Failed to get memory size");
+            let mem_size =
+                usize::from_str_radix(&mem_size_str, 16).expect("Failed to parse memory size");
+
+            Ok(Self {
+                numa_node,
+                is_mem_online,
+                mem_size,
+            })
+        } else {
+            Err(ErrorKind::InvalidArgument(
+                "GPU doesn't have a NUMA node; probably does not support NVLink".to_string(),
+            )
+            .into())
+        }
+    }
+
+    fn from_device(device: &Device) -> Result<Self> {
+        let pci_domain_id = device.get_attribute(DeviceAttribute::PciDomainId)?;
+        let pci_bus_id = device.get_attribute(DeviceAttribute::PciBusId)?;
+        let pci_device_id = device.get_attribute(DeviceAttribute::PciDeviceId)?;
+        let pci_function_id: u32 = 0;
+
+        let pci_id = format!(
+            "{:04x}:{:02x}:{:02x}.{:1x}",
+            pci_domain_id, pci_bus_id, pci_device_id, pci_function_id
+        );
+
+        let device_id = unsafe { mem::transmute_copy::<Device, c_int>(device) };
+
+        Ok(Self::new(device_id, &pci_id)?)
+    }
+
+    fn read_file<R: BufRead>(reader: R) -> Result<HashMap<String, String>> {
+        let mut map = HashMap::new();
+
+        for line in reader.lines() {
+            let line = line?;
+
+            if line.is_empty() {
+                continue;
+            }
+
+            let mut fields = line.splitn(2, ':').map(|s| s.trim());
+            if let (Some(key), Some(val)) = (fields.next(), fields.next()) {
+                map.insert(key.to_string(), val.to_string());
+            } else {
+                return Err(ErrorKind::RuntimeError(
+                    "Failed to parse the line from /proc".to_string(),
+                )
+                .into());
+            }
+        }
+
+        Ok(map)
     }
 }
