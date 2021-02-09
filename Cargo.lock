@@ -886,6 +886,7 @@ dependencies = [
  "num-rational",
  "num-traits",
  "numa-gpu",
+ "once_cell",
  "rayon",
  "rustacuda",
  "serde",

@@ -12,7 +12,9 @@ use data_store::join_data::JoinDataBuilder;
 use datagen::relation::UniformRelation;
 use numa_gpu::runtime::allocator::{DerefMemType, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
+use once_cell::sync::Lazy;
 use radix_join::execution_methods::gpu_radix_join::gpu_radix_join;
+use rustacuda::context::{Context, CurrentContext, UnownedContext};
 use rustacuda::function::{BlockSize, GridSize};
 use sql_ops::join::HashingScheme;
 use sql_ops::partition::gpu_radix_partition::{GpuHistogramAlgorithm, GpuRadixPartitionAlgorithm};
@@ -20,6 +22,18 @@ use sql_ops::partition::RadixBits;
 use std::error::Error;
 use std::mem;
 use std::result::Result;
+
+static mut CUDA_CONTEXT_OWNER: Option<Context> = None;
+static CUDA_CONTEXT: Lazy<UnownedContext> = Lazy::new(|| {
+    let context = rustacuda::quick_init().expect("Failed to initialize CUDA context");
+    let unowned = context.get_unowned();
+
+    unsafe {
+        CUDA_CONTEXT_OWNER = Some(context);
+    }
+
+    unowned
+});
 
 fn run_gpu_radix_join_validate_sum(
     inner_relation_len: usize,
@@ -41,7 +55,7 @@ fn run_gpu_radix_join_validate_sum(
         GpuRadixPartitionAlgorithm::SSWWCv2,
     ];
 
-    let _context = rustacuda::quick_init()?;
+    CurrentContext::set_current(&*CUDA_CONTEXT)?;
 
     let data_gen_fn = Box::new(
         |pk_rel_key: &mut [_], pk_rel_pay: &mut [_], fk_rel_key: &mut [_], fk_rel_pay: &mut [_]| {
