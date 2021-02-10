@@ -198,10 +198,8 @@ where
         }
     }
 
-    stream.synchronize()?;
-    let prefix_sum_time = prefix_sum_timer.elapsed();
-
-    let partition_timer = Instant::now();
+    let prefix_sum_event = Event::new(EventFlags::DEFAULT)?;
+    prefix_sum_event.record(&stream)?;
 
     // Partition inner relation
     radix_prnr.partition(
@@ -222,6 +220,29 @@ where
         &mut outer_rel_partitions,
         &stream,
     )?;
+
+    // Wait for prefix sum to finish before computing max partition lengths and
+    // stopping the prefix sum timer.
+    prefix_sum_event.synchronize()?;
+
+    // Stop the prefix sum timer and start the partitioning timer.
+    //
+    // The timers are stopped/started after scheduling the partitioning kernels.
+    // This enables scheduling the partitioning kernels asynchronously to the
+    // running prefix sum kernels.
+    //
+    // The reason is that some partitioning variants (e.g., HSSWWCv4) allocate
+    // memory, and these allocations should occur in parallel to prefix sum
+    // computation.
+    //
+    // We can't do the timing with CUDA events because some prefix sum variants
+    // run on the CPU instead of the GPU.
+    //
+    // Doing the timer stop/start in a CUDA callback on the stream works, but
+    // lauching callbacks is relatively slow (~2 ms). Guessing that this is
+    // because CUDA lauches a new thread for the callback, but didn't verify.
+    let prefix_sum_time = prefix_sum_timer.elapsed();
+    let partition_timer = Instant::now();
 
     let max_inner_partition_len =
         (0..inner_rel_partitions.fanout()).try_fold(0, |max, partition_id| {
