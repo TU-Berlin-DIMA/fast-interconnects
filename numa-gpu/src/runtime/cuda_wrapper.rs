@@ -1,20 +1,19 @@
 //! Collection of Rust-ified wrappers for commonly-used CUDA functions.
 
+use crate::error::{Error, ErrorKind, Result, ToResult};
+use crate::runtime::memory::LaunchableMutSlice;
 use cuda_sys::cuda::{
     cuCtxGetDevice, cuMemAdvise, cuMemHostRegister_v2, cuMemHostUnregister, cuMemPrefetchAsync,
-    cuMemcpyAsync, CUdevice, CUstream, CU_MEMHOSTREGISTER_DEVICEMAP, CU_MEMHOSTREGISTER_PORTABLE,
+    cuMemcpyAsync, cuMemsetD32Async, CUdevice, CUstream, CU_MEMHOSTREGISTER_DEVICEMAP,
+    CU_MEMHOSTREGISTER_PORTABLE,
 };
-
 use rustacuda::memory::{DeviceCopy, UnifiedPointer};
 use rustacuda::stream::Stream;
-
 use std::mem::{size_of, transmute_copy, zeroed};
-use std::os::raw::c_void;
+use std::os::raw::{c_uint, c_void};
 
 // re-export mem_advise enum
 pub use cuda_sys::cuda::CUmem_advise_enum as MemAdviseFlags;
-
-use crate::error::{Error, Result, ToResult};
 
 /// Page-lock an existing memory range for efficient GPU transfers.
 ///
@@ -137,6 +136,50 @@ pub fn async_copy<T: DeviceCopy>(dst: &mut [T], src: &[T], stream: &Stream) -> R
             )
             .to_result()?
         }
+    }
+
+    Ok(())
+}
+
+/// Fill a launchable slice using the CUDA `memset_async` function
+///
+/// # Limitations
+///
+///  - The size of `T` must be an even multiple of a 32-bit integer.
+///  - Only fill values of type `i32` are supported. Fill a `T` with an `i32`
+///    value might result in an invalid initialization.
+pub fn memset_async<T: DeviceCopy>(
+    mem: LaunchableMutSlice<T>,
+    value: i32,
+    stream: &Stream,
+) -> Result<()> {
+    assert!(
+        size_of::<T>() >= size_of::<i32>(),
+        "Size of type T must be larger than i32"
+    );
+    assert!(
+        size_of::<T>() % size_of::<i32>() == 0,
+        "Size of type T must be divisible by i32"
+    );
+
+    unsafe {
+        // FIXME: Find a safer solution to replace transmute_copy!!!
+        let cu_stream = transmute_copy::<Stream, CUstream>(&stream);
+
+        cuMemsetD32Async(
+            mem.as_ptr() as u64,
+            value as c_uint,
+            mem.len()
+                .checked_mul(size_of::<T>() / size_of::<c_uint>())
+                .ok_or_else(|| {
+                    ErrorKind::IntegerOverflow("Failed to compute memset length".to_string())
+                })?,
+            cu_stream,
+        )
+        .to_result()
+        .map_err(|e| {
+            Error::with_chain::<Error, _>(e.into(), format!("Failed to schedule memset"))
+        })?;
     }
 
     Ok(())
