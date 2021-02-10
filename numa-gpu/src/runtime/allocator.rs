@@ -290,11 +290,12 @@ impl Allocator {
     /// Device memory cannot be dereferenced on the host. To access it, use
     /// cudaMemcpy() to copy it to the host.
     ///
-    /// Warning: Returns zeroed memory. Zero may not be a valid bit-pattern for
-    /// type `T`.
+    /// Warning: Returns uninitialized memory. The reason is that the allocator
+    /// cannot initialize the memory asynchronously, due to the user not
+    /// providing a CUDA stream in the API.
     fn alloc_cuda_device<T: DeviceCopy>(len: usize) -> Mem<T> {
         unsafe {
-            Mem::CudaDevMem(DeviceBuffer::<T>::zeroed(len).expect(&format!(
+            Mem::CudaDevMem(DeviceBuffer::<T>::uninitialized(len).expect(&format!(
                 "Failed to allocate {} bytes of CUDA device memory",
                 len * size_of::<T>()
             )))
