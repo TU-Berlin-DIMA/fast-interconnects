@@ -3,9 +3,9 @@
 use crate::error::{Error, ErrorKind, Result, ToResult};
 use crate::runtime::memory::LaunchableMutSlice;
 use cuda_sys::cuda::{
-    cuCtxGetDevice, cuMemAdvise, cuMemHostRegister_v2, cuMemHostUnregister, cuMemPrefetchAsync,
-    cuMemcpyAsync, cuMemsetD32Async, CUdevice, CUstream, CU_MEMHOSTREGISTER_DEVICEMAP,
-    CU_MEMHOSTREGISTER_PORTABLE,
+    cuCtxGetDevice, cuMemAdvise, cuMemGetInfo_v2, cuMemHostRegister_v2, cuMemHostUnregister,
+    cuMemPrefetchAsync, cuMemcpyAsync, cuMemsetD32Async, CUdevice, CUstream,
+    CU_MEMHOSTREGISTER_DEVICEMAP, CU_MEMHOSTREGISTER_PORTABLE,
 };
 use rustacuda::memory::{DeviceCopy, UnifiedPointer};
 use rustacuda::stream::Stream;
@@ -14,6 +14,33 @@ use std::os::raw::{c_uint, c_void};
 
 // re-export mem_advise enum
 pub use cuda_sys::cuda::CUmem_advise_enum as MemAdviseFlags;
+
+/// CUDA memory information
+pub struct CudaMemInfo {
+    /// Free bytes
+    pub free: usize,
+
+    /// Total bytes
+    pub total: usize,
+}
+
+/// Returns the free and total device memory in bytes
+///
+/// The result is a tuple: `(free, total)`.
+pub fn mem_info() -> Result<CudaMemInfo> {
+    let mut free: usize = 0;
+    let mut total: usize = 0;
+
+    unsafe {
+        cuMemGetInfo_v2(&mut free, &mut total)
+            .to_result()
+            .map_err(|e| {
+                Error::with_chain::<Error, _>(e.into(), "Failed to get memory information")
+            })?;
+    }
+
+    Ok(CudaMemInfo { free, total })
+}
 
 /// Page-lock an existing memory range for efficient GPU transfers.
 ///
