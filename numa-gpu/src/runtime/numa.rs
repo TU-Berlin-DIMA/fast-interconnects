@@ -13,7 +13,7 @@
 use super::cuda_wrapper::{host_register, host_unregister};
 use super::hw_info::ProcessorCache;
 use super::linux_wrapper::{mbind, CpuSet, MemBindFlags, MemPolicyModes};
-use super::memory::PageLock;
+use super::memory::{MemLock, PageLock};
 use crate::error::{ErrorKind, Result, ResultExt};
 
 use libc::{madvise, mlock, mmap, munlock, munmap};
@@ -39,6 +39,7 @@ pub struct NumaMemory<T> {
     pointer: *mut T,
     len: usize,
     node: u16,
+    is_memory_locked: bool,
     is_page_locked: bool,
 }
 
@@ -114,25 +115,11 @@ impl<T> NumaMemory<T> {
                 .expect("Failed to bind memory to NUMA node.");
         }
 
-        // Lock pages into memory to prevent swapping to disk or moving to a
-        // different NUMA node
-        unsafe {
-            if mlock(pointer, size) == -1 {
-                let err = IoError::last_os_error();
-                if let Some(code) = err.raw_os_error() {
-                    if code == libc::ENOMEM {
-                        eprintln!("mlock() failed with ENOMEM; try setting 'memlock' to 'unlimited' in /etc/security/limits.conf");
-                    }
-                }
-
-                std::result::Result::Err::<(), _>(err).expect("Failed to mlock memory");
-            }
-        }
-
         Self {
             pointer: pointer as *mut T,
             len,
             node,
+            is_memory_locked: false,
             is_page_locked: false,
         }
     }
@@ -164,6 +151,43 @@ impl<T> Deref for NumaMemory<T> {
 impl<T> DerefMut for NumaMemory<T> {
     fn deref_mut(&mut self) -> &mut [T] {
         unsafe { slice::from_raw_parts_mut(self.pointer, self.len) }
+    }
+}
+
+impl<T> MemLock for NumaMemory<T> {
+    fn mlock(&mut self) -> Result<()> {
+        if !self.is_memory_locked {
+            let size = self.len * size_of::<T>();
+            unsafe {
+                if mlock(self.pointer as *mut libc::c_void, size) == -1 {
+                    let err = IoError::last_os_error();
+                    if let Some(code) = err.raw_os_error() {
+                        if code == libc::ENOMEM {
+                            eprintln!("mlock() failed with ENOMEM; try setting 'memlock' to 'unlimited' in /etc/security/limits.conf");
+                        }
+                    }
+
+                    std::result::Result::Err::<(), _>(err).expect("Failed to mlock memory");
+                }
+            }
+            self.is_memory_locked = true;
+        }
+
+        Ok(())
+    }
+
+    fn munlock(&mut self) -> Result<()> {
+        if self.is_memory_locked {
+            let size = self.len * size_of::<T>();
+            unsafe {
+                if munlock(self.pointer as *mut libc::c_void, size) == -1 {
+                    std::result::Result::Err::<(), _>(IoError::last_os_error())
+                        .expect("Failed to munlock memory");
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -200,14 +224,6 @@ impl<T> Drop for NumaMemory<T> {
         }
 
         let size = self.len * size_of::<T>();
-
-        unsafe {
-            if munlock(self.pointer as *mut libc::c_void, size) == -1 {
-                std::result::Result::Err::<(), _>(IoError::last_os_error())
-                    .expect("Failed to munlock memory");
-            }
-        }
-
         unsafe {
             if munmap(self.pointer as *mut libc::c_void, size) == -1 {
                 std::result::Result::Err::<(), _>(IoError::last_os_error())
@@ -249,6 +265,7 @@ pub struct DistributedNumaMemory<T> {
     ptr: *mut T,
     len: usize,
     node_ratios: Box<[NodeRatio]>,
+    is_memory_locked: bool,
     is_page_locked: bool,
 }
 
@@ -399,26 +416,12 @@ impl<T> DistributedNumaMemory<T> {
             .collect::<Result<Box<[NodeRatio]>>>()
             .expect("Failed to mbind memory to the specified NUMA nodes");
 
-        // Lock pages into memory to prevent swapping to disk or moving to a
-        // different NUMA node
-        unsafe {
-            if mlock(ptr, size) == -1 {
-                let err = IoError::last_os_error();
-                if let Some(code) = err.raw_os_error() {
-                    if code == libc::ENOMEM {
-                        eprintln!("mlock() failed with ENOMEM; try setting 'memlock' to 'unlimited' in /etc/security/limits.conf");
-                    }
-                }
-
-                std::result::Result::Err::<(), _>(err).expect("Failed to mlock memory");
-            }
-        }
-
         // Return self
         Self {
             ptr: ptr as *mut T,
             len,
             node_ratios: final_node_ratios,
+            is_memory_locked: false,
             is_page_locked: false,
         }
     }
@@ -450,14 +453,6 @@ impl<T> Drop for DistributedNumaMemory<T> {
         }
 
         let size = self.len * size_of::<T>();
-
-        unsafe {
-            if munlock(self.ptr as *mut libc::c_void, size) == -1 {
-                std::result::Result::Err::<(), _>(IoError::last_os_error())
-                    .expect("Failed to munlock memory");
-            }
-        }
-
         unsafe {
             if munmap(self.ptr as *mut libc::c_void, size) == -1 {
                 std::result::Result::Err::<(), _>(IoError::last_os_error())
@@ -481,6 +476,43 @@ impl<T> Deref for DistributedNumaMemory<T> {
 impl<T> DerefMut for DistributedNumaMemory<T> {
     fn deref_mut(&mut self) -> &mut [T] {
         unsafe { slice::from_raw_parts_mut(self.ptr, self.len) }
+    }
+}
+
+impl<T> MemLock for DistributedNumaMemory<T> {
+    fn mlock(&mut self) -> Result<()> {
+        if !self.is_memory_locked {
+            let size = self.len * size_of::<T>();
+            unsafe {
+                if mlock(self.ptr as *mut libc::c_void, size) == -1 {
+                    let err = IoError::last_os_error();
+                    if let Some(code) = err.raw_os_error() {
+                        if code == libc::ENOMEM {
+                            eprintln!("mlock() failed with ENOMEM; try setting 'memlock' to 'unlimited' in /etc/security/limits.conf");
+                        }
+                    }
+
+                    std::result::Result::Err::<(), _>(err).expect("Failed to mlock memory");
+                }
+            }
+            self.is_memory_locked = true;
+        }
+
+        Ok(())
+    }
+
+    fn munlock(&mut self) -> Result<()> {
+        if self.is_memory_locked {
+            let size = self.len * size_of::<T>();
+            unsafe {
+                if munlock(self.ptr as *mut libc::c_void, size) == -1 {
+                    std::result::Result::Err::<(), _>(IoError::last_os_error())
+                        .expect("Failed to munlock memory");
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

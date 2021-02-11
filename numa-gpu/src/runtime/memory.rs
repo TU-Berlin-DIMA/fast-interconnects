@@ -23,6 +23,20 @@ use super::numa::{DistributedNumaMemory, NumaMemory};
 use crate::error::{Error, ErrorKind, Result};
 use crate::runtime::utils::EnsurePhysicallyBacked;
 
+/// A trait for locking pages in memory
+///
+/// Exposes the `mlock` and `munlock` functions of Linux. Locking prevents the
+/// OS from swapping to disk or moving to a different NUMA node.
+///
+/// See `man 2 mlock` for more information.
+pub trait MemLock {
+    /// Lock memory
+    fn mlock(&mut self) -> Result<()>;
+
+    /// Unlock memory
+    fn munlock(&mut self) -> Result<()>;
+}
+
 /// A trait for memory that can be page-locked by CUDA.
 ///
 /// Page-locked memory can be copied to the GPU more efficiently.
