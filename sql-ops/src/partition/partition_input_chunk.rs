@@ -51,6 +51,7 @@ pub struct RadixPartitionInputChunk<'a, T: Sized> {
     pub canonical_chunk_len: usize,
     pub chunk_id: u32,
     pub num_chunks: u32,
+    pub total_data_len: usize,
 }
 
 impl<T: Sized> RadixPartitionInputChunkable for [T] {
@@ -77,6 +78,7 @@ impl<T: Sized> RadixPartitionInputChunkable for [T] {
                     canonical_chunk_len,
                     chunk_id,
                     num_chunks,
+                    total_data_len: self.len(),
                 }
             })
             .collect();

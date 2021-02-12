@@ -353,21 +353,11 @@ where
     // Wait on offsets for computing max_partition_len
     stream.synchronize()?;
 
-    partitioner.partition(
-        RadixPass::First,
-        data_key.as_launchable_slice(),
-        data_pay.as_launchable_slice(),
-        &mut partition_offsets,
-        &mut partitioned_relation,
-        &stream,
-    )?;
-
-    let max_partition_len =
-        (0..partitioned_relation.fanout()).try_fold(0, |max, partition_id| {
-            partitioned_relation
-                .partition_len(partition_id)
-                .map(|len| cmp::max(max, len))
-        })?;
+    let max_partition_len = (0..partition_offsets.fanout()).try_fold(0, |max, partition_id| {
+        partition_offsets
+            .partition_len(partition_id)
+            .map(|len| cmp::max(max, len))
+    })?;
 
     let mut cached_key: LockedBuffer<i32> = LockedBuffer::new(&0, max_partition_len)?;
     let mut cached_pay: LockedBuffer<i32> = LockedBuffer::new(&0, max_partition_len)?;
@@ -387,6 +377,15 @@ where
         Allocator::mem_alloc_fn(MemType::CudaUniMem),
         Allocator::mem_alloc_fn(MemType::CudaUniMem),
     );
+
+    partitioner.partition(
+        RadixPass::First,
+        data_key.as_launchable_slice(),
+        data_pay.as_launchable_slice(),
+        &mut partition_offsets,
+        &mut partitioned_relation,
+        &stream,
+    )?;
 
     for partition_id in 0..radix_bits.pass_fanout(RadixPass::First).unwrap() {
         let partition_len = partitioned_relation.partition_len(partition_id)?;

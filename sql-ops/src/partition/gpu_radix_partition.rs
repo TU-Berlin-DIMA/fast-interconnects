@@ -627,6 +627,8 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             Err(ErrorKind::IntegerOverflow(msg.to_string(),))?
                     }
 
+                    partition_offsets.set_data_len(partition_attr.len());
+
                     let module = *crate::MODULE;
                     let max_shared_mem_bytes =
                         device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
@@ -768,6 +770,8 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             Err(ErrorKind::IntegerOverflow(msg.to_string(),))?
                     }
 
+                    partition_offsets.set_data_len(src_partition_attr.len());
+
                     let module = *crate::MODULE;
                     let max_shared_mem_bytes =
                         device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
@@ -897,6 +901,8 @@ macro_rules! impl_gpu_radix_partition_for_type {
                             Err(ErrorKind::IntegerOverflow(msg.to_string(),))?
                     }
 
+                    partition_offsets.set_data_len(dst_partition_attr.len());
+
                     let module = *crate::MODULE;
                     let max_shared_mem_bytes =
                         device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
@@ -990,6 +996,18 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         Err(ErrorKind::InvalidArgument(
                                 "Partition and payload attributes have different sizes".to_string(),
                                 ))?;
+                    }
+                    if let Some(len) = partition_offsets.len() {
+                        if partitioned_relation.len() != len {
+                            Err(ErrorKind::InvalidArgument(
+                                    "PartitionOffsets and PartitionedRelation have mismatching lengths".to_string(),
+                                    ))?;
+                        }
+                    }
+                    else {
+                        Err(ErrorKind::InvalidArgument(
+                                "PartitionOffsets has no length".to_string()
+                                ))?
                     }
                     if partitioned_relation.radix_bits() != radix_bits {
                         Err(ErrorKind::InvalidArgument(

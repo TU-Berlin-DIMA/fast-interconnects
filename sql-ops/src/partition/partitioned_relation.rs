@@ -58,6 +58,7 @@ fn padding_len<T: Sized>() -> u32 {
 ///
 /// # Invariants
 ///
+///  - `len` must match in `PartitionedRelation`
 ///  - `radix_bits` must match in `GpuRadixPartitioner`
 ///  - `max_chunks` must equal the maximum number of chunks computed at runtime
 ///     (e.g., the grid size)
@@ -65,6 +66,7 @@ fn padding_len<T: Sized>() -> u32 {
 pub struct PartitionOffsets<T: DeviceCopy> {
     pub(super) offsets: Mem<u64>,
     pub(super) local_offsets: Option<Mem<u64>>,
+    data_len: Option<usize>,
     chunks: u32,
     radix_bits: u32,
     phantom_data: std::marker::PhantomData<T>,
@@ -96,10 +98,35 @@ impl<T: DeviceCopy> PartitionOffsets<T> {
         Self {
             offsets,
             local_offsets,
+            data_len: None,
             chunks,
             radix_bits,
             phantom_data: std::marker::PhantomData,
         }
+    }
+
+    /// Returns the total number of elements in the relation (excluding padding).
+    ///
+    /// If the prefix sum is not yet computed, then `None` is returned.
+    pub fn len(&self) -> Option<usize> {
+        self.data_len
+    }
+
+    /// Sets the data length of PartitionOffsets
+    ///
+    /// The length must be set by the prefix sum function.
+    pub(super) fn set_data_len(&mut self, len: usize) {
+        self.data_len = Some(len);
+    }
+
+    /// Returns the total number of elements in the relation including padding.
+    ///
+    /// If the prefix sum is not yet computed, then `None` is returned.
+    pub(super) fn padded_len(&self) -> Option<usize> {
+        let num_partitions = fanout(self.radix_bits) as usize;
+        self.data_len.map(|len| {
+            len + num_partitions * self.num_chunks() as usize * self.padding_len() as usize
+        })
     }
 
     /// Returs the number of chunks.
@@ -125,6 +152,45 @@ impl<T: DeviceCopy> PartitionOffsets<T> {
         self.radix_bits
     }
 
+    /// Returns the length of the requested partition.
+    ///
+    /// If the offsets are accessible by the CPU (i.e., in DerefMem), then the
+    /// length is returned. Otherwise, the function returns an error.
+    pub fn partition_len(&self, partition_id: u32) -> Result<usize> {
+        let fanout = self.fanout();
+        if partition_id >= fanout {
+            Err(ErrorKind::InvalidArgument(
+                "Invalid partition ID".to_string(),
+            ))?;
+        }
+
+        let offsets: &[u64] = match (&self.offsets).try_into() {
+            Ok(offsets) => offsets,
+            _ => Err(ErrorKind::RuntimeError(
+                "Trying to dereference device memory!".to_string(),
+            ))?,
+        };
+        let padding_len = self.padding_len() as usize;
+        let padded_len = self
+            .padded_len()
+            .ok_or_else(|| ErrorKind::RuntimeError("Data length not yet computed".to_string()))?;
+
+        let len = (0..self.chunks)
+            .map(|chunk_id| {
+                let ofi = chunk_id as usize * fanout as usize + partition_id as usize;
+                let begin = offsets[ofi] as usize;
+                let end = if ofi + 1 < offsets.len() {
+                    offsets[ofi + 1] as usize - padding_len
+                } else {
+                    padded_len
+                };
+                end - begin
+            })
+            .sum();
+
+        Ok(len)
+    }
+
     /// Returns the number of padding elements per partition.
     pub(super) fn padding_len(&self) -> u32 {
         padding_len::<T>()
@@ -142,6 +208,7 @@ impl<T: DeviceCopy> EnsurePhysicallyBacked for PartitionOffsets<T> {
 pub struct PartitionOffsetsChunksMut<'a, T: DeviceCopy> {
     // Note: unsafe slices, must convert back to LaunchableSlice
     offsets_chunks: ChunksMut<'a, u64>,
+    data_len: Option<&'a mut Option<usize>>,
     chunk_id: u32,
     chunks: u32,
     radix_bits: u32,
@@ -160,6 +227,7 @@ impl<'a, T: DeviceCopy> PartitionOffsetsChunksMut<'a, T> {
 
             Self {
                 offsets_chunks,
+                data_len: Some(&mut offsets.data_len),
                 chunk_id: 0,
                 chunks: offsets.chunks,
                 radix_bits: offsets.radix_bits,
@@ -180,6 +248,7 @@ impl<'a, T: DeviceCopy> Iterator for PartitionOffsetsChunksMut<'a, T> {
 
             Some(PartitionOffsetsMutSlice {
                 offsets: o.as_launchable_mut_slice(),
+                data_len: self.data_len.take(),
                 chunk_id,
                 chunks: self.chunks,
                 radix_bits: self.radix_bits,
@@ -200,6 +269,7 @@ pub struct PartitionOffsetsMutSlice<'a, T: DeviceCopy> {
     pub(super) chunk_id: u32,
     pub(super) chunks: u32,
     pub(super) radix_bits: u32,
+    data_len: Option<&'a mut Option<usize>>,
     phantom_data: std::marker::PhantomData<T>,
 }
 
@@ -207,6 +277,16 @@ impl<'a, T: DeviceCopy> PartitionOffsetsMutSlice<'a, T> {
     /// Returns the number of padding elements per partition.
     pub(super) fn padding_len(&self) -> u32 {
         padding_len::<T>()
+    }
+
+    /// Sets the total data length of PartitionOffsets
+    ///
+    /// The length must be set by the prefix sum function. `set_data_len` must
+    /// be called on all chunks,  as only one chunk has the mutable reference.
+    pub(super) fn set_data_len(&mut self, len: usize) {
+        if let Some(ref mut this_len) = self.data_len {
+            **this_len = Some(len);
+        }
     }
 }
 
@@ -219,6 +299,7 @@ impl<'a, T: DeviceCopy> PartitionOffsetsMutSlice<'a, T> {
 ///
 /// # Invariants
 ///
+///  - `len` must match in `PartitionOffsets`
 ///  - `radix_bits` must match in `GpuRadixPartitioner`.
 ///  - `max_chunks` must equal the maximum number of chunks computed at runtime
 ///     (e.g., the grid size).

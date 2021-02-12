@@ -419,6 +419,8 @@ macro_rules! impl_cpu_radix_partition_for_type {
                                 ))?;
                     }
 
+                    partition_offsets.set_data_len(partition_attr.total_data_len);
+
                     let (prefix_sum_fn, tmp_partition_offsets):
                         (
                             unsafe extern "C" fn(*mut PrefixSumArgs, u32, u32),
