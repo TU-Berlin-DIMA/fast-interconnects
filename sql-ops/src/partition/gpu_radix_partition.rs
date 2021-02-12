@@ -178,6 +178,8 @@ pub trait GpuRadixPartitionable: Sized + DeviceCopy {
         stream: &Stream,
     ) -> Result<()>;
 
+    fn allocate_partition_state_impl(rp: &mut GpuRadixPartitioner, pass: RadixPass) -> Result<()>;
+
     fn partition_impl(
         rp: &mut GpuRadixPartitioner,
         pass: RadixPass,
@@ -356,7 +358,10 @@ enum RadixPartitionState {
         offsets_buffer: DeviceBuffer<u32>,
         swwc_buffer: DeviceBuffer<i8>,
     },
-    HSSWWC(DeviceBuffer<i8>),
+    HSSWWC {
+        device_memory_buffers: DeviceBuffer<i8>,
+        buffer_bytes_per_block: usize,
+    },
 }
 
 #[derive(Debug)]
@@ -368,6 +373,7 @@ pub struct GpuRadixPartitioner {
     partition_state: RadixPartitionState,
     grid_size: GridSize,
     block_size: BlockSize,
+    rp_block_size: BlockSize,
     dmem_buffer_bytes: usize,
 }
 
@@ -401,11 +407,28 @@ impl GpuRadixPartitioner {
             GpuRadixPartitionAlgorithm::HSSWWC
             | GpuRadixPartitionAlgorithm::HSSWWCv2
             | GpuRadixPartitionAlgorithm::HSSWWCv3
-            | GpuRadixPartitionAlgorithm::HSSWWCv4 => {
-                RadixPartitionState::HSSWWC(unsafe { DeviceBuffer::uninitialized(0)? })
-            }
+            | GpuRadixPartitionAlgorithm::HSSWWCv4 => RadixPartitionState::HSSWWC {
+                device_memory_buffers: unsafe { DeviceBuffer::uninitialized(0)? },
+                buffer_bytes_per_block: 0,
+            },
             _ => RadixPartitionState::None,
         };
+
+        let rp_block_size = BlockSize::from(cmp::min(
+            block_size.x,
+            match partition_algorithm {
+                GpuRadixPartitionAlgorithm::NC => 1024,
+                GpuRadixPartitionAlgorithm::LASWWC => 1024,
+                GpuRadixPartitionAlgorithm::SSWWC => 1024,
+                GpuRadixPartitionAlgorithm::SSWWCNT => 1024,
+                GpuRadixPartitionAlgorithm::SSWWCv2 => 1024,
+                GpuRadixPartitionAlgorithm::SSWWCv2G => 1024,
+                GpuRadixPartitionAlgorithm::HSSWWC => 512,
+                GpuRadixPartitionAlgorithm::HSSWWCv2 => 512,
+                GpuRadixPartitionAlgorithm::HSSWWCv3 => 512,
+                GpuRadixPartitionAlgorithm::HSSWWCv4 => 512,
+            },
+        ));
 
         Ok(Self {
             radix_bits,
@@ -415,6 +438,7 @@ impl GpuRadixPartitioner {
             partition_state,
             grid_size: grid_size.clone(),
             block_size: block_size.clone(),
+            rp_block_size,
             dmem_buffer_bytes,
         })
     }
@@ -534,6 +558,22 @@ impl GpuRadixPartitioner {
             partition_offsets,
             stream,
         )
+    }
+
+    /// Preallocates the internal state of `partition`
+    ///
+    /// Some partitioning variants use GPU memory buffers to hold internal state
+    /// (e.g., HSSWWC). This state is lazy-allocated by the function and cached
+    /// internally between function calls.
+    ///
+    /// `preallocate_partition_state` allows eager allocation of the state for
+    /// optimization purposes. Specifically, it's sometimes possible to overlap
+    /// the memory allocation with `prefix_sum` computation.
+    pub fn preallocate_partition_state<T: GpuRadixPartitionable>(
+        &mut self,
+        pass: RadixPass,
+    ) -> Result<()> {
+        T::allocate_partition_state_impl(self, pass)
     }
 
     /// Radix-partitions a relation by its key attribute.
@@ -779,7 +819,10 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     let ignore_bits = rp.radix_bits.pass_ignore_bits(pass);
                     let grid_size = rp.grid_size.clone();
                     let block_size = rp.block_size.clone();
-                    let canonical_chunk_len = partition_input_chunk::input_chunk_size::<$Type>(src_partition_attr.len(), partition_offsets.num_chunks())?;
+                    let canonical_chunk_len = partition_input_chunk::input_chunk_size::<$Type>(
+                        src_partition_attr.len(),
+                        partition_offsets.num_chunks()
+                        )?;
 
                     let tmp_partition_offsets = if let Some(ref mut local_offsets) = partition_offsets.local_offsets {
                         local_offsets.as_launchable_mut_ptr()
@@ -974,6 +1017,72 @@ macro_rules! impl_gpu_radix_partition_for_type {
                 }
             }
 
+            fn allocate_partition_state_impl(
+                    rp: &mut GpuRadixPartitioner,
+                    pass: RadixPass,
+                ) -> Result<()> {
+
+                    let grid_size = rp.grid_size.clone();
+                    let rp_block_size = rp.rp_block_size.clone();
+                    let device = CurrentContext::get_device()?;
+                    let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
+                    let fanout_u32 = rp.radix_bits.pass_fanout(pass).unwrap();
+
+                    let partition_state = mem::replace(&mut rp.partition_state, RadixPartitionState::None);
+                    let partition_state = match partition_state {
+                        RadixPartitionState::SSWWCv2G { mut offsets_buffer, mut swwc_buffer } => {
+                            let swwc_bytes = grid_size.x as usize
+                                * fanout_u32 as usize
+                                * constants::GPU_CACHE_LINE_SIZE as usize;
+                            let offsets_len = grid_size.x as usize
+                                * fanout_u32 as usize * 3;
+
+                            if swwc_buffer.len() < swwc_bytes {
+                                DeviceBuffer::drop(swwc_buffer).map_err(|(e, _)| e)?;
+                                swwc_buffer = unsafe { DeviceBuffer::uninitialized(swwc_bytes)? };
+                            };
+
+                            if offsets_buffer.len() < offsets_len {
+                                DeviceBuffer::drop(offsets_buffer).map_err(|(e, _)| e)?;
+                                offsets_buffer = unsafe { DeviceBuffer::uninitialized(offsets_len)? };
+                            };
+
+                            let state = RadixPartitionState::SSWWCv2G { offsets_buffer, swwc_buffer };
+
+                            state
+                        },
+                        state @ _ => state,
+                    };
+                    rp.partition_state = partition_state;
+
+                    let dmem_buffer_bytes_per_block = match rp.partition_algorithm {
+                        GpuRadixPartitionAlgorithm::HSSWWC
+                            | GpuRadixPartitionAlgorithm::HSSWWCv2
+                            | GpuRadixPartitionAlgorithm::HSSWWCv3 => {
+                                rp.dmem_buffer_bytes * fanout_u32 as usize
+                            },
+                        GpuRadixPartitionAlgorithm::HSSWWCv4 => {
+                            let warps_per_block = rp_block_size.x / warp_size;
+                            rp.dmem_buffer_bytes * (fanout_u32 + warps_per_block) as usize
+                        },
+                        _ => 0
+                    };
+
+                    if let RadixPartitionState::HSSWWC { ref device_memory_buffers, .. } = rp.partition_state {
+                        let global_dmem_buffer_bytes = dmem_buffer_bytes_per_block as usize * grid_size.x as usize;
+
+                        if device_memory_buffers.len() < global_dmem_buffer_bytes {
+                            let new_buffer = unsafe { DeviceBuffer::uninitialized(global_dmem_buffer_bytes)? };
+                            rp.partition_state = RadixPartitionState::HSSWWC{
+                                device_memory_buffers: new_buffer,
+                                buffer_bytes_per_block: dmem_buffer_bytes_per_block
+                            };
+                        }
+                    };
+
+                Ok(())
+            }
+
             paste::item! {
                 fn partition_impl(
                     rp: &mut GpuRadixPartitioner,
@@ -1037,87 +1146,31 @@ macro_rules! impl_gpu_radix_partition_for_type {
 
                     let module = *crate::MODULE;
                     let grid_size = rp.grid_size.clone();
+                    let rp_block_size = rp.rp_block_size.clone();
                     let device = CurrentContext::get_device()?;
-                    let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
                     let max_shared_mem_bytes =
                         device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
                     let fanout_u32 = rp.radix_bits.pass_fanout(pass).unwrap();
                     let ignore_bits = rp.radix_bits.pass_ignore_bits(pass);
                     let data_len = partition_attr.len();
 
-                    let block_size = rp.block_size.clone();
-                    let rp_block_size: u32 = cmp::min(
-                        block_size.x,
-                        match rp.partition_algorithm {
-                            GpuRadixPartitionAlgorithm::NC => 1024,
-                            GpuRadixPartitionAlgorithm::LASWWC => 1024,
-                            GpuRadixPartitionAlgorithm::SSWWC => 1024,
-                            GpuRadixPartitionAlgorithm::SSWWCNT => 1024,
-                            GpuRadixPartitionAlgorithm::SSWWCv2 => 1024,
-                            GpuRadixPartitionAlgorithm::SSWWCv2G => 1024,
-                            GpuRadixPartitionAlgorithm::HSSWWC => 512,
-                            GpuRadixPartitionAlgorithm::HSSWWCv2 => 512,
-                            GpuRadixPartitionAlgorithm::HSSWWCv3 => 512,
-                            GpuRadixPartitionAlgorithm::HSSWWCv4 => 512,
-                        });
-
-                    let partition_state = mem::replace(&mut rp.partition_state, RadixPartitionState::None);
-                    let (tmp_partition_offsets, l2_cache_buffers, partition_state) = match partition_state {
-                        RadixPartitionState::SSWWCv2G { mut offsets_buffer, mut swwc_buffer } => {
-                            let swwc_bytes = grid_size.x as usize
-                                * fanout_u32 as usize
-                                * constants::GPU_CACHE_LINE_SIZE as usize;
-                            let offsets_len = grid_size.x as usize
-                                * fanout_u32 as usize * 3;
-
-                            if swwc_buffer.len() < swwc_bytes {
-                                DeviceBuffer::drop(swwc_buffer).map_err(|(e, _)| e)?;
-                                swwc_buffer = unsafe { DeviceBuffer::uninitialized(swwc_bytes)? };
-                            };
-
-                            if offsets_buffer.len() < offsets_len {
-                                DeviceBuffer::drop(offsets_buffer).map_err(|(e, _)| e)?;
-                                offsets_buffer = unsafe { DeviceBuffer::uninitialized(offsets_len)? };
-                            };
-
+                    Self::allocate_partition_state_impl(rp, pass)?;
+                    let (tmp_partition_offsets, l2_cache_buffers, device_memory_buffers, device_memory_buffer_bytes) = match &rp.partition_state {
+                        RadixPartitionState::SSWWCv2G { offsets_buffer, swwc_buffer } => {
                             let offsets_ptr = offsets_buffer.as_launchable_ptr();
                             let swwc_ptr = swwc_buffer.as_launchable_ptr();
-                            let state = RadixPartitionState::SSWWCv2G { offsets_buffer, swwc_buffer };
 
-                            (offsets_ptr, swwc_ptr, state)
+                            (offsets_ptr, swwc_ptr, LaunchablePtr::null(), 0)
                         },
-                        state @ _ => (LaunchablePtr::null(), LaunchablePtr::null(), state),
-                    };
-                    rp.partition_state = partition_state;
-
-                    let dmem_buffer_bytes_per_block = match rp.partition_algorithm {
-                        GpuRadixPartitionAlgorithm::HSSWWC
-                            | GpuRadixPartitionAlgorithm::HSSWWCv2
-                            | GpuRadixPartitionAlgorithm::HSSWWCv3 => {
-                                rp.dmem_buffer_bytes as u64 * fanout_u32 as u64
-                            },
-                        GpuRadixPartitionAlgorithm::HSSWWCv4 => {
-                            let warps_per_block = block_size.x / warp_size;
-                            rp.dmem_buffer_bytes as u64 * (fanout_u32 + warps_per_block) as u64
-                        },
-                        _ => 0
-                    };
-
-                    let device_memory_buffers = if let RadixPartitionState::HSSWWC(ref buffer) = rp.partition_state {
-                        let global_dmem_buffer_bytes = dmem_buffer_bytes_per_block as usize * grid_size.x as usize;
-
-                        if buffer.len() < global_dmem_buffer_bytes {
-                            let new_buffer = unsafe { DeviceBuffer::uninitialized(global_dmem_buffer_bytes)? };
-                            let ptr = new_buffer.as_launchable_ptr();
-                            rp.partition_state = RadixPartitionState::HSSWWC(new_buffer);
-                            ptr
+                        RadixPartitionState::HSSWWC{device_memory_buffers, buffer_bytes_per_block} => {
+                            (
+                                LaunchablePtr::null(),
+                                LaunchablePtr::null(),
+                                device_memory_buffers.as_launchable_ptr(),
+                                *buffer_bytes_per_block as u64
+                            )
                         }
-                        else {
-                            buffer.as_launchable_ptr()
-                        }
-                    }
-                    else {
-                        LaunchablePtr::null()
+                        _ => (LaunchablePtr::null(), LaunchablePtr::null(), LaunchablePtr::null(), 0),
                     };
 
                     let partition_offsets_ptr = if let Some(ref local_offsets) = partition_offsets.local_offsets {
@@ -1143,7 +1196,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                         tmp_partition_offsets,
                         l2_cache_buffers,
                         device_memory_buffers,
-                        device_memory_buffer_bytes: dmem_buffer_bytes_per_block,
+                        device_memory_buffer_bytes,
                         partitioned_relation: partitioned_relation.relation.as_launchable_mut_ptr().as_void(),
                     };
 
