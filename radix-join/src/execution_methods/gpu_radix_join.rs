@@ -11,6 +11,7 @@
 use crate::error::{ErrorKind, Result};
 use crate::measurement::harness::RadixJoinPoint;
 use data_store::join_data::JoinData;
+use numa_gpu::error::Result as NumaGpuResult;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::cuda_wrapper;
@@ -38,6 +39,45 @@ use std::iter;
 use std::mem;
 use std::sync::Arc;
 use std::time::Instant;
+
+// Helper struct that stores state of 2nd partitioning passes. Memory
+// allocations occur asynchronously in parallel to partitioning.
+struct StreamState<T: DeviceCopy> {
+    stream: Stream,
+    event: Event,
+    radix_prnr_2nd: GpuRadixPartitioner,
+    radix_join: cuda_radix_join::CudaRadixJoin,
+    cached_inner_key: Mem<T>,
+    cached_inner_pay: Mem<T>,
+    cached_outer_key: Mem<T>,
+    cached_outer_pay: Mem<T>,
+    inner_rel_partition_offsets_2nd: PartitionOffsets<Tuple<T, T>>,
+    outer_rel_partition_offsets_2nd: PartitionOffsets<Tuple<T, T>>,
+    inner_rel_partitions_2nd: PartitionedRelation<Tuple<T, T>>,
+    outer_rel_partitions_2nd: PartitionedRelation<Tuple<T, T>>,
+    join_task_assignments: Mem<u32>,
+    join_result_sums: DeviceBuffer<i64>,
+}
+
+impl<T: DeviceCopy> MemLock for StreamState<T> {
+    fn mlock(&mut self) -> NumaGpuResult<()> {
+        self.cached_inner_key.mlock()?;
+        self.cached_inner_pay.mlock()?;
+        self.cached_outer_key.mlock()?;
+        self.cached_outer_pay.mlock()?;
+        self.inner_rel_partition_offsets_2nd.mlock()?;
+        self.outer_rel_partition_offsets_2nd.mlock()?;
+        self.inner_rel_partitions_2nd.mlock()?;
+        self.outer_rel_partitions_2nd.mlock()?;
+        self.join_task_assignments.mlock()?;
+
+        Ok(())
+    }
+
+    fn munlock(&mut self) -> NumaGpuResult<()> {
+        unimplemented!();
+    }
+}
 
 pub fn gpu_radix_join<T>(
     data: &mut JoinData<T>,
@@ -134,6 +174,11 @@ where
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         Allocator::mem_alloc_fn(partitions_mem_type.clone()),
     );
+
+    inner_rel_partitions.mlock()?;
+    outer_rel_partitions.mlock()?;
+    inner_rel_partition_offsets.mlock()?;
+    outer_rel_partition_offsets.mlock()?;
 
     let partitions_malloc_time = partitions_malloc_timer.elapsed();
 
@@ -258,23 +303,6 @@ where
         })?;
 
     // Memory allocations occur asynchronously in parallel to partitioning
-    struct StreamState<T: DeviceCopy> {
-        stream: Stream,
-        event: Event,
-        radix_prnr_2nd: GpuRadixPartitioner,
-        radix_join: cuda_radix_join::CudaRadixJoin,
-        cached_inner_key: Mem<T>,
-        cached_inner_pay: Mem<T>,
-        cached_outer_key: Mem<T>,
-        cached_outer_pay: Mem<T>,
-        inner_rel_partition_offsets_2nd: PartitionOffsets<Tuple<T, T>>,
-        outer_rel_partition_offsets_2nd: PartitionOffsets<Tuple<T, T>>,
-        inner_rel_partitions_2nd: PartitionedRelation<Tuple<T, T>>,
-        outer_rel_partitions_2nd: PartitionedRelation<Tuple<T, T>>,
-        join_task_assignments: Mem<u32>,
-        join_result_sums: DeviceBuffer<i64>,
-    };
-
     let mut stream_states = iter::repeat_with(|| {
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
         let mut join_result_sums = unsafe { DeviceBuffer::uninitialized(join_result_sums_len)? };
@@ -339,6 +367,10 @@ where
     })
     .take(NUM_STREAMS)
     .collect::<Result<Vec<_>>>()?;
+
+    stream_states
+        .iter_mut()
+        .try_for_each(|state| state.mlock())?;
 
     stream.synchronize()?;
     Stream::drop(stream).map_err(|(e, _)| e)?;
