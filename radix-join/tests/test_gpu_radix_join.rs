@@ -94,6 +94,7 @@ fn run_gpu_radix_join_validate_sum(
         threads,
         CpuAffinity::default(),
         MemType::CudaPinnedMem,
+        MemType::CudaDevMem,
         (&grid_size, &block_size),
         (&grid_size, &block_size),
     )?;

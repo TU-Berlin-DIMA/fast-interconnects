@@ -89,6 +89,7 @@ pub fn gpu_radix_join<T>(
     threads: usize,
     cpu_affinity: CpuAffinity,
     partitions_mem_type: MemType,
+    stream_state_mem_type: MemType,
     partition_dim: (&GridSize, &BlockSize),
     join_dim: (&GridSize, &BlockSize),
 ) -> Result<(i64, RadixJoinPoint)>
@@ -180,10 +181,9 @@ where
     inner_rel_partition_offsets.mlock()?;
     outer_rel_partition_offsets.mlock()?;
 
-    let partitions_malloc_time = partitions_malloc_timer.elapsed();
-
     stream.synchronize()?;
 
+    let partitions_malloc_time = partitions_malloc_timer.elapsed();
     let prefix_sum_timer = Instant::now();
 
     match histogram_algorithms[0] {
@@ -326,40 +326,52 @@ where
                 stream_grid_size,
                 stream_block_size,
             )?,
-            cached_inner_key: Allocator::alloc_mem(MemType::CudaDevMem, max_inner_partition_len),
-            cached_inner_pay: Allocator::alloc_mem(MemType::CudaDevMem, max_inner_partition_len),
-            cached_outer_key: Allocator::alloc_mem(MemType::CudaDevMem, max_outer_partition_len),
-            cached_outer_pay: Allocator::alloc_mem(MemType::CudaDevMem, max_outer_partition_len),
+            cached_inner_key: Allocator::alloc_mem(
+                stream_state_mem_type.clone(),
+                max_inner_partition_len,
+            ),
+            cached_inner_pay: Allocator::alloc_mem(
+                stream_state_mem_type.clone(),
+                max_inner_partition_len,
+            ),
+            cached_outer_key: Allocator::alloc_mem(
+                stream_state_mem_type.clone(),
+                max_outer_partition_len,
+            ),
+            cached_outer_pay: Allocator::alloc_mem(
+                stream_state_mem_type.clone(),
+                max_outer_partition_len,
+            ),
             inner_rel_partition_offsets_2nd: PartitionOffsets::new(
                 histogram_algorithms[1].into(),
                 max_chunks_2nd,
                 radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
-                Allocator::mem_alloc_fn(MemType::CudaDevMem),
+                Allocator::mem_alloc_fn(stream_state_mem_type.clone()),
             ),
             outer_rel_partition_offsets_2nd: PartitionOffsets::new(
                 histogram_algorithms[1].into(),
                 max_chunks_2nd,
                 radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
-                Allocator::mem_alloc_fn(MemType::CudaDevMem),
+                Allocator::mem_alloc_fn(stream_state_mem_type.clone()),
             ),
             inner_rel_partitions_2nd: PartitionedRelation::new(
                 max_inner_partition_len,
                 histogram_algorithms[1].into(),
                 radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
                 max_chunks_2nd,
-                Allocator::mem_alloc_fn(MemType::CudaDevMem),
-                Allocator::mem_alloc_fn(MemType::CudaDevMem),
+                Allocator::mem_alloc_fn(stream_state_mem_type.clone()),
+                Allocator::mem_alloc_fn(stream_state_mem_type.clone()),
             ),
             outer_rel_partitions_2nd: PartitionedRelation::new(
                 max_outer_partition_len,
                 histogram_algorithms[1].into(),
                 radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
                 max_chunks_2nd,
-                Allocator::mem_alloc_fn(MemType::CudaDevMem),
-                Allocator::mem_alloc_fn(MemType::CudaDevMem),
+                Allocator::mem_alloc_fn(stream_state_mem_type.clone()),
+                Allocator::mem_alloc_fn(stream_state_mem_type.clone()),
             ),
             join_task_assignments: Allocator::alloc_mem(
-                MemType::CudaDevMem,
+                stream_state_mem_type.clone(),
                 join_dim.0.x as usize + 1,
             ),
             join_result_sums,
@@ -368,14 +380,19 @@ where
     .take(NUM_STREAMS)
     .collect::<Result<Vec<_>>>()?;
 
-    stream_states
-        .iter_mut()
-        .try_for_each(|state| state.mlock())?;
-
     stream.synchronize()?;
     Stream::drop(stream).map_err(|(e, _)| e)?;
 
     let partition_time = partition_timer.elapsed();
+    let state_malloc_timer = Instant::now();
+
+    // Populate the pages with mlock(); ideally this would be taken care of by a
+    // NUMA-aware malloc implementation
+    stream_states
+        .iter_mut()
+        .try_for_each(|state| state.mlock())?;
+
+    let state_malloc_time = state_malloc_timer.elapsed();
     let join_timer = Instant::now();
 
     for (partition_id, stream_id) in
@@ -501,6 +518,7 @@ where
         partition_ns: Some(partition_time.as_nanos() as f64),
         join_ns: Some(join_time.as_nanos() as f64),
         partitions_malloc_ns: Some(partitions_malloc_time.as_nanos() as f64),
+        state_malloc_ns: Some(state_malloc_time.as_nanos() as f64),
     };
 
     Ok((sum, data_point))

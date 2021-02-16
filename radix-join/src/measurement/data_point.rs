@@ -35,6 +35,8 @@ pub struct DataPoint {
     pub partitions_memory_location: Option<Vec<u16>>,
     #[serde(serialize_with = "serialize_vec")]
     pub partitions_proportions: Option<Vec<usize>>,
+    pub state_memory_type: Option<ArgMemType>,
+    pub state_memory_location: Option<u16>,
     pub tuple_bytes: Option<ArgTupleBytes>,
     pub relation_memory_type: Option<ArgMemType>,
     pub huge_pages: Option<bool>,
@@ -52,6 +54,7 @@ pub struct DataPoint {
     pub partition_ns: Option<f64>,
     pub join_ns: Option<f64>,
     pub partitions_malloc_ns: Option<f64>,
+    pub state_malloc_ns: Option<f64>,
     pub relation_malloc_ns: Option<f64>,
     pub relation_gen_ns: Option<f64>,
 }

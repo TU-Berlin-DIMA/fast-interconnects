@@ -11,8 +11,9 @@
 use data_store::join_data::{JoinDataBuilder, JoinDataGenFn};
 use datagen::relation::KeyAttribute;
 use num_rational::Ratio;
+use numa_gpu::runtime::allocator::MemType;
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
-use numa_gpu::runtime::hw_info::cpu_codename;
+use numa_gpu::runtime::hw_info::{cpu_codename, NvidiaDriverInfo};
 use numa_gpu::runtime::numa::NodeRatio;
 use radix_join::error::Result;
 use radix_join::execution_methods::gpu_radix_join::gpu_radix_join;
@@ -36,13 +37,15 @@ use structopt::StructOpt;
 
 fn main() -> Result<()> {
     // Parse commandline arguments
-    let cmd = CmdOpt::from_args();
+    let mut cmd = CmdOpt::from_args();
 
     // Initialize CUDA
     rustacuda::init(CudaFlags::empty())?;
     let device = Device::get_device(cmd.device_id.into())?;
     let _context =
         Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
+
+    cmd.set_state_mem(device.numa_node()? as u16);
 
     match cmd.tuple_bytes {
         ArgTupleBytes::Bytes8 => {
@@ -119,6 +122,16 @@ struct CmdOpt {
         require_delimiter = true
     )]
     partitions_proportions: Vec<usize>,
+
+    /// Use NUMA memory to allocate the on-GPU state, instead of CUDA device memory.
+    #[structopt(long = "use-numa-mem-state")]
+    use_numa_mem_state: Option<bool>,
+
+    #[structopt(skip = ArgMemType::Device)]
+    state_mem_type: ArgMemType,
+
+    #[structopt(skip)]
+    state_location: u16,
 
     /// Allocate memory for inner relation on CPU or GPU (See numactl -H and CUDA device list)
     #[structopt(long = "inner-rel-location", default_value = "0")]
@@ -273,6 +286,17 @@ struct CmdOpt {
     cpu_affinity: Option<PathBuf>,
 }
 
+impl CmdOpt {
+    fn set_state_mem(&mut self, state_location: u16) {
+        self.state_mem_type = if let Some(true) = self.use_numa_mem_state {
+            ArgMemType::Numa
+        } else {
+            ArgMemType::Device
+        };
+        self.state_location = state_location;
+    }
+}
+
 fn is_percent(x: String) -> std::result::Result<(), String> {
     x.parse::<i32>()
         .map_err(|_| {
@@ -361,6 +385,12 @@ where
     let mem_type = cmd.partitions_mem_type;
     let threads = cmd.threads;
 
+    let state_mem_type = match cmd.state_mem_type {
+        ArgMemType::Numa => MemType::NumaMem(cmd.state_location, Some(true)),
+        ArgMemType::Device => MemType::CudaDevMem,
+        _ => unreachable!(),
+    };
+
     // Convert ArgHashingScheme to HashingScheme
     let hashing_scheme = HashingScheme::from(cmd.hashing_scheme);
 
@@ -432,6 +462,7 @@ where
                 threads,
                 cpu_affinity.clone(),
                 partitions_mem_type,
+                state_mem_type.clone(),
                 (&grid_size, &block_size),
                 (&stream_grid_size, &block_size),
             )?;
@@ -576,6 +607,8 @@ impl CmdOptToDataPoint for DataPoint {
             partitions_memory_type: Some(cmd.partitions_mem_type),
             partitions_memory_location: Some(cmd.partitions_location.clone()),
             partitions_proportions: Some(cmd.partitions_proportions.clone()),
+            state_memory_type: Some(cmd.state_mem_type),
+            state_memory_location: Some(cmd.state_location),
             tuple_bytes: Some(cmd.tuple_bytes),
             relation_memory_type: Some(cmd.mem_type),
             huge_pages: cmd.huge_pages,

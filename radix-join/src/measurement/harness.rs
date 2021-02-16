@@ -15,6 +15,7 @@ use std::path::PathBuf;
 #[derive(Debug, Default)]
 pub struct RadixJoinPoint {
     pub partitions_malloc_ns: Option<f64>,
+    pub state_malloc_ns: Option<f64>,
     pub prefix_sum_ns: Option<f64>,
     pub partition_ns: Option<f64>,
     pub join_ns: Option<f64>,
@@ -46,6 +47,7 @@ pub fn measure(
                 partition_ns: p.partition_ns,
                 join_ns: p.join_ns,
                 partitions_malloc_ns: p.partitions_malloc_ns,
+                state_malloc_ns: p.state_malloc_ns,
                 ..template.clone()
             })
         })
