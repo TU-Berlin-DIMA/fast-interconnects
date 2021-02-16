@@ -46,6 +46,8 @@ pub struct DataPoint {
     pub build_bytes: Option<usize>,
     pub probe_tuples: Option<usize>,
     pub probe_bytes: Option<usize>,
+    pub cached_build_tuples: Option<usize>,
+    pub cached_probe_tuples: Option<usize>,
     pub data_distribution: Option<ArgDataDistribution>,
     pub zipf_exponent: Option<f64>,
     pub join_selectivity: Option<f64>,

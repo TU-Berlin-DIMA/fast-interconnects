@@ -13,10 +13,12 @@ use datagen::relation::KeyAttribute;
 use num_rational::Ratio;
 use numa_gpu::runtime::allocator::MemType;
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
-use numa_gpu::runtime::hw_info::{cpu_codename, NvidiaDriverInfo};
+use numa_gpu::runtime::hw_info::NvidiaDriverInfo;
 use numa_gpu::runtime::numa::NodeRatio;
-use radix_join::error::Result;
-use radix_join::execution_methods::gpu_radix_join::gpu_radix_join;
+use radix_join::error::{ErrorKind, Result};
+use radix_join::execution_methods::{
+    gpu_radix_join::gpu_radix_join, gpu_triton_join::gpu_triton_join,
+};
 use radix_join::measurement::data_point::DataPoint;
 use radix_join::measurement::harness::{self, RadixJoinPoint};
 use radix_join::types::*;
@@ -45,7 +47,11 @@ fn main() -> Result<()> {
     let _context =
         Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
 
-    cmd.set_state_mem(device.numa_node()? as u16);
+    let cache_node = device.numa_node()?;
+    let overflow_node = device.numa_memory_affinity()?;
+
+    cmd.set_state_mem(cache_node);
+    cmd.set_partitions_mem(cache_node, overflow_node)?;
 
     match cmd.tuple_bytes {
         ArgTupleBytes::Bytes8 => {
@@ -87,9 +93,7 @@ struct CmdOpt {
     )]
     mem_type: ArgMemType,
 
-    /// Hashing scheme to use in hash table.
-    //   linearprobing: Linear probing (default)
-    //   perfect: Perfect hashing for unique primary keys
+    /// Hashing scheme to use in hash table
     #[structopt(
         long = "hashing-scheme",
         default_value = "LinearProbing",
@@ -98,7 +102,14 @@ struct CmdOpt {
     )]
     hashing_scheme: ArgHashingScheme,
 
-    /// Memory type with which to allocate the partitioned data.
+    /// Memory type with which to allocate the partitioned data
+    ///
+    /// If the `GpuTritonJoinTwoPass` execution method is specified, the default
+    /// value is changed to `DistributedNuma` with the GPU node and closest CPU
+    /// node specified as partitions location. The NUMA nodes can be specified
+    /// explictly with `--partitions-mem-type DistributedNuma` and
+    /// `--partitions-location 255,0`. Here, the first location specifies the
+    /// cache node, and the second location specifies the overflow node.
     #[structopt(
         long = "partitions-mem-type",
         default_value = "Unified",
@@ -107,7 +118,14 @@ struct CmdOpt {
     )]
     partitions_mem_type: ArgMemType,
 
-    /// Allocate memory for the partitioned data on NUMA nodes (e.g.: 0,1,2) or GPU (See numactl -H and CUDA device list)
+    /// NUMA nodes on which the partitioned data is allocated
+    ///
+    /// NUMA nodes are specified as a list (e.g.: 0,1,2). See numactl -H for
+    /// the available NUMA nodes.
+    ///
+    /// The NUMA node list is only used for the `Numa` and `DistributedNuma`
+    /// memory types. Multiple nodes are only valid for the `DistributedNuma`
+    /// memory type.
     #[structopt(
         long = "partitions-location",
         default_value = "0",
@@ -115,7 +133,13 @@ struct CmdOpt {
     )]
     partitions_location: Vec<u16>,
 
-    /// Proportions with which the partitioned data are allocated on multiple nodes; in percent (e.g.: 20,60,20)
+    /// Proportions with which the partitioned data are allocated on multiple nodes
+    ///
+    /// Given as a list of percentages (e.g.: 20,60,20), that should add up to
+    /// 100%.
+    ///
+    /// The proportions are used only for the `DistributedNuma` memory type and
+    /// have no effect on other memory types.
     #[structopt(
         long = "partitions-proportions",
         default_value = "100",
@@ -123,7 +147,18 @@ struct CmdOpt {
     )]
     partitions_proportions: Vec<usize>,
 
-    /// Use NUMA memory to allocate the on-GPU state, instead of CUDA device memory.
+    /// Use NUMA memory to allocate the on-GPU state
+    ///
+    /// Execution methods require state to operate. This includes, for example,
+    /// the partitioned inner and outer relations resulting from the second
+    /// partitioning pass.
+    ///
+    /// By default, state is allocated as CUDA device memory. If this flag is
+    /// enabled, state is instead allocated as NUMA memory in GPU memory using
+    /// `mmap`.
+    ///
+    /// Warning: This option requires cache-coherence, and does not work on
+    /// PCI-e devices.
     #[structopt(long = "use-numa-mem-state")]
     use_numa_mem_state: Option<bool>,
 
@@ -254,7 +289,7 @@ struct CmdOpt {
     /// Join execution strategy.
     #[structopt(
         long = "execution-strategy",
-        default_value = "GpuRJ",
+        default_value = "GpuRadixJoinTwoPass",
         possible_values = &ArgExecutionMethod::variants(),
         case_insensitive = true
     )]
@@ -294,6 +329,27 @@ impl CmdOpt {
             ArgMemType::Device
         };
         self.state_location = state_location;
+    }
+
+    fn set_partitions_mem(&mut self, cache_location: u16, overflow_location: u16) -> Result<()> {
+        if self.execution_method == ArgExecutionMethod::GpuTritonJoinTwoPass {
+            if ArgMemType::DistributedNuma != self.partitions_mem_type {
+                self.partitions_mem_type = ArgMemType::DistributedNuma;
+                self.partitions_location = vec![cache_location, overflow_location];
+                self.partitions_proportions = vec![0, 0];
+            } else if self.partitions_location.len() != 2 {
+                let e = format!(
+                    "Invalid argument: --partitions-location must specify \
+                    exactly two locations when combined with --execution-method \
+                    GpuTritonJoin\n\
+                    The default locations are: --partitions-location {},{}",
+                    cache_location, overflow_location
+                );
+                Err(ErrorKind::InvalidArgument(e))?;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -404,6 +460,13 @@ where
         })
         .collect();
 
+    let partitions_mem_type: MemType = ArgMemTypeHelper {
+        mem_type,
+        node_ratios: node_ratios.clone(),
+        huge_pages,
+    }
+    .into();
+
     // Load file or generate data set
     let (mut join_data, malloc_time, data_gen_time) =
         if let (Some(inner_rel_path), Some(outer_rel_path)) = (
@@ -444,14 +507,7 @@ where
 
     // Create closure that wraps a hash join benchmark function
     let hjc: Box<dyn FnMut() -> Result<RadixJoinPoint>> = match exec_method {
-        ArgExecutionMethod::GpuRJ => Box::new(move || {
-            let partitions_mem_type = ArgMemTypeHelper {
-                mem_type,
-                node_ratios: node_ratios.clone(),
-                huge_pages,
-            }
-            .into();
-
+        ArgExecutionMethod::GpuRadixJoinTwoPass => Box::new(move || {
             let (_result, data_point) = gpu_radix_join(
                 &mut join_data,
                 hashing_scheme,
@@ -461,7 +517,25 @@ where
                 dmem_buffer_bytes,
                 threads,
                 cpu_affinity.clone(),
-                partitions_mem_type,
+                partitions_mem_type.clone(),
+                state_mem_type.clone(),
+                (&grid_size, &block_size),
+                (&stream_grid_size, &block_size),
+            )?;
+
+            Ok(data_point)
+        }),
+        ArgExecutionMethod::GpuTritonJoinTwoPass => Box::new(move || {
+            let (_result, data_point) = gpu_triton_join(
+                &mut join_data,
+                hashing_scheme,
+                histogram_algorithms,
+                partition_algorithms,
+                &radix_bits,
+                dmem_buffer_bytes,
+                threads,
+                cpu_affinity.clone(),
+                partitions_mem_type.clone(),
                 state_mem_type.clone(),
                 (&grid_size, &block_size),
                 (&stream_grid_size, &block_size),
@@ -590,10 +664,10 @@ impl CmdOptToDataPoint for DataPoint {
     fn fill_from_cmd_options(&self, cmd: &CmdOpt) -> Result<DataPoint> {
         // Get device information
         let dev_codename_str = match cmd.execution_method {
-            ArgExecutionMethod::GpuRJ => {
+            ArgExecutionMethod::GpuRadixJoinTwoPass | ArgExecutionMethod::GpuTritonJoinTwoPass => {
                 let device = Device::get_device(cmd.device_id.into())?;
-                vec![cpu_codename()?, device.name()?]
-            }
+                vec![device.name()?]
+            } // CPU execution methods should use: vec![numa_gpu::runtime::hw_info::cpu_codename()?]
         };
 
         let dp = DataPoint {
@@ -608,7 +682,10 @@ impl CmdOptToDataPoint for DataPoint {
             partitions_memory_location: Some(cmd.partitions_location.clone()),
             partitions_proportions: Some(cmd.partitions_proportions.clone()),
             state_memory_type: Some(cmd.state_mem_type),
-            state_memory_location: Some(cmd.state_location),
+            state_memory_location: match cmd.state_mem_type {
+                ArgMemType::Numa | ArgMemType::NumaPinned => Some(cmd.state_location),
+                _ => None,
+            },
             tuple_bytes: Some(cmd.tuple_bytes),
             relation_memory_type: Some(cmd.mem_type),
             huge_pages: cmd.huge_pages,

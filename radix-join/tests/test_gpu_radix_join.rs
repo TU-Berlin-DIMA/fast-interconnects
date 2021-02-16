@@ -8,13 +8,19 @@
  * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
-use data_store::join_data::JoinDataBuilder;
+use data_store::join_data::{JoinData, JoinDataBuilder};
 use datagen::relation::UniformRelation;
+use num_rational::Ratio;
 use numa_gpu::runtime::allocator::{DerefMemType, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
+use numa_gpu::runtime::hw_info::NvidiaDriverInfo;
+use numa_gpu::runtime::numa::NodeRatio;
 use once_cell::sync::Lazy;
+use radix_join::error::Result as RJResult;
 use radix_join::execution_methods::gpu_radix_join::gpu_radix_join;
+use radix_join::measurement::harness::RadixJoinPoint;
 use rustacuda::context::{Context, CurrentContext, UnownedContext};
+use rustacuda::device::Device;
 use rustacuda::function::{BlockSize, GridSize};
 use sql_ops::join::HashingScheme;
 use sql_ops::partition::gpu_radix_partition::{GpuHistogramAlgorithm, GpuRadixPartitionAlgorithm};
@@ -22,6 +28,9 @@ use sql_ops::partition::RadixBits;
 use std::error::Error;
 use std::mem;
 use std::result::Result;
+
+#[cfg(target_arch = "powerpc64")]
+use radix_join::execution_methods::gpu_triton_join::gpu_triton_join;
 
 static mut CUDA_CONTEXT_OWNER: Option<Context> = None;
 static CUDA_CONTEXT: Lazy<UnownedContext> = Lazy::new(|| {
@@ -35,7 +44,9 @@ static CUDA_CONTEXT: Lazy<UnownedContext> = Lazy::new(|| {
     unowned
 });
 
-fn run_gpu_radix_join_validate_sum(
+fn run_gpu_radix_join_validate_sum<JoinFn, PartitionsFn>(
+    join_fn: JoinFn,
+    partitions_fn: PartitionsFn,
     inner_relation_len: usize,
     outer_relation_len: usize,
     radix_bits: RadixBits,
@@ -43,7 +54,24 @@ fn run_gpu_radix_join_validate_sum(
     block_size: BlockSize,
     threads: usize,
     hashing_scheme: HashingScheme,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn Error>>
+where
+    JoinFn: FnOnce(
+        &mut JoinData<i32>,
+        HashingScheme,
+        [GpuHistogramAlgorithm; 2],
+        [GpuRadixPartitionAlgorithm; 2],
+        &RadixBits,
+        usize,
+        usize,
+        CpuAffinity,
+        MemType,
+        MemType,
+        (&GridSize, &BlockSize),
+        (&GridSize, &BlockSize),
+    ) -> RJResult<(i64, RadixJoinPoint)>,
+    PartitionsFn: FnOnce(&Device) -> Result<MemType, Box<dyn Error>>,
+{
     const DMEM_BUFFER_BYTES: usize = 8 * 1024;
 
     let prefix_sum_algorithms = [
@@ -69,7 +97,6 @@ fn run_gpu_radix_join_validate_sum(
             fk_rel_pay
                 .iter_mut()
                 .enumerate()
-                // .for_each(|(i, x)| *x = 1);
                 .for_each(|(i, x)| *x = (i + 1) as i32);
 
             Ok(())
@@ -84,7 +111,9 @@ fn run_gpu_radix_join_validate_sum(
         .outer_len(outer_relation_len);
     let (mut join_data, _, _) = data_builder.build_with_data_gen(data_gen_fn)?;
 
-    let (result_sum, _) = gpu_radix_join(
+    let partitions_mem_type = partitions_fn(&CurrentContext::get_device()?)?;
+
+    let (result_sum, _) = join_fn(
         &mut join_data,
         hashing_scheme,
         prefix_sum_algorithms,
@@ -93,7 +122,7 @@ fn run_gpu_radix_join_validate_sum(
         DMEM_BUFFER_BYTES,
         threads,
         CpuAffinity::default(),
-        MemType::CudaPinnedMem,
+        partitions_mem_type,
         MemType::CudaDevMem,
         (&grid_size, &block_size),
         (&grid_size, &block_size),
@@ -107,9 +136,34 @@ fn run_gpu_radix_join_validate_sum(
     Ok(())
 }
 
+fn partitions_type_normal(_: &Device) -> Result<MemType, Box<dyn Error>> {
+    Ok(MemType::CudaPinnedMem)
+}
+
+#[allow(dead_code)]
+fn partitions_type_cached(device: &Device) -> Result<MemType, Box<dyn Error>> {
+    let cache_node = device.numa_node()?;
+    let overflow_node = device.numa_memory_affinity()?;
+
+    let mem_type = MemType::DistributedNumaMem(Box::new([
+        NodeRatio {
+            node: cache_node,
+            ratio: Ratio::from_integer(0),
+        },
+        NodeRatio {
+            node: overflow_node,
+            ratio: Ratio::from_integer(0),
+        },
+    ]));
+
+    Ok(mem_type)
+}
+
 #[test]
 fn test_gpu_radix_partition_validate_sum_perfect_small_i32() -> Result<(), Box<dyn Error>> {
     run_gpu_radix_join_validate_sum(
+        &gpu_radix_join::<i32>,
+        &partitions_type_normal,
         100_000,
         100_000,
         RadixBits::new(Some(3), Some(3), None),
@@ -123,6 +177,8 @@ fn test_gpu_radix_partition_validate_sum_perfect_small_i32() -> Result<(), Box<d
 #[test]
 fn test_gpu_radix_partition_validate_sum_bucketchaining_small_i32() -> Result<(), Box<dyn Error>> {
     run_gpu_radix_join_validate_sum(
+        &gpu_radix_join::<i32>,
+        &partitions_type_normal,
         100_000,
         100_000,
         RadixBits::new(Some(3), Some(3), None),
@@ -136,6 +192,56 @@ fn test_gpu_radix_partition_validate_sum_bucketchaining_small_i32() -> Result<()
 #[test]
 fn test_gpu_radix_partition_validate_sum_bucketchaining_large_i32() -> Result<(), Box<dyn Error>> {
     run_gpu_radix_join_validate_sum(
+        &gpu_radix_join::<i32>,
+        &partitions_type_normal,
+        (1 << 31) / mem::size_of::<i32>(),
+        (1 << 31) / mem::size_of::<i32>(),
+        RadixBits::new(Some(9), Some(9), None),
+        GridSize::from(8),
+        BlockSize::from(128),
+        1,
+        HashingScheme::BucketChaining,
+    )
+}
+
+#[cfg(target_arch = "powerpc64")]
+#[test]
+fn test_gpu_triton_partition_validate_sum_perfect_small_i32() -> Result<(), Box<dyn Error>> {
+    run_gpu_radix_join_validate_sum(
+        &gpu_triton_join::<i32>,
+        &partitions_type_cached,
+        100_000,
+        100_000,
+        RadixBits::new(Some(3), Some(3), None),
+        GridSize::from(8),
+        BlockSize::from(128),
+        1,
+        HashingScheme::Perfect,
+    )
+}
+
+#[cfg(target_arch = "powerpc64")]
+#[test]
+fn test_gpu_triton_partition_validate_sum_bucketchaining_small_i32() -> Result<(), Box<dyn Error>> {
+    run_gpu_radix_join_validate_sum(
+        &gpu_triton_join::<i32>,
+        &partitions_type_cached,
+        100_000,
+        100_000,
+        RadixBits::new(Some(3), Some(3), None),
+        GridSize::from(8),
+        BlockSize::from(128),
+        1,
+        HashingScheme::BucketChaining,
+    )
+}
+
+#[cfg(target_arch = "powerpc64")]
+#[test]
+fn test_gpu_triton_partition_validate_sum_bucketchaining_large_i32() -> Result<(), Box<dyn Error>> {
+    run_gpu_radix_join_validate_sum(
+        &gpu_triton_join::<i32>,
+        &partitions_type_cached,
         (1 << 31) / mem::size_of::<i32>(),
         (1 << 31) / mem::size_of::<i32>(),
         RadixBits::new(Some(9), Some(9), None),

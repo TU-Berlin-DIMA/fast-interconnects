@@ -19,6 +19,8 @@ pub struct RadixJoinPoint {
     pub prefix_sum_ns: Option<f64>,
     pub partition_ns: Option<f64>,
     pub join_ns: Option<f64>,
+    pub cached_build_tuples: Option<usize>,
+    pub cached_probe_tuples: Option<usize>,
 }
 
 pub fn measure(
@@ -33,6 +35,8 @@ pub fn measure(
         .map(|(_, warm_up)| {
             func().map(|p| DataPoint {
                 warm_up: Some(warm_up),
+                cached_build_tuples: p.cached_build_tuples,
+                cached_probe_tuples: p.cached_probe_tuples,
                 relation_malloc_ns: if warm_up {
                     template.relation_malloc_ns
                 } else {

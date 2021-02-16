@@ -83,7 +83,8 @@ arg_enum! {
 arg_enum! {
     #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
     pub enum ArgExecutionMethod {
-        GpuRJ,
+        GpuRadixJoinTwoPass,
+        GpuTritonJoinTwoPass,
     }
 }
 

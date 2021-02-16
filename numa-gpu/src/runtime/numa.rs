@@ -381,6 +381,11 @@ impl<T> DistributedNumaMemory<T> {
         let page_size = ProcessorCache::page_size();
         let pages = (size + page_size - 1) / page_size;
 
+        {
+            let pages_sum: usize = node_pages.iter().map(|n| n.len).sum();
+            assert_eq!(pages, pages_sum);
+        }
+
         // Bind all pages to their NUMA nodes, and calculate the actual ratios
         let final_node_ratios = node_pages
             .iter()

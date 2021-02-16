@@ -4,19 +4,21 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2020-2021, Clemens Lutz <lutzcle@cml.li>
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright (c) 2021, Clemens Lutz <lutzcle@cml.li>
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 use crate::error::{ErrorKind, Result};
 use crate::measurement::harness::RadixJoinPoint;
 use data_store::join_data::JoinData;
 use numa_gpu::error::Result as NumaGpuResult;
-use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
+use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemAllocFn, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::cuda_wrapper;
+use numa_gpu::runtime::hw_info::ProcessorCache;
 use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::*;
+use numa_gpu::runtime::numa::NodeLen;
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
 use rustacuda::event::{Event, EventFlags};
 use rustacuda::function::{BlockSize, GridSize};
@@ -33,10 +35,12 @@ use sql_ops::partition::{
     PartitionOffsets, PartitionedRelation, RadixBits, RadixPartitionInputChunkable, RadixPass,
     Tuple,
 };
+use std::cell::RefCell;
 use std::cmp;
 use std::convert::TryInto;
 use std::iter;
 use std::mem;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -79,7 +83,7 @@ impl<T: DeviceCopy> MemLock for StreamState<T> {
     }
 }
 
-pub fn gpu_radix_join<T>(
+pub fn gpu_triton_join<T>(
     data: &mut JoinData<T>,
     hashing_scheme: HashingScheme,
     histogram_algorithms: [GpuHistogramAlgorithm; 2],
@@ -111,6 +115,21 @@ where
     CurrentContext::set_shared_memory_config(SharedMemoryConfig::FourByteBankSize)?;
     let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
 
+    let (cache_node, overflow_node) =
+        if let MemType::DistributedNumaMem(nodes) = partitions_mem_type {
+            if let [cache_node, overflow_node] = *nodes {
+                Ok((cache_node.node, overflow_node.node))
+            } else {
+                Err(ErrorKind::InvalidArgument(
+                    "Partitioned memory type define exactly two NUMA nodes".to_string(),
+                ))
+            }
+        } else {
+            Err(ErrorKind::InvalidArgument(
+                "Partitioned memory type must be DistributedNumaMem".to_string(),
+            ))
+        }?;
+
     let boxed_cpu_affinity = Arc::new(cpu_affinity);
     let thread_pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
@@ -132,6 +151,8 @@ where
     let max_chunks_2nd = stream_grid_size.x;
     let join_result_sums_len = (stream_grid_size.x * stream_block_size.x) as usize;
 
+    let offsets_mem_type = MemType::NumaMem(overflow_node, Some(true));
+
     let mut radix_prnr = GpuRadixPartitioner::new(
         histogram_algorithms[0],
         partition_algorithms[0],
@@ -141,40 +162,20 @@ where
         dmem_buffer_bytes,
     )?;
 
-    let mut inner_rel_partitions = PartitionedRelation::new(
-        data.build_relation_key.len(),
-        histogram_algorithms[0].into(),
-        radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
-        max_chunks_1st,
-        Allocator::mem_alloc_fn(partitions_mem_type.clone()),
-        Allocator::mem_alloc_fn(partitions_mem_type.clone()),
-    );
-
-    let mut outer_rel_partitions = PartitionedRelation::new(
-        data.probe_relation_key.len(),
-        histogram_algorithms[0].into(),
-        radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
-        max_chunks_1st,
-        Allocator::mem_alloc_fn(partitions_mem_type.clone()),
-        Allocator::mem_alloc_fn(partitions_mem_type.clone()),
-    );
-
     let mut inner_rel_partition_offsets = PartitionOffsets::new(
         histogram_algorithms[0].into(),
         max_chunks_1st,
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
-        Allocator::mem_alloc_fn(partitions_mem_type.clone()),
+        Allocator::mem_alloc_fn(offsets_mem_type.clone()),
     );
 
     let mut outer_rel_partition_offsets = PartitionOffsets::new(
         histogram_algorithms[0].into(),
         max_chunks_1st,
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
-        Allocator::mem_alloc_fn(partitions_mem_type.clone()),
+        Allocator::mem_alloc_fn(offsets_mem_type.clone()),
     );
 
-    inner_rel_partitions.mlock()?;
-    outer_rel_partitions.mlock()?;
     inner_rel_partition_offsets.mlock()?;
     outer_rel_partition_offsets.mlock()?;
 
@@ -185,6 +186,8 @@ where
 
     match histogram_algorithms[0] {
         GpuHistogramAlgorithm::CpuChunked => {
+            radix_prnr.preallocate_partition_state::<T>(RadixPass::First)?;
+
             let inner_key_slice: &[T] = (&data.build_relation_key).try_into().map_err(|_| {
                 ErrorKind::RuntimeError("Failed to run CPU prefix sum on device memory".into())
             })?;
@@ -237,64 +240,27 @@ where
                 &mut outer_rel_partition_offsets,
                 &stream,
             )?;
+
+            radix_prnr.preallocate_partition_state::<T>(RadixPass::First)?;
         }
     }
 
-    let prefix_sum_event = Event::new(EventFlags::DEFAULT)?;
-    prefix_sum_event.record(&stream)?;
-
-    // Partition inner relation
-    radix_prnr.partition(
-        RadixPass::First,
-        data.build_relation_key.as_launchable_slice(),
-        data.build_relation_payload.as_launchable_slice(),
-        &mut inner_rel_partition_offsets,
-        &mut inner_rel_partitions,
-        &stream,
-    )?;
-
-    // Partition outer relation
-    radix_prnr.partition(
-        RadixPass::First,
-        data.probe_relation_key.as_launchable_slice(),
-        data.probe_relation_payload.as_launchable_slice(),
-        &mut outer_rel_partition_offsets,
-        &mut outer_rel_partitions,
-        &stream,
-    )?;
-
     // Wait for prefix sum to finish before computing max partition lengths and
     // stopping the prefix sum timer.
-    prefix_sum_event.synchronize()?;
+    stream.synchronize()?;
 
-    // Stop the prefix sum timer and start the partitioning timer.
-    //
-    // The timers are stopped/started after scheduling the partitioning kernels.
-    // This enables scheduling the partitioning kernels asynchronously to the
-    // running prefix sum kernels.
-    //
-    // The reason is that some partitioning variants (e.g., HSSWWCv4) allocate
-    // memory, and these allocations should occur in parallel to prefix sum
-    // computation.
-    //
-    // We can't do the timing with CUDA events because some prefix sum variants
-    // run on the CPU instead of the GPU.
-    //
-    // Doing the timer stop/start in a CUDA callback on the stream works, but
-    // lauching callbacks is relatively slow (~2 ms). Guessing that this is
-    // because CUDA lauches a new thread for the callback, but didn't verify.
     let prefix_sum_time = prefix_sum_timer.elapsed();
-    let partition_timer = Instant::now();
+    let state_malloc_timer = Instant::now();
 
     let max_inner_partition_len =
-        (0..inner_rel_partitions.fanout()).try_fold(0, |max, partition_id| {
-            inner_rel_partitions
+        (0..inner_rel_partition_offsets.fanout()).try_fold(0, |max, partition_id| {
+            inner_rel_partition_offsets
                 .partition_len(partition_id)
                 .map(|len| cmp::max(max, len))
         })?;
     let max_outer_partition_len =
-        (0..outer_rel_partitions.fanout()).try_fold(0, |max, partition_id| {
-            outer_rel_partitions
+        (0..outer_rel_partition_offsets.fanout()).try_fold(0, |max, partition_id| {
+            outer_rel_partition_offsets
                 .partition_len(partition_id)
                 .map(|len| cmp::max(max, len))
         })?;
@@ -377,11 +343,41 @@ where
     .take(NUM_STREAMS)
     .collect::<Result<Vec<_>>>()?;
 
-    stream.synchronize()?;
-    Stream::drop(stream).map_err(|(e, _)| e)?;
+    // CudaMemInfo captures all the GPU memory that is allocated before it's
+    // called. The free memory is then used to cache the partitioned relations
+    // in GPU memory.
+    //
+    // In this case, we are trying to capture:
+    //  - CUDA context uses several hundred MB memory
+    //  - radix_prnr state (e.g., HSSWWC and prefix sum)
+    //  - StreamState for all streams
+    let cuda_wrapper::CudaMemInfo { free, total: _ } = cuda_wrapper::mem_info()?;
 
-    let partition_time = partition_timer.elapsed();
-    let state_malloc_timer = Instant::now();
+    // Use one half of space for inner relation, and the other half for outer
+    // relation
+    let cached_len = free / 2 / mem::size_of::<Tuple<T, T>>();
+
+    let (inner_rel_alloc, cached_build_tuples) =
+        build_distributed_partitions_allocator(cached_len, cache_node, overflow_node)?;
+    let mut inner_rel_partitions = PartitionedRelation::new(
+        data.build_relation_key.len(),
+        histogram_algorithms[0].into(),
+        radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
+        max_chunks_1st,
+        inner_rel_alloc,
+        Allocator::mem_alloc_fn(offsets_mem_type.clone()),
+    );
+
+    let (outer_rel_alloc, cached_probe_tuples) =
+        build_distributed_partitions_allocator(cached_len, cache_node, overflow_node)?;
+    let mut outer_rel_partitions = PartitionedRelation::new(
+        data.probe_relation_key.len(),
+        histogram_algorithms[0].into(),
+        radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
+        max_chunks_1st,
+        outer_rel_alloc,
+        Allocator::mem_alloc_fn(offsets_mem_type.clone()),
+    );
 
     // Populate the pages with mlock(); ideally this would be taken care of by a
     // NUMA-aware malloc implementation
@@ -390,6 +386,38 @@ where
         .try_for_each(|state| state.mlock())?;
 
     let state_malloc_time = state_malloc_timer.elapsed();
+    let partitions_malloc_timer = Instant::now();
+
+    inner_rel_partitions.mlock()?;
+    outer_rel_partitions.mlock()?;
+
+    let partitions_malloc_time = partitions_malloc_time + partitions_malloc_timer.elapsed();
+    let partition_timer = Instant::now();
+
+    // Partition inner relation
+    radix_prnr.partition(
+        RadixPass::First,
+        data.build_relation_key.as_launchable_slice(),
+        data.build_relation_payload.as_launchable_slice(),
+        &mut inner_rel_partition_offsets,
+        &mut inner_rel_partitions,
+        &stream,
+    )?;
+
+    // Partition outer relation
+    radix_prnr.partition(
+        RadixPass::First,
+        data.probe_relation_key.as_launchable_slice(),
+        data.probe_relation_payload.as_launchable_slice(),
+        &mut outer_rel_partition_offsets,
+        &mut outer_rel_partitions,
+        &stream,
+    )?;
+
+    stream.synchronize()?;
+    Stream::drop(stream).map_err(|(e, _)| e)?;
+
+    let partition_time = partition_timer.elapsed();
     let join_timer = Instant::now();
 
     for (partition_id, stream_id) in
@@ -516,9 +544,64 @@ where
         join_ns: Some(join_time.as_nanos() as f64),
         partitions_malloc_ns: Some(partitions_malloc_time.as_nanos() as f64),
         state_malloc_ns: Some(state_malloc_time.as_nanos() as f64),
-        cached_build_tuples: None,
-        cached_probe_tuples: None,
+        cached_build_tuples: *cached_build_tuples.borrow(),
+        cached_probe_tuples: *cached_probe_tuples.borrow(),
     };
 
     Ok((sum, data_point))
+}
+
+/// Builds an allocator that caches partitions in GPU memory
+///
+/// The allocator uses GPU memory until `cache_max_len` is reached. Then, the
+/// allocator overflows the remainder to CPU memory.
+///
+/// The functional programming approach used here solves the leaky abstraction
+/// problem. In the execution method, we know how much cache space is available,
+/// but not the required space for the partitioned relation (due to padding).
+/// We embed this knowledge into a closure, instead of leaking the internal
+/// length of `PartitionedRelation`.
+///
+/// Returns a "future" that is set to the cached length when the allocator is
+/// invoked, for logging purposes.
+fn build_distributed_partitions_allocator<T>(
+    cache_max_len: usize,
+    gpu_node: u16,
+    cpu_node: u16,
+) -> Result<(MemAllocFn<Tuple<T, T>>, Rc<RefCell<Option<usize>>>)>
+where
+    T: Clone + Default + DeviceCopy,
+{
+    // Round down to page size
+    let page_size = ProcessorCache::huge_page_size()?;
+    let cache_max_len = (cache_max_len / page_size) * page_size;
+
+    let cached_len_future = Rc::new(RefCell::new(None));
+    let cached_len_setter = cached_len_future.clone();
+
+    let alloc = move |len| {
+        let (cached_len, overflowed_len) = if len <= cache_max_len {
+            (len, 0)
+        } else {
+            (cache_max_len, len - cache_max_len)
+        };
+
+        cached_len_setter.replace(Some(cached_len));
+
+        // FIXME; make DistributedNumaMem use huge pages
+        let mem_type = MemType::DistributedNumaMemWithLen(Box::new([
+            NodeLen {
+                node: gpu_node,
+                len: cached_len,
+            },
+            NodeLen {
+                node: cpu_node,
+                len: overflowed_len,
+            },
+        ]));
+
+        Allocator::alloc_mem(mem_type, len)
+    };
+
+    Ok((Box::new(alloc), cached_len_future))
 }
