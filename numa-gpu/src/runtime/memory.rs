@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018 German Research Center for Artificial Intelligence (DFKI)
+ * Copyright 2018-2021 German Research Center for Artificial Intelligence (DFKI)
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
@@ -276,6 +276,24 @@ impl<T: DeviceCopy> EnsurePhysicallyBacked for Mem<T> {
     }
 }
 
+impl<T: DeviceCopy> MemLock for Mem<T> {
+    fn mlock(&mut self) -> Result<()> {
+        match self {
+            Mem::NumaMem(m) => m.mlock(),
+            Mem::DistributedNumaMem(m) => m.mlock(),
+            _ => Ok(()),
+        }
+    }
+
+    fn munlock(&mut self) -> Result<()> {
+        match self {
+            Mem::NumaMem(m) => m.munlock(),
+            Mem::DistributedNumaMem(m) => m.munlock(),
+            _ => Ok(()),
+        }
+    }
+}
+
 /// A CPU-dereferencable memory type
 ///
 /// These memory types can be directly accessed on the host.
@@ -422,6 +440,24 @@ impl<T: DeviceCopy> TryFrom<Mem<T>> for DerefMem<T> {
 impl<T: DeviceCopy> EnsurePhysicallyBacked for DerefMem<T> {
     fn ensure_physically_backed(&mut self) {
         self.as_mut_slice().ensure_physically_backed();
+    }
+}
+
+impl<T: DeviceCopy> MemLock for DerefMem<T> {
+    fn mlock(&mut self) -> Result<()> {
+        match self {
+            DerefMem::NumaMem(m) => m.mlock(),
+            DerefMem::DistributedNumaMem(m) => m.mlock(),
+            _ => Ok(()),
+        }
+    }
+
+    fn munlock(&mut self) -> Result<()> {
+        match self {
+            DerefMem::NumaMem(m) => m.munlock(),
+            DerefMem::DistributedNumaMem(m) => m.munlock(),
+            _ => Ok(()),
+        }
     }
 }
 
