@@ -15,8 +15,7 @@ use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::hw_info;
 use numa_gpu::runtime::linux_wrapper;
-use numa_gpu::runtime::memory::DerefMem;
-use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
+use numa_gpu::runtime::memory::{DerefMem, MemLock};
 use rustacuda::memory::DeviceCopy;
 use serde_derive::Serialize;
 use serde_repr::Serialize_repr;
@@ -267,6 +266,7 @@ where
                 radix_bits,
                 Allocator::mem_alloc_fn(MemType::SysMem),
             );
+            partition_offsets.mlock()?;
 
             let mut partitioned_relation = PartitionedRelation::new(
                 tuples,
@@ -276,7 +276,7 @@ where
                 Allocator::mem_alloc_fn(output_mem_type.clone()),
                 Allocator::mem_alloc_fn(output_mem_type.clone()),
             );
-            partitioned_relation.ensure_physically_backed();
+            partitioned_relation.mlock()?;
 
             let result: Result<(), Box<dyn Error>> = (0..repeat)
                 .zip(std::iter::once(true).chain(std::iter::repeat(false)))
@@ -370,6 +370,9 @@ where
 
     let mut data_key = Allocator::alloc_deref_mem(mem_type.clone(), tuples);
     let mut data_pay = Allocator::alloc_deref_mem(mem_type.clone(), tuples);
+
+    data_key.mlock()?;
+    data_pay.mlock()?;
 
     match data_distribution {
         ArgDataDistribution::Unique => {

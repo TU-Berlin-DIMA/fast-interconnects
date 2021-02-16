@@ -15,7 +15,7 @@ use num_traits::cast::FromPrimitive;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::linux_wrapper;
-use numa_gpu::runtime::memory::Mem;
+use numa_gpu::runtime::memory::{Mem, MemLock};
 use numa_gpu::runtime::numa::NodeRatio;
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
 use rustacuda::device::DeviceAttribute;
@@ -382,6 +382,7 @@ where
                 Allocator::mem_alloc_fn(output_mem_type.clone()),
                 Allocator::mem_alloc_fn(MemType::CudaPinnedMem),
             );
+            partitioned_relation.mlock()?;
 
             let result: Result<(), Box<dyn Error>> = (0..repeat)
                 .zip(std::iter::once(true).chain(std::iter::repeat(false)))
@@ -392,6 +393,7 @@ where
                         radix_bits,
                         Allocator::mem_alloc_fn(MemType::CudaPinnedMem),
                     );
+                    partition_offsets.mlock()?;
 
                     let prefix_sum_timer = Instant::now();
 
@@ -491,6 +493,9 @@ where
     };
     let mut host_data_key = host_alloc(tuples);
     let mut host_data_pay = host_alloc(tuples);
+
+    host_data_key.mlock()?;
+    host_data_pay.mlock()?;
 
     match data_distribution {
         ArgDataDistribution::Unique => {

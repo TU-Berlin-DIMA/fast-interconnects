@@ -17,8 +17,9 @@
 
 use super::{fanout, HistogramAlgorithmType, Tuple};
 use crate::error::{ErrorKind, Result};
+use numa_gpu::error::Result as NumaGpuResult;
 use numa_gpu::runtime::allocator::MemAllocFn;
-use numa_gpu::runtime::memory::{LaunchableMem, LaunchableMutSlice, Mem};
+use numa_gpu::runtime::memory::{LaunchableMem, LaunchableMutSlice, Mem, MemLock};
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 use rustacuda::memory::DeviceCopy;
 use std::convert::TryInto;
@@ -200,6 +201,26 @@ impl<T: DeviceCopy> PartitionOffsets<T> {
 impl<T: DeviceCopy> EnsurePhysicallyBacked for PartitionOffsets<T> {
     fn ensure_physically_backed(&mut self) {
         self.offsets.ensure_physically_backed();
+    }
+}
+
+impl<T: DeviceCopy> MemLock for PartitionOffsets<T> {
+    fn mlock(&mut self) -> NumaGpuResult<()> {
+        self.offsets.mlock()?;
+        if let Some(ref mut o) = self.local_offsets {
+            o.mlock()?;
+        }
+
+        Ok(())
+    }
+
+    fn munlock(&mut self) -> NumaGpuResult<()> {
+        self.offsets.munlock()?;
+        if let Some(ref mut o) = self.local_offsets {
+            o.munlock()?;
+        }
+
+        Ok(())
     }
 }
 
@@ -548,6 +569,22 @@ impl<T: DeviceCopy> EnsurePhysicallyBacked for PartitionedRelation<T> {
     fn ensure_physically_backed(&mut self) {
         self.relation.ensure_physically_backed();
         self.offsets.ensure_physically_backed();
+    }
+}
+
+impl<T: DeviceCopy> MemLock for PartitionedRelation<T> {
+    fn mlock(&mut self) -> NumaGpuResult<()> {
+        self.relation.mlock()?;
+        self.offsets.mlock()?;
+
+        Ok(())
+    }
+
+    fn munlock(&mut self) -> NumaGpuResult<()> {
+        self.relation.munlock()?;
+        self.offsets.munlock()?;
+
+        Ok(())
     }
 }
 
