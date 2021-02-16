@@ -247,6 +247,7 @@ pub struct NodeRatio {
 }
 
 /// Specifies the requested memory allocation size on the NUMA node
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NodeLen {
     /// The NUMA node
     pub node: u16,
