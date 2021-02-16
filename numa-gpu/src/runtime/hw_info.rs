@@ -14,6 +14,7 @@ use rustacuda::device::{Device, DeviceAttribute};
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::File;
+use std::io::Read;
 use std::io::{BufRead, BufReader};
 use std::mem;
 use std::os::raw::c_int;
@@ -47,6 +48,29 @@ impl ProcessorCache {
     pub fn page_size() -> usize {
         let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
         size as usize
+    }
+
+    /// Returns the transparent huge page size
+    ///
+    /// Example
+    /// ```
+    /// # use numa_gpu::runtime::hw_info::ProcessorCache;
+    /// # use std::error::Error;
+    /// # fn main() -> Result<(), Box<dyn Error>> {
+    /// ProcessorCache::huge_page_size()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn huge_page_size() -> Result<usize> {
+        let mut file = File::open("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size")?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+
+        let huge_page_size: usize = contents.trim().parse().map_err(|_| {
+            ErrorKind::RuntimeError("Failed to parse Linux huge page size".to_string())
+        })?;
+
+        Ok(huge_page_size)
     }
 }
 
