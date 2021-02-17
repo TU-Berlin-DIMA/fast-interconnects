@@ -201,7 +201,7 @@ pub trait NvidiaDriverInfo {
     /// # Ok(())
     /// # }
     /// ```
-    fn numa_node(&self) -> Result<u32>;
+    fn numa_node(&self) -> Result<u16>;
 
     /// Returns if the GPU memory is online as a NUMA node
     ///
@@ -246,10 +246,32 @@ pub trait NvidiaDriverInfo {
     /// # }
     /// ```
     fn numa_mem_size(&self) -> Result<usize>;
+
+    /// Returns the NUMA node of the CPU socket associated with the GPU
+    ///
+    /// # Example
+    /// ```
+    /// # use numa_gpu::runtime::hw_info::NvidiaDriverInfo;
+    /// # use rustacuda::*;
+    /// # use std::error::Error;
+    /// # fn main() -> Result<(), Box<dyn Error>> {
+    /// # init(CudaFlags::empty())?;
+    /// use rustacuda::device::Device;
+    /// let device = Device::get_device(0)?;
+    /// if let Ok(numa_memory_affinity) = device.numa_memory_affinity() {
+    ///   println!("NUMA node: {}", numa_memory_affinity);
+    /// }
+    /// else {
+    ///   println!("NUMA memory affinity is unknown");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn numa_memory_affinity(&self) -> Result<u16>;
 }
 
 impl NvidiaDriverInfo for Device {
-    fn numa_node(&self) -> Result<u32> {
+    fn numa_node(&self) -> Result<u16> {
         let nvidia_info = NvidiaDriverInternal::from_device(self)?;
         Ok(nvidia_info.numa_node)
     }
@@ -263,17 +285,24 @@ impl NvidiaDriverInfo for Device {
         let nvidia_info = NvidiaDriverInternal::from_device(self)?;
         Ok(nvidia_info.mem_size)
     }
+
+    fn numa_memory_affinity(&self) -> Result<u16> {
+        NvidiaDriverInternal::numa_memory_affinity(self)
+    }
 }
 
 /// A private helper struct to load the GPU driver information
 struct NvidiaDriverInternal {
-    numa_node: u32,
+    numa_node: u16,
     is_mem_online: bool,
     mem_size: usize,
 }
 
 impl NvidiaDriverInternal {
-    fn new(device_id: c_int, pci_id: &str) -> Result<Self> {
+    fn from_device(device: &Device) -> Result<Self> {
+        let device_id = unsafe { mem::transmute_copy::<Device, c_int>(device) };
+        let pci_id = Self::pci_id(device)?;
+
         let mut device_path = PathBuf::from_str("/proc/driver/nvidia/gpus")
             .expect("Failed to convert string to a path");
         device_path.push(pci_id);
@@ -331,7 +360,36 @@ impl NvidiaDriverInternal {
         }
     }
 
-    fn from_device(device: &Device) -> Result<Self> {
+    fn numa_memory_affinity(device: &Device) -> Result<u16> {
+        let mut device_path =
+            PathBuf::from_str("/sys/bus/pci/devices").expect("Failed to convert string to a path");
+        let pci_id = Self::pci_id(device)?;
+        device_path.push(pci_id);
+        let device_path = device_path;
+
+        let mut numa_node_path = device_path.clone();
+        numa_node_path.push("numa_node");
+        let mut numa_node_file = File::open(numa_node_path)?;
+
+        let mut contents = String::new();
+        numa_node_file.read_to_string(&mut contents)?;
+
+        let numa_node: i32 = contents
+            .trim()
+            .parse()
+            .expect("Failed to parse NUMA node affinity");
+
+        if numa_node < 0 {
+            Err(
+                ErrorKind::RuntimeError("NUMA memory affinity of GPU not available".to_string())
+                    .into(),
+            )
+        } else {
+            Ok(numa_node as u16)
+        }
+    }
+
+    fn pci_id(device: &Device) -> Result<String> {
         let pci_domain_id = device.get_attribute(DeviceAttribute::PciDomainId)?;
         let pci_bus_id = device.get_attribute(DeviceAttribute::PciBusId)?;
         let pci_device_id = device.get_attribute(DeviceAttribute::PciDeviceId)?;
@@ -342,9 +400,7 @@ impl NvidiaDriverInternal {
             pci_domain_id, pci_bus_id, pci_device_id, pci_function_id
         );
 
-        let device_id = unsafe { mem::transmute_copy::<Device, c_int>(device) };
-
-        Ok(Self::new(device_id, &pci_id)?)
+        Ok(pci_id)
     }
 
     fn read_file<R: BufRead>(reader: R) -> Result<HashMap<String, String>> {
