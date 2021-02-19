@@ -343,15 +343,23 @@ where
     .take(NUM_STREAMS)
     .collect::<Result<Vec<_>>>()?;
 
-    // CudaMemInfo captures all the GPU memory that is allocated before it's
-    // called. The free memory is then used to cache the partitioned relations
-    // in GPU memory.
+    // Populate the pages with mlock(); ideally this would be taken care of by a
+    // NUMA-aware malloc implementation
+    stream_states
+        .iter_mut()
+        .try_for_each(|state| state.mlock())?;
+
+    // Get the amount of free GPU memory. The free memory is then used to cache
+    // the partitioned relations in GPU memory.
     //
     // In this case, we are trying to capture:
     //  - CUDA context uses several hundred MB memory
     //  - radix_prnr state (e.g., HSSWWC and prefix sum)
     //  - StreamState for all streams
-    let cuda_wrapper::CudaMemInfo { free, total: _ } = cuda_wrapper::mem_info()?;
+    //
+    // Note that CudaMemInfo over-reports how much memory is free. The Linux
+    // kernel seems to give a more accurate report (on IBM AC922 with CUDA 10.2).
+    let linux_wrapper::NumaMemInfo { free, .. } = linux_wrapper::numa_mem_info(cache_node)?;
 
     // Use one half of space for inner relation, and the other half for outer
     // relation
@@ -378,12 +386,6 @@ where
         outer_rel_alloc,
         Allocator::mem_alloc_fn(offsets_mem_type.clone()),
     );
-
-    // Populate the pages with mlock(); ideally this would be taken care of by a
-    // NUMA-aware malloc implementation
-    stream_states
-        .iter_mut()
-        .try_for_each(|state| state.mlock())?;
 
     let state_malloc_time = state_malloc_timer.elapsed();
     let partitions_malloc_timer = Instant::now();
