@@ -295,13 +295,16 @@ impl<T> DistributedNumaMemory<T> {
             .iter()
             .enumerate()
             .scan(0, |pages_seen, (i, &NodeLen { node, len })| {
-                let pages = (len * size_of::<T>()) / page_size;
-                *pages_seen += pages;
                 let pages = if i + 1 == node_lengths.len() {
+                    // The last node gets the remainder
                     total_pages - *pages_seen
                 } else {
+                    // Round number of pages down
+                    let pages = (len * size_of::<T>()) / page_size;
+                    *pages_seen += pages;
                     pages
                 };
+
                 Some(NodeLen { node, len: pages })
             })
             .collect();
