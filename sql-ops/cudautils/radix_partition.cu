@@ -930,8 +930,12 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
   if (blockIdx.x + 1U == gridDim.x) {
     data_length = args.data_length - data_offset;
   }
+
+  // Substract the alignment padding to avoid an unsigned integer underflow
+  // when computing the aligned array offsets.
   unsigned long long partitioned_relation_offset =
-      args.partition_offsets[blockIdx.x * fanout];
+      args.partition_offsets[blockIdx.x * fanout] -
+      ALIGN_BYTES / sizeof(Tuple<K, V>);
 
   auto join_attr_data =
       reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
@@ -971,10 +975,18 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
         partitioned_relation_offset);
   }
 
-  // Align the initial slots
+  // Alignment offset for the initial slots
+  const uintptr_t offset_align_mask =
+      ~static_cast<uintptr_t>(ALIGN_BYTES - 1UL);
+
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    // Align the initial slots to cache lines
     auto offset = tmp_partition_offsets[i];
-    uint32_t aligned_fill_state = offset % min(align_tuples, tuples_per_buffer);
+    Tuple<K, V> *base_ptr = reinterpret_cast<Tuple<K, V> *>(
+        reinterpret_cast<uintptr_t>(&partitioned_relation[offset]) &
+        offset_align_mask);
+    uint32_t aligned_fill_state = &partitioned_relation[offset] - base_ptr;
+    aligned_fill_state = aligned_fill_state % tuples_per_buffer;
     tmp_partition_offsets[i] = offset - aligned_fill_state;
 
     slots[i] = aligned_fill_state;
