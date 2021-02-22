@@ -4,14 +4,17 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2019 German Research Center for Artificial Intelligence (DFKI)
+ * Copyright 2019-2021 German Research Center for Artificial Intelligence (DFKI)
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
 use crate::error::{Error, ErrorKind, Result};
 use bitflags::bitflags;
+use std::collections::HashMap;
+use std::fs::File;
 use std::io;
 use std::io::Error as IoError;
+use std::io::{BufRead, BufReader};
 use std::mem::{size_of, size_of_val};
 use std::os::raw::{c_int, c_long, c_uint, c_ulong, c_void};
 
@@ -391,4 +394,80 @@ pub fn numa_node_of_cpu(cpu_id: u16) -> Result<u16> {
     } else {
         Ok(ret as u16)
     }
+}
+
+/// NUMA node memory information
+pub struct NumaMemInfo {
+    /// Total bytes
+    pub total: usize,
+
+    /// Free bytes
+    pub free: usize,
+
+    /// Used bytes
+    pub used: usize,
+}
+
+/// Returns the memory information of a NUMA node
+///
+/// Read the memory information provided by Linux at
+/// `/sys/devices/system/node/nodeX/meminfo`.
+///
+/// Example
+/// ```
+/// # use numa_gpu::runtime::linux_wrapper::{self, NumaMemInfo};
+/// # use std::error::Error;
+/// # fn main() -> Result<(), Box<dyn Error>> {
+/// let node_id = 0;
+/// let NumaMemInfo{total, free, ..} = linux_wrapper::numa_mem_info(node_id)?;
+/// println!("total: {} free: {}", total, free);
+/// # Ok(())
+/// # }
+/// ```
+pub fn numa_mem_info(node_id: u16) -> Result<NumaMemInfo> {
+    let meminfo_path = format!("/sys/devices/system/node/node{}/meminfo", node_id);
+    let meminfo_file = File::open(meminfo_path)?;
+    let meminfo_map = read_sysfs_file(BufReader::new(&meminfo_file))?;
+
+    // Line format: "Node 255 MemTotal:       16515072 kB"
+    let parse_item = |item| -> usize {
+        meminfo_map
+            .get(&format!("Node {} {}", node_id, item))
+            .expect("Failed to get item")
+            .strip_suffix(" kB")
+            .expect("Failed to strip unit")
+            .trim()
+            .parse()
+            .expect("Failed to parse item")
+    };
+
+    let total = parse_item("MemTotal") * 1024;
+    let free = parse_item("MemFree") * 1024;
+    let used = parse_item("MemUsed") * 1024;
+
+    Ok(NumaMemInfo { total, free, used })
+}
+
+/// Reads a Linux sysfs file and returns its contents as a hash map
+pub(crate) fn read_sysfs_file<R: BufRead>(reader: R) -> Result<HashMap<String, String>> {
+    let mut map = HashMap::new();
+
+    for line in reader.lines() {
+        let line = line?;
+
+        if line.is_empty() {
+            continue;
+        }
+
+        let mut fields = line.splitn(2, ':').map(|s| s.trim());
+        if let (Some(key), Some(val)) = (fields.next(), fields.next()) {
+            map.insert(key.to_string(), val.to_string());
+        } else {
+            return Err(
+                ErrorKind::RuntimeError("Failed to parse the line from /proc".to_string()).into(),
+            );
+        }
+    }
+
+    Ok(map)
 }

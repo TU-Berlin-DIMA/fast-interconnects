@@ -9,13 +9,13 @@
  */
 
 use crate::error::{ErrorKind, Result};
+use crate::runtime::linux_wrapper;
 use procfs::CpuInfo;
 use rustacuda::device::{Device, DeviceAttribute};
-use std::collections::HashMap;
 use std::fmt;
 use std::fs::File;
+use std::io::BufReader;
 use std::io::Read;
-use std::io::{BufRead, BufReader};
 use std::mem;
 use std::os::raw::c_int;
 use std::path::PathBuf;
@@ -311,7 +311,7 @@ impl NvidiaDriverInternal {
         let mut information_path = device_path.clone();
         information_path.push("information");
         let information_file = File::open(information_path)?;
-        let information_map = Self::read_file(BufReader::new(&information_file))?;
+        let information_map = linux_wrapper::read_sysfs_file(BufReader::new(&information_file))?;
 
         let driver_device_id: c_int = information_map
             .get("Device Minor")
@@ -330,7 +330,8 @@ impl NvidiaDriverInternal {
         let numa_status_file = File::open(numa_status_path);
 
         if let Ok(numa_status_file) = numa_status_file {
-            let numa_status_map = Self::read_file(BufReader::new(&numa_status_file))?;
+            let numa_status_map =
+                linux_wrapper::read_sysfs_file(BufReader::new(&numa_status_file))?;
 
             let numa_node = numa_status_map
                 .get("Node")
@@ -401,29 +402,5 @@ impl NvidiaDriverInternal {
         );
 
         Ok(pci_id)
-    }
-
-    fn read_file<R: BufRead>(reader: R) -> Result<HashMap<String, String>> {
-        let mut map = HashMap::new();
-
-        for line in reader.lines() {
-            let line = line?;
-
-            if line.is_empty() {
-                continue;
-            }
-
-            let mut fields = line.splitn(2, ':').map(|s| s.trim());
-            if let (Some(key), Some(val)) = (fields.next(), fields.next()) {
-                map.insert(key.to_string(), val.to_string());
-            } else {
-                return Err(ErrorKind::RuntimeError(
-                    "Failed to parse the line from /proc".to_string(),
-                )
-                .into());
-            }
-        }
-
-        Ok(map)
     }
 }
