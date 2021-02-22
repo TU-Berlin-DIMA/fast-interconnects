@@ -2237,8 +2237,12 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   if (blockIdx.x + 1U == gridDim.x) {
     data_length = args.data_length - data_offset;
   }
+
+  // Substract the alignment padding to avoid an unsigned integer underflow
+  // when computing the aligned array offsets.
   unsigned long long partitioned_relation_offset =
-      args.partition_offsets[blockIdx.x * fanout];
+      args.partition_offsets[blockIdx.x * fanout] -
+      ALIGN_BYTES / sizeof(Tuple<K, V>);
 
   auto join_attr_data =
       reinterpret_cast<const K *>(args.join_attr_data) + data_offset;
@@ -2292,12 +2296,21 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   unsigned short int *const dmem_slots =
       reinterpret_cast<unsigned short int *>(&dmem_buffer_map[fanout]);
 
+  // Alignment offset for the initial slots
+  const uintptr_t offset_align_mask =
+      ~static_cast<uintptr_t>(ALIGN_BYTES - 1UL);
+
   // Zero shared memory slots and initialize dmem buffer map.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
+    // Align the initial slots to cache lines
     auto offset = static_cast<unsigned int>(
         args.partition_offsets[blockIdx.x * fanout + i] -
         partitioned_relation_offset);
-    auto aligned_fill_state = offset % align_tuples;
+    Tuple<K, V> *base_ptr = reinterpret_cast<Tuple<K, V> *>(
+        reinterpret_cast<uintptr_t>(&partitioned_relation[offset]) &
+        offset_align_mask);
+    uint32_t aligned_fill_state = &partitioned_relation[offset] - base_ptr;
+    aligned_fill_state = aligned_fill_state % tuples_per_dmem_buffer;
     tmp_partition_offsets[i] = offset - aligned_fill_state;
 
     uint32_t smem_fill_state = aligned_fill_state % tuples_per_buffer;
@@ -2313,17 +2326,6 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   for (uint32_t i = threadIdx.x; i < fanout * tuples_per_buffer;
        i += blockDim.x) {
     buffers[i] = {};
-  }
-
-  // Sync before accessing dmem_slots
-  __syncthreads();
-
-  for (uint32_t i = warp_id; i < fanout; i += num_warps) {
-    for (uint32_t j = lane_id; i < align_tuples; i += warpSize) {
-      auto current_dmem_buffer = dmem_slots[i];
-      dmem_buffers[write_combine_slot(tuples_per_dmem_buffer,
-                                      current_dmem_buffer, j)] = {};
-    }
   }
 
   __syncthreads();
@@ -2473,24 +2475,52 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
   // Wait until all warps are done
   __syncthreads();
 
-  uint32_t log2_tuples_per_buffer = log2_floor_power_of_two(tuples_per_buffer);
+  partitioned_relation =
+      reinterpret_cast<Tuple<K, V> *>(args.partitioned_relation) +
+      partitioned_relation_offset;
 
-  // Flush buffers. Cannot flush smem buffers directly to memory because
-  // alignment may require us to pad zeroes at the front of the dmem buffer.
+  // Flush buffers
+  //
+  // If no dmem buffer has been flushed yet, flushing the current dmem buffer
+  // might overwrite the results of the previous partition (i.e., p_index - 1)
+  // due to the cacheline alignment.
+  //
+  // Thus, if no dmem buffer has yet been flushed, we now flush only the filled
+  // dmem slots, and _do not_ flush any empty dmem slots.
   for (uint32_t p_index = warp_id; p_index < fanout; p_index += num_warps) {
-    auto dmem_slot = dmem_slots[p_index];
-    uint32_t smem_fill_state = signal_slots[p_index];
-    auto dmem_fill_state =
-        (static_cast<unsigned int>(dmem_slot) << log2_tuples_per_buffer) +
-        smem_fill_state;
-    auto current_dmem_buffer = dmem_buffer_map[p_index];
+    // Check how many dmem buffers have been flushed by computing the total
+    // number of alreadly processed dmem slots.
+    auto offset = static_cast<unsigned int>(
+        args.partition_offsets[blockIdx.x * fanout + p_index] -
+        partitioned_relation_offset);
+    Tuple<K, V> *base_ptr = reinterpret_cast<Tuple<K, V> *>(
+        reinterpret_cast<uintptr_t>(&partitioned_relation[offset]) &
+        offset_align_mask);
+
+    uint32_t aligned_fill_state = &partitioned_relation[offset] - base_ptr;
+    aligned_fill_state = aligned_fill_state % tuples_per_dmem_buffer;
 
     auto dst = tmp_partition_offsets[p_index];
+    uint32_t tuples_processed = &partitioned_relation[dst] - base_ptr;
+    uint32_t smem_buffers_processed = tuples_processed / tuples_per_buffer;
+
+    // If we're still in the first dmem buffer, then skip the empty "alignment"
+    // slots. Else, flush the whole dmem buffer.
+    uint32_t dmem_start_state = (smem_buffers_processed < slots_per_dmem_buffer)
+                                    ? aligned_fill_state
+                                    : 0;
+
+    auto dmem_slot = dmem_slots[p_index];
+    uint32_t smem_fill_state = signal_slots[p_index];
+    uint32_t dmem_fill_state = dmem_slot * tuples_per_buffer + smem_fill_state;
+    auto current_dmem_buffer = dmem_buffer_map[p_index];
+
     if (lane_id == 0) {
       tmp_partition_offsets[p_index] += dmem_fill_state;
     }
 
-    // Flush the smem buffer.
+    // Flush the smem buffer into the dmem buffer, so that the empty "alignment"
+    // smem slots are flushed to CPU memory in the correct order.
     for (uint32_t i = lane_id; i < smem_fill_state; i += warpSize) {
       Tuple<K, V> tmp =
           buffers[write_combine_slot(tuples_per_buffer, p_index, i)];
@@ -2502,7 +2532,8 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
     __syncwarp();
 
     // Flush dmem buffers to memory.
-    for (uint32_t i = lane_id; i < dmem_fill_state; i += warpSize) {
+    for (uint32_t i = dmem_start_state + lane_id; i < dmem_fill_state;
+         i += warpSize) {
       Tuple<K, V> tmp;
       tmp.load(dmem_buffers[write_combine_slot(tuples_per_dmem_buffer,
                                                current_dmem_buffer, i)]);
