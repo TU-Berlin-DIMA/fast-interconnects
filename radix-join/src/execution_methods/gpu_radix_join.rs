@@ -140,6 +140,7 @@ where
         block_size,
         dmem_buffer_bytes,
     )?;
+    radix_prnr.preallocate_partition_state::<T>(RadixPass::First)?;
 
     let mut inner_rel_partitions = PartitionedRelation::new(
         data.build_relation_key.len(),
@@ -181,10 +182,11 @@ where
     stream.synchronize()?;
 
     let partitions_malloc_time = partitions_malloc_timer.elapsed();
-    let prefix_sum_timer = Instant::now();
 
-    match histogram_algorithms[0] {
+    let prefix_sum_time = match histogram_algorithms[0] {
         GpuHistogramAlgorithm::CpuChunked => {
+            let prefix_sum_timer = Instant::now();
+
             let inner_key_slice: &[T] = (&data.build_relation_key).try_into().map_err(|_| {
                 ErrorKind::RuntimeError("Failed to run CPU prefix sum on device memory".into())
             })?;
@@ -223,8 +225,14 @@ where
                     })
                 }
             });
+
+            prefix_sum_timer.elapsed().as_nanos() as f64
         }
         _ => {
+            let prefix_sum_start_event = Event::new(EventFlags::DEFAULT)?;
+            let prefix_sum_stop_event = Event::new(EventFlags::DEFAULT)?;
+            prefix_sum_start_event.record(&stream)?;
+
             radix_prnr.prefix_sum(
                 RadixPass::First,
                 data.build_relation_key.as_launchable_slice(),
@@ -237,11 +245,17 @@ where
                 &mut outer_rel_partition_offsets,
                 &stream,
             )?;
-        }
-    }
 
-    let prefix_sum_event = Event::new(EventFlags::DEFAULT)?;
-    prefix_sum_event.record(&stream)?;
+            prefix_sum_stop_event.record(&stream)?;
+            stream.synchronize()?;
+            prefix_sum_stop_event.elapsed_time_f32(&prefix_sum_start_event)? as f64
+                * 10_f64.powf(6.0)
+        }
+    };
+
+    let partition_start_event = Event::new(EventFlags::DEFAULT)?;
+    let partition_stop_event = Event::new(EventFlags::DEFAULT)?;
+    partition_start_event.record(&stream)?;
 
     // Partition inner relation
     radix_prnr.partition(
@@ -263,28 +277,7 @@ where
         &stream,
     )?;
 
-    // Wait for prefix sum to finish before computing max partition lengths and
-    // stopping the prefix sum timer.
-    prefix_sum_event.synchronize()?;
-
-    // Stop the prefix sum timer and start the partitioning timer.
-    //
-    // The timers are stopped/started after scheduling the partitioning kernels.
-    // This enables scheduling the partitioning kernels asynchronously to the
-    // running prefix sum kernels.
-    //
-    // The reason is that some partitioning variants (e.g., HSSWWCv4) allocate
-    // memory, and these allocations should occur in parallel to prefix sum
-    // computation.
-    //
-    // We can't do the timing with CUDA events because some prefix sum variants
-    // run on the CPU instead of the GPU.
-    //
-    // Doing the timer stop/start in a CUDA callback on the stream works, but
-    // lauching callbacks is relatively slow (~2 ms). Guessing that this is
-    // because CUDA lauches a new thread for the callback, but didn't verify.
-    let prefix_sum_time = prefix_sum_timer.elapsed();
-    let partition_timer = Instant::now();
+    partition_stop_event.record(&stream)?;
 
     let max_inner_partition_len =
         (0..inner_rel_partitions.fanout()).try_fold(0, |max, partition_id| {
@@ -378,9 +371,11 @@ where
     .collect::<Result<Vec<_>>>()?;
 
     stream.synchronize()?;
+    let partition_time =
+        partition_stop_event.elapsed_time_f32(&partition_start_event)? as f64 * 10_f64.powf(6.0);
+
     Stream::drop(stream).map_err(|(e, _)| e)?;
 
-    let partition_time = partition_timer.elapsed();
     let state_malloc_timer = Instant::now();
 
     // Populate the pages with mlock(); ideally this would be taken care of by a
@@ -390,7 +385,12 @@ where
         .try_for_each(|state| state.mlock())?;
 
     let state_malloc_time = state_malloc_timer.elapsed();
-    let join_timer = Instant::now();
+
+    let join_start_event = Event::new(EventFlags::DEFAULT)?;
+    stream_states
+        .iter()
+        .take(1)
+        .try_for_each(|StreamState { stream, .. }| join_start_event.record(stream))?;
 
     for (partition_id, stream_id) in
         (0..radix_bits.pass_fanout(RadixPass::First).unwrap()).zip((0..stream_states.len()).cycle())
@@ -485,35 +485,48 @@ where
         event.record(stream)?;
     }
 
-    let mut result_sums_host = vec![0; join_result_sums_len * NUM_STREAMS];
+    let join_stop_events = stream_states
+        .iter()
+        .map(|StreamState { stream, .. }| {
+            let event = Event::new(EventFlags::DEFAULT)?;
+            event.record(stream)?;
+            Ok(event)
+        })
+        .collect::<Result<Vec<Event>>>()?;
 
+    let join_time = stream_states
+        .iter()
+        .zip(join_stop_events.iter())
+        .try_fold::<_, _, Result<_>>(0_f64, |time, (StreamState { stream, .. }, stop_event)| {
+            stream.synchronize()?;
+            let new_time =
+                stop_event.elapsed_time_f32(&join_start_event)? as f64 * 10_f64.powf(6.0);
+            Ok(time.max(new_time))
+        })?;
+
+    let mut result_sums_host = vec![0; join_result_sums_len * NUM_STREAMS];
     stream_states
         .into_iter()
         .zip(result_sums_host.chunks_mut(join_result_sums_len))
         .map(
             |(
                 StreamState {
-                    stream,
-                    join_result_sums,
-                    ..
+                    join_result_sums, ..
                 },
                 host_sums,
             )| {
-                stream.synchronize()?;
                 join_result_sums.copy_to(host_sums)?;
                 Ok(())
             },
         )
         .collect::<Result<()>>()?;
 
-    let join_time = join_timer.elapsed();
-
     let sum = result_sums_host.iter().sum();
 
     let data_point = RadixJoinPoint {
-        prefix_sum_ns: Some(prefix_sum_time.as_nanos() as f64),
-        partition_ns: Some(partition_time.as_nanos() as f64),
-        join_ns: Some(join_time.as_nanos() as f64),
+        prefix_sum_ns: Some(prefix_sum_time),
+        partition_ns: Some(partition_time),
+        join_ns: Some(join_time),
         partitions_malloc_ns: Some(partitions_malloc_time.as_nanos() as f64),
         state_malloc_ns: Some(state_malloc_time.as_nanos() as f64),
         cached_build_tuples: None,
