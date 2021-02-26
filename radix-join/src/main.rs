@@ -47,7 +47,7 @@ fn main() -> Result<()> {
     let _context =
         Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
 
-    let cache_node = device.numa_node()?;
+    let cache_node = device.numa_node().ok();
     let overflow_node = device.numa_memory_affinity()?;
 
     cmd.set_state_mem(cache_node);
@@ -321,17 +321,27 @@ struct CmdOpt {
 }
 
 impl CmdOpt {
-    fn set_state_mem(&mut self, state_location: u16) {
+    fn set_state_mem(&mut self, state_location: Option<u16>) {
         self.state_mem_type = if let Some(true) = self.use_numa_mem_state {
             ArgMemType::Numa
         } else {
             ArgMemType::Device
         };
-        self.state_location = state_location;
+        self.state_location = state_location.unwrap_or_else(|| 0);
     }
 
-    fn set_partitions_mem(&mut self, cache_location: u16, overflow_location: u16) -> Result<()> {
+    fn set_partitions_mem(
+        &mut self,
+        cache_location: Option<u16>,
+        overflow_location: u16,
+    ) -> Result<()> {
         if self.execution_method == ArgExecutionMethod::GpuTritonJoinTwoPass {
+            let cache_location = cache_location.ok_or_else(|| {
+                ErrorKind::RuntimeError(
+                    "Failed to set the cache NUMA location. Are you using PCI-e?".to_string(),
+                )
+            })?;
+
             if ArgMemType::DistributedNuma != self.partitions_mem_type {
                 self.partitions_mem_type = ArgMemType::DistributedNuma;
                 self.partitions_location = vec![cache_location, overflow_location];
