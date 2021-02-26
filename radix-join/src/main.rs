@@ -59,9 +59,8 @@ fn main() -> Result<()> {
             harness::measure("radix_join", cmd.repeat, cmd.csv, dp, hjc)?;
         }
         ArgTupleBytes::Bytes16 => {
-            unimplemented!();
-            // let (hjc, dp) = args_to_bench::<i64>(&cmd, device)?;
-            // harness::measure("radix_join", cmd.repeat, cmd.csv, dp, hjc)?;
+            let (hjc, dp) = args_to_bench::<i64>(&cmd, device)?;
+            harness::measure("radix_join", cmd.repeat, cmd.csv, dp, hjc)?;
         }
     };
 
