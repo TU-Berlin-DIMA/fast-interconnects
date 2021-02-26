@@ -31,6 +31,7 @@ use crate::error::{ErrorKind, Result};
 use cuda_sys::cuda::cuMemsetD32_v2;
 use datagen::relation::KeyAttribute;
 use num_traits::cast::AsPrimitive;
+use numa_gpu::error::Result as NumaGpuResult;
 use numa_gpu::error::ToResult;
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::memory::*;
@@ -648,6 +649,20 @@ impl<T: DeviceCopy + NullKey> HashTable<T> {
             mem,
             size: src.size,
         })
+    }
+}
+
+impl<T: DeviceCopy + NullKey> MemLock for HashTable<T> {
+    fn mlock(&mut self) -> NumaGpuResult<()> {
+        self.mem.mlock()?;
+
+        Ok(())
+    }
+
+    fn munlock(&mut self) -> NumaGpuResult<()> {
+        self.mem.munlock()?;
+
+        Ok(())
     }
 }
 

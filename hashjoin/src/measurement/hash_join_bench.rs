@@ -413,8 +413,10 @@ where
             // )?;
             // prefetch_async(mem.as_unified_ptr(), mem.len(), CPU_DEVICE_ID, &stream)?;
         }
-        let hash_table =
+        let mut hash_table =
             no_partitioning_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
+        hash_table.mlock()?;
+        let hash_table = hash_table;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
         let mut result_sums = allocator::Allocator::alloc_mem(
@@ -494,8 +496,10 @@ where
             // prefetch_async(mem.as_unified_ptr(), mem.len(), CPU_DEVICE_ID, &stream)?;
             // stream.synchronize()?;
         }
-        let hash_table =
+        let mut hash_table =
             no_partitioning_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
+        hash_table.mlock()?;
+        let hash_table = hash_table;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
         let mut result_sums = allocator::Allocator::alloc_mem(
@@ -582,8 +586,10 @@ where
     ) -> Result<HashJoinPoint> {
         let ht_malloc_timer = Instant::now();
         let hash_table_mem = hash_table_alloc(self.hash_table_len);
-        let hash_table =
+        let mut hash_table =
             no_partitioning_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
+        hash_table.mlock()?;
+        let hash_table = hash_table;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
         let mut result_sums = allocator::Allocator::alloc_mem(
@@ -670,10 +676,11 @@ where
         hash_table_alloc: allocator::DerefMemAllocFn<T>,
     ) -> Result<HashJoinPoint> {
         let ht_malloc_timer = Instant::now();
-        let mut hash_table_mem = hash_table_alloc(self.hash_table_len);
-        hash_table_mem.ensure_physically_backed();
-        let hash_table =
+        let hash_table_mem = hash_table_alloc(self.hash_table_len);
+        let mut hash_table =
             no_partitioning_join::HashTable::new_on_cpu(hash_table_mem, self.hash_table_len)?;
+        hash_table.mlock()?;
+        let hash_table = hash_table;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
         let mut result_sums = vec![CachePadded { value: 0 }; threads];
@@ -770,10 +777,10 @@ where
         // FIXME: specify load factor as argument
         let ht_malloc_timer = Instant::now();
         let hash_table_mem = hash_table_alloc(self.hash_table_len);
-        let hash_table = Arc::new(no_partitioning_join::HashTable::new_on_gpu(
-            hash_table_mem,
-            self.hash_table_len,
-        )?);
+        let mut hash_table =
+            no_partitioning_join::HashTable::new_on_gpu(hash_table_mem, self.hash_table_len)?;
+        hash_table.mlock()?;
+        let hash_table = Arc::new(hash_table);
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
         // Note: CudaDevMem is initialized with zeroes by the allocator
@@ -894,12 +901,14 @@ where
         let ht_malloc_timer = Instant::now();
 
         let gpu_hash_table_mem = gpu_hash_table_alloc(self.hash_table_len);
-        let gpu_hash_table = Arc::new(no_partitioning_join::HashTable::new_on_gpu(
-            gpu_hash_table_mem,
-            self.hash_table_len,
-        )?);
+        let mut gpu_hash_table =
+            no_partitioning_join::HashTable::new_on_gpu(gpu_hash_table_mem, self.hash_table_len)?;
+        gpu_hash_table.mlock()?;
+        let gpu_hash_table = Arc::new(gpu_hash_table);
 
-        let cpu_hash_table_mem = cpu_hash_table_alloc(self.hash_table_len);
+        let mut cpu_hash_table_mem = cpu_hash_table_alloc(self.hash_table_len);
+        cpu_hash_table_mem.mlock()?;
+        let cpu_hash_table_mem = cpu_hash_table_mem;
 
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
