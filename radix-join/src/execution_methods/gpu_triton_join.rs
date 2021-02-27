@@ -44,6 +44,14 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
+/// GPU memory to leave free when allocating the Triton join's cache
+///
+/// Getting the amount of free GPU memory and allocating the memory is
+/// *not atomic*. Sometimes the allocation spuriously fails.
+///
+/// Instead of allocating every last byte of GPU memory, leave some slack space.
+const GPU_MEM_SLACK_BYTES: usize = 32 * 1024 * 1024;
+
 // Helper struct that stores state of 2nd partitioning passes. Memory
 // allocations occur asynchronously in parallel to partitioning.
 struct StreamState<T: DeviceCopy> {
@@ -367,6 +375,7 @@ where
     // Note that CudaMemInfo over-reports how much memory is free. The Linux
     // kernel seems to give a more accurate report (on IBM AC922 with CUDA 10.2).
     let linux_wrapper::NumaMemInfo { free, .. } = linux_wrapper::numa_mem_info(cache_node)?;
+    let free = free - GPU_MEM_SLACK_BYTES;
 
     // Use one half of space for inner relation, and the other half for outer
     // relation
