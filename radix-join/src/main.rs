@@ -413,6 +413,7 @@ where
 
     let mut data_builder = JoinDataBuilder::default();
     data_builder
+        .mlock(true)
         .inner_mem_type(
             ArgMemTypeHelper {
                 mem_type: cmd.mem_type,

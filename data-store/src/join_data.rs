@@ -13,7 +13,6 @@ use csv::{ByteRecord, ReaderBuilder};
 use flate2::read::GzDecoder;
 use numa_gpu::runtime::allocator::{self, DerefMemType};
 use numa_gpu::runtime::memory::*;
-use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 use rustacuda::memory::DeviceCopy;
 use serde::de::DeserializeOwned;
 use std::collections::vec_deque::VecDeque;
@@ -35,6 +34,7 @@ pub struct JoinDataBuilder {
     outer_len: usize,
     inner_mem_type: DerefMemType,
     outer_mem_type: DerefMemType,
+    do_mlock: bool,
 }
 
 impl Default for JoinDataBuilder {
@@ -44,6 +44,7 @@ impl Default for JoinDataBuilder {
             outer_len: 1,
             inner_mem_type: DerefMemType::SysMem,
             outer_mem_type: DerefMemType::SysMem,
+            do_mlock: false,
         }
     }
 }
@@ -69,6 +70,11 @@ impl JoinDataBuilder {
         self
     }
 
+    pub fn mlock(&mut self, do_mlock: bool) -> &mut Self {
+        self.do_mlock = do_mlock;
+        self
+    }
+
     fn allocate_relations<T>(
         &self,
     ) -> Result<(DerefMem<T>, DerefMem<T>, DerefMem<T>, DerefMem<T>, Duration)>
@@ -89,7 +95,9 @@ impl JoinDataBuilder {
             let mut mem = allocator::Allocator::alloc_deref_mem(mem_type, len);
 
             // Force the OS to physically allocate the memory
-            mem.ensure_physically_backed();
+            if self.do_mlock {
+                mem.mlock()?;
+            }
 
             Ok(mem)
         })
