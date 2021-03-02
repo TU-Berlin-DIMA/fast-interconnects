@@ -4,10 +4,12 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2020, Clemens Lutz <lutzcle@cml.li>
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright (c) 2020-2021, Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 mod cache_padded;
+mod device_type;
 
 pub use cache_padded::CachePadded;
+pub use device_type::DeviceType;
