@@ -46,7 +46,7 @@ fn gpu_verify_join_aggregate(
     grid_size: GridSize,
     block_size: BlockSize,
 ) -> Result<(), Box<dyn Error>> {
-    let histogram_algorithm = GpuHistogramAlgorithm::GpuChunked;
+    let histogram_algorithm = GpuHistogramAlgorithm::Chunked;
     let partition_algorithm = GpuRadixPartitionAlgorithm::NC;
     let num_chunks = GridSize::from(1); // one contiguous chunk
 

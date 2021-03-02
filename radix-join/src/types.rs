@@ -4,15 +4,17 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019-2020, Clemens Lutz <lutzcle@cml.li>
+ * Copyright (c) 2019-2021, Clemens Lutz <lutzcle@cml.li>
  * Author: Clemens Lutz <clemens.lutz@dfki.de>
  */
 
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::numa::NodeRatio;
+use numa_gpu::utils::DeviceType;
 use serde_derive::Serialize;
 use serde_repr::Serialize_repr;
 use sql_ops::join::HashingScheme;
+use sql_ops::partition::cpu_radix_partition::CpuHistogramAlgorithm;
 use sql_ops::partition::gpu_radix_partition::{GpuHistogramAlgorithm, GpuRadixPartitionAlgorithm};
 use structopt::clap::arg_enum;
 
@@ -60,6 +62,7 @@ arg_enum! {
     #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
     pub enum ArgHistogramAlgorithm {
         CpuChunked,
+        CpuChunkedSimd,
         GpuChunked,
         GpuContiguous,
     }
@@ -173,12 +176,13 @@ impl Into<GpuRadixPartitionAlgorithm> for ArgRadixPartitionAlgorithm {
     }
 }
 
-impl Into<GpuHistogramAlgorithm> for ArgHistogramAlgorithm {
-    fn into(self) -> GpuHistogramAlgorithm {
+impl Into<DeviceType<CpuHistogramAlgorithm, GpuHistogramAlgorithm>> for ArgHistogramAlgorithm {
+    fn into(self) -> DeviceType<CpuHistogramAlgorithm, GpuHistogramAlgorithm> {
         match self {
-            Self::CpuChunked => GpuHistogramAlgorithm::CpuChunked,
-            Self::GpuChunked => GpuHistogramAlgorithm::GpuChunked,
-            Self::GpuContiguous => GpuHistogramAlgorithm::GpuContiguous,
+            Self::CpuChunked => DeviceType::Cpu(CpuHistogramAlgorithm::Chunked),
+            Self::CpuChunkedSimd => DeviceType::Cpu(CpuHistogramAlgorithm::ChunkedSimd),
+            Self::GpuChunked => DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
+            Self::GpuContiguous => DeviceType::Gpu(GpuHistogramAlgorithm::Contiguous),
         }
     }
 }

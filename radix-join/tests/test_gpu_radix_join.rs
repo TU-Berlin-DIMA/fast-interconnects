@@ -15,6 +15,7 @@ use numa_gpu::runtime::allocator::{DerefMemType, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::hw_info::NvidiaDriverInfo;
 use numa_gpu::runtime::numa::NodeRatio;
+use numa_gpu::utils::DeviceType;
 use once_cell::sync::Lazy;
 use radix_join::error::Result as RJResult;
 use radix_join::execution_methods::gpu_radix_join::gpu_radix_join;
@@ -23,6 +24,7 @@ use rustacuda::context::{Context, CurrentContext, UnownedContext};
 use rustacuda::device::Device;
 use rustacuda::function::{BlockSize, GridSize};
 use sql_ops::join::HashingScheme;
+use sql_ops::partition::cpu_radix_partition::CpuHistogramAlgorithm;
 use sql_ops::partition::gpu_radix_partition::{GpuHistogramAlgorithm, GpuRadixPartitionAlgorithm};
 use sql_ops::partition::RadixBits;
 use std::error::Error;
@@ -53,14 +55,17 @@ fn run_gpu_radix_join_validate_sum<JoinFn, PartitionsFn>(
     grid_size: GridSize,
     block_size: BlockSize,
     threads: usize,
+    histogram_algorithm: DeviceType<CpuHistogramAlgorithm, GpuHistogramAlgorithm>,
     hashing_scheme: HashingScheme,
 ) -> Result<(), Box<dyn Error>>
 where
     JoinFn: FnOnce(
         &mut JoinData<i32>,
         HashingScheme,
-        [GpuHistogramAlgorithm; 2],
-        [GpuRadixPartitionAlgorithm; 2],
+        DeviceType<CpuHistogramAlgorithm, GpuHistogramAlgorithm>,
+        GpuHistogramAlgorithm,
+        GpuRadixPartitionAlgorithm,
+        GpuRadixPartitionAlgorithm,
         &RadixBits,
         usize,
         usize,
@@ -74,10 +79,8 @@ where
 {
     const DMEM_BUFFER_BYTES: usize = 8 * 1024;
 
-    let prefix_sum_algorithms = [
-        GpuHistogramAlgorithm::GpuChunked,
-        GpuHistogramAlgorithm::GpuContiguous,
-    ];
+    let prefix_sum_algorithm_fst = histogram_algorithm;
+    let prefix_sum_algorithm_snd = GpuHistogramAlgorithm::Contiguous;
     let partition_algorithms = [
         GpuRadixPartitionAlgorithm::SSWWCv2,
         GpuRadixPartitionAlgorithm::SSWWCv2,
@@ -116,8 +119,10 @@ where
     let (result_sum, _) = join_fn(
         &mut join_data,
         hashing_scheme,
-        prefix_sum_algorithms,
-        partition_algorithms,
+        prefix_sum_algorithm_fst,
+        prefix_sum_algorithm_snd,
+        partition_algorithms[0],
+        partition_algorithms[1],
         &radix_bits,
         DMEM_BUFFER_BYTES,
         threads,
@@ -170,6 +175,23 @@ fn test_gpu_radix_partition_validate_sum_perfect_small_i32() -> Result<(), Box<d
         GridSize::from(8),
         BlockSize::from(128),
         1,
+        DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
+        HashingScheme::Perfect,
+    )
+}
+
+#[test]
+fn test_gpu_radix_partition_validate_sum_cpu_histogram_small_i32() -> Result<(), Box<dyn Error>> {
+    run_gpu_radix_join_validate_sum(
+        &gpu_radix_join::<i32>,
+        &partitions_type_normal,
+        100_000,
+        100_000,
+        RadixBits::new(Some(3), Some(3), None),
+        GridSize::from(8),
+        BlockSize::from(128),
+        1,
+        DeviceType::Cpu(CpuHistogramAlgorithm::Chunked),
         HashingScheme::Perfect,
     )
 }
@@ -185,6 +207,7 @@ fn test_gpu_radix_partition_validate_sum_bucketchaining_small_i32() -> Result<()
         GridSize::from(8),
         BlockSize::from(128),
         1,
+        DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         HashingScheme::BucketChaining,
     )
 }
@@ -200,6 +223,7 @@ fn test_gpu_radix_partition_validate_sum_bucketchaining_large_i32() -> Result<()
         GridSize::from(8),
         BlockSize::from(128),
         1,
+        DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         HashingScheme::BucketChaining,
     )
 }
@@ -216,6 +240,7 @@ fn test_gpu_triton_partition_validate_sum_perfect_small_i32() -> Result<(), Box<
         GridSize::from(8),
         BlockSize::from(128),
         1,
+        DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         HashingScheme::Perfect,
     )
 }
@@ -232,6 +257,7 @@ fn test_gpu_triton_partition_validate_sum_bucketchaining_small_i32() -> Result<(
         GridSize::from(8),
         BlockSize::from(128),
         1,
+        DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         HashingScheme::BucketChaining,
     )
 }
@@ -248,6 +274,7 @@ fn test_gpu_triton_partition_validate_sum_bucketchaining_large_i32() -> Result<(
         GridSize::from(8),
         BlockSize::from(128),
         1,
+        DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         HashingScheme::BucketChaining,
     )
 }

@@ -15,6 +15,7 @@ use numa_gpu::runtime::allocator::MemType;
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::hw_info::NvidiaDriverInfo;
 use numa_gpu::runtime::numa::NodeRatio;
+use numa_gpu::utils::DeviceType;
 use radix_join::error::{ErrorKind, Result};
 use radix_join::execution_methods::{
     gpu_radix_join::gpu_radix_join, gpu_triton_join::gpu_triton_join,
@@ -29,7 +30,9 @@ use rustacuda::memory::DeviceCopy;
 use rustacuda::prelude::*;
 use serde::de::DeserializeOwned;
 use sql_ops::join::{cuda_radix_join, no_partitioning_join, HashingScheme};
+use sql_ops::partition::cpu_radix_partition::CpuHistogramAlgorithm;
 use sql_ops::partition::cpu_radix_partition::CpuRadixPartitionable;
+use sql_ops::partition::gpu_radix_partition::GpuHistogramAlgorithm;
 use sql_ops::partition::gpu_radix_partition::GpuRadixPartitionable;
 use sql_ops::partition::RadixBits;
 use std::convert::TryInto;
@@ -438,7 +441,7 @@ where
         );
 
     let exec_method = cmd.execution_method;
-    let histogram_algorithms = [
+    let histogram_algorithms: [DeviceType<CpuHistogramAlgorithm, GpuHistogramAlgorithm>; 2] = [
         cmd.histogram_algorithm.into(),
         cmd.histogram_algorithm_2nd.into(),
     ];
@@ -521,8 +524,14 @@ where
             let (_result, data_point) = gpu_radix_join(
                 &mut join_data,
                 hashing_scheme,
-                histogram_algorithms,
-                partition_algorithms,
+                histogram_algorithms[0],
+                histogram_algorithms[1].gpu().ok_or_else(|| {
+                    ErrorKind::RuntimeError(
+                        "Expected a GPU histogram algorithm for 2nd pass!".to_string(),
+                    )
+                })?,
+                partition_algorithms[0],
+                partition_algorithms[1],
                 &radix_bits,
                 dmem_buffer_bytes,
                 threads,
@@ -539,8 +548,14 @@ where
             let (_result, data_point) = gpu_triton_join(
                 &mut join_data,
                 hashing_scheme,
-                histogram_algorithms,
-                partition_algorithms,
+                histogram_algorithms[0],
+                histogram_algorithms[1].gpu().ok_or_else(|| {
+                    ErrorKind::RuntimeError(
+                        "Expected a GPU histogram algorithm for 2nd pass!".to_string(),
+                    )
+                })?,
+                partition_algorithms[0],
+                partition_algorithms[1],
                 &radix_bits,
                 dmem_buffer_bytes,
                 threads,

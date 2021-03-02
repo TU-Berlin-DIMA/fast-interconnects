@@ -19,6 +19,7 @@ use numa_gpu::runtime::hw_info::ProcessorCache;
 use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::*;
 use numa_gpu::runtime::numa::NodeLen;
+use numa_gpu::utils::DeviceType;
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
 use rustacuda::event::{Event, EventFlags};
 use rustacuda::function::{BlockSize, GridSize};
@@ -94,8 +95,10 @@ impl<T: DeviceCopy> MemLock for StreamState<T> {
 pub fn gpu_triton_join<T>(
     data: &mut JoinData<T>,
     hashing_scheme: HashingScheme,
-    histogram_algorithms: [GpuHistogramAlgorithm; 2],
-    partition_algorithms: [GpuRadixPartitionAlgorithm; 2],
+    histogram_algorithm_fst: DeviceType<CpuHistogramAlgorithm, GpuHistogramAlgorithm>,
+    histogram_algorithm_snd: GpuHistogramAlgorithm,
+    partition_algorithm_fst: GpuRadixPartitionAlgorithm,
+    partition_algorithm_snd: GpuRadixPartitionAlgorithm,
     radix_bits: &RadixBits,
     dmem_buffer_bytes: usize,
     threads: usize,
@@ -162,8 +165,8 @@ where
     let offsets_mem_type = MemType::NumaMem(overflow_node, Some(true));
 
     let mut radix_prnr = GpuRadixPartitioner::new(
-        histogram_algorithms[0],
-        partition_algorithms[0],
+        histogram_algorithm_fst.gpu_or_else(|cpu_algo| cpu_algo.into()),
+        partition_algorithm_fst,
         radix_bits.clone(),
         grid_size,
         block_size,
@@ -172,14 +175,14 @@ where
     radix_prnr.preallocate_partition_state::<T>(RadixPass::First)?;
 
     let mut inner_rel_partition_offsets = PartitionOffsets::new(
-        histogram_algorithms[0].into(),
+        histogram_algorithm_fst.either(|cpu| cpu.into(), |gpu| gpu.into()),
         max_chunks_1st,
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         Allocator::mem_alloc_fn(offsets_mem_type.clone()),
     );
 
     let mut outer_rel_partition_offsets = PartitionOffsets::new(
-        histogram_algorithms[0].into(),
+        histogram_algorithm_fst.either(|cpu| cpu.into(), |gpu| gpu.into()),
         max_chunks_1st,
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         Allocator::mem_alloc_fn(offsets_mem_type.clone()),
@@ -192,8 +195,8 @@ where
 
     let partitions_malloc_time = partitions_malloc_timer.elapsed();
 
-    let prefix_sum_time = match histogram_algorithms[0] {
-        GpuHistogramAlgorithm::CpuChunked => {
+    let prefix_sum_time = match histogram_algorithm_fst {
+        DeviceType::Cpu(histogram_algorithm) => {
             let prefix_sum_timer = Instant::now();
 
             let inner_key_slice: &[T] = (&data.build_relation_key).try_into().map_err(|_| {
@@ -221,9 +224,8 @@ where
                         let cpu_id = CpuAffinity::get_cpu().expect("Failed to get CPU ID");
                         let local_node: u16 = linux_wrapper::numa_node_of_cpu(cpu_id)
                             .expect("Failed to map CPU to NUMA node");
-                        // FIXME: don't hard-code histogram algorithm
                         let mut radix_prnr = CpuRadixPartitioner::new(
-                            CpuHistogramAlgorithm::Chunked,
+                            histogram_algorithm,
                             CpuRadixPartitionAlgorithm::NC,
                             radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
                             DerefMemType::NumaMem(local_node, None),
@@ -237,7 +239,7 @@ where
 
             prefix_sum_timer.elapsed().as_nanos() as f64
         }
-        _ => {
+        DeviceType::Gpu(_) => {
             let prefix_sum_start_event = Event::new(EventFlags::DEFAULT)?;
             let prefix_sum_stop_event = Event::new(EventFlags::DEFAULT)?;
             prefix_sum_start_event.record(&stream)?;
@@ -287,8 +289,8 @@ where
             stream,
             event: Event::new(EventFlags::DEFAULT)?,
             radix_prnr_2nd: GpuRadixPartitioner::new(
-                histogram_algorithms[1],
-                partition_algorithms[1],
+                histogram_algorithm_snd,
+                partition_algorithm_snd,
                 radix_bits.clone(),
                 stream_grid_size,
                 stream_block_size,
@@ -318,20 +320,20 @@ where
                 max_outer_partition_len,
             ),
             inner_rel_partition_offsets_2nd: PartitionOffsets::new(
-                histogram_algorithms[1].into(),
+                histogram_algorithm_snd.into(),
                 max_chunks_2nd,
                 radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
                 Allocator::mem_alloc_fn(stream_state_mem_type.clone()),
             ),
             outer_rel_partition_offsets_2nd: PartitionOffsets::new(
-                histogram_algorithms[1].into(),
+                histogram_algorithm_snd.into(),
                 max_chunks_2nd,
                 radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
                 Allocator::mem_alloc_fn(stream_state_mem_type.clone()),
             ),
             inner_rel_partitions_2nd: PartitionedRelation::new(
                 max_inner_partition_len,
-                histogram_algorithms[1].into(),
+                histogram_algorithm_snd.into(),
                 radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
                 max_chunks_2nd,
                 Allocator::mem_alloc_fn(stream_state_mem_type.clone()),
@@ -339,7 +341,7 @@ where
             ),
             outer_rel_partitions_2nd: PartitionedRelation::new(
                 max_outer_partition_len,
-                histogram_algorithms[1].into(),
+                histogram_algorithm_snd.into(),
                 radix_bits.pass_radix_bits(RadixPass::Second).unwrap(),
                 max_chunks_2nd,
                 Allocator::mem_alloc_fn(stream_state_mem_type.clone()),
@@ -385,7 +387,7 @@ where
         build_distributed_partitions_allocator(cached_len, cache_node, overflow_node)?;
     let mut inner_rel_partitions = PartitionedRelation::new(
         data.build_relation_key.len(),
-        histogram_algorithms[0].into(),
+        histogram_algorithm_fst.either(|cpu| cpu.into(), |gpu| gpu.into()),
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         max_chunks_1st,
         inner_rel_alloc,
@@ -396,7 +398,7 @@ where
         build_distributed_partitions_allocator(cached_len, cache_node, overflow_node)?;
     let mut outer_rel_partitions = PartitionedRelation::new(
         data.probe_relation_key.len(),
-        histogram_algorithms[0].into(),
+        histogram_algorithm_fst.either(|cpu| cpu.into(), |gpu| gpu.into()),
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         max_chunks_1st,
         outer_rel_alloc,

@@ -17,6 +17,7 @@ use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::{Mem, MemLock};
 use numa_gpu::runtime::numa::NodeRatio;
+use numa_gpu::utils::DeviceType;
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
@@ -89,17 +90,19 @@ arg_enum! {
     #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
     pub enum ArgHistogramAlgorithm {
         CpuChunked,
+        CpuChunkedSimd,
         GpuChunked,
         GpuContiguous,
     }
 }
 
-impl Into<GpuHistogramAlgorithm> for ArgHistogramAlgorithm {
-    fn into(self) -> GpuHistogramAlgorithm {
+impl Into<DeviceType<CpuHistogramAlgorithm, GpuHistogramAlgorithm>> for ArgHistogramAlgorithm {
+    fn into(self) -> DeviceType<CpuHistogramAlgorithm, GpuHistogramAlgorithm> {
         match self {
-            Self::CpuChunked => GpuHistogramAlgorithm::CpuChunked,
-            Self::GpuChunked => GpuHistogramAlgorithm::GpuChunked,
-            Self::GpuContiguous => GpuHistogramAlgorithm::GpuContiguous,
+            Self::CpuChunked => DeviceType::Cpu(CpuHistogramAlgorithm::Chunked),
+            Self::CpuChunkedSimd => DeviceType::Cpu(CpuHistogramAlgorithm::ChunkedSimd),
+            Self::GpuChunked => DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
+            Self::GpuContiguous => DeviceType::Gpu(GpuHistogramAlgorithm::Contiguous),
         }
     }
 }
@@ -304,7 +307,7 @@ struct DataPoint {
 fn gpu_radix_partition_benchmark<T, W>(
     bench_group: &str,
     bench_function: &str,
-    histogram_algorithm: GpuHistogramAlgorithm,
+    histogram_algorithm: DeviceType<CpuHistogramAlgorithm, GpuHistogramAlgorithm>,
     partition_algorithm: GpuRadixPartitionAlgorithm,
     radix_bits_list: &[u32],
     input_data: &(Mem<T>, Mem<T>),
@@ -366,7 +369,7 @@ where
         .iter()
         .map(|&radix_bits| {
             let mut radix_prnr = GpuRadixPartitioner::new(
-                histogram_algorithm,
+                histogram_algorithm.gpu_or_else(|cpu| cpu.into()),
                 partition_algorithm,
                 radix_bits.into(),
                 &grid_size,
@@ -376,7 +379,7 @@ where
 
             let mut partitioned_relation = PartitionedRelation::new(
                 input_data.0.len(),
-                histogram_algorithm.into(),
+                histogram_algorithm.either(|cpu| cpu.into(), |gpu| gpu.into()),
                 radix_bits.into(),
                 grid_size.x,
                 Allocator::mem_alloc_fn(output_mem_type.clone()),
@@ -388,7 +391,7 @@ where
                 .zip(std::iter::once(true).chain(std::iter::repeat(false)))
                 .try_for_each(|(_, warm_up)| {
                     let mut partition_offsets = PartitionOffsets::new(
-                        histogram_algorithm.into(),
+                        histogram_algorithm.either(|cpu| cpu.into(), |gpu| gpu.into()),
                         grid_size.x,
                         radix_bits,
                         Allocator::mem_alloc_fn(MemType::CudaPinnedMem),
@@ -398,7 +401,7 @@ where
                     let prefix_sum_timer = Instant::now();
 
                     match histogram_algorithm {
-                        GpuHistogramAlgorithm::CpuChunked => {
+                        DeviceType::Cpu(histogram_algorithm) => {
                             let key_slice: &[T] = (&input_data.0)
                                 .try_into()
                                 .map_err(|_| "Failed to run CPU prefix sum on device memory")?;
@@ -413,9 +416,8 @@ where
                                         let local_node: u16 =
                                             linux_wrapper::numa_node_of_cpu(cpu_id)
                                                 .expect("Failed to map CPU to NUMA node");
-                                        // FIXME: don't hard-code histogram algorithm
                                         let mut radix_prnr = CpuRadixPartitioner::new(
-                                            CpuHistogramAlgorithm::Chunked,
+                                            histogram_algorithm,
                                             CpuRadixPartitionAlgorithm::NC,
                                             radix_bits,
                                             DerefMemType::NumaMem(local_node, None),
@@ -427,7 +429,7 @@ where
                                 }
                             });
                         }
-                        _ => {
+                        DeviceType::Gpu(_) => {
                             radix_prnr.prefix_sum(
                                 RadixPass::First,
                                 input_data.0.as_launchable_slice(),

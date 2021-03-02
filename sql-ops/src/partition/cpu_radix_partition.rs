@@ -46,6 +46,24 @@
 //! The cache-alignment is also necessary for non-temporal SIMD writes, which
 //! must be aligned to their SIMD vector length.
 //!
+//! # Combining CPU histogram with a GPU partitioner
+//!
+//! CPU and GPU histograms and radix partitioners can be mixed and matched.
+//! For example, `CpuHistogramAlgorithm::Chunked` computes the exact same result
+//! as `GpuHistogramAlgorithm::Chunked`.
+//!
+//! Combining a CPU histogram with a GPU partitioner saves us from transferring
+//! the keys twice over the interconnect, once for the histogram and once for
+//! partitioning. Computing a histogram is light-weight and should be close to
+//! the memory bandwidth. See Polychroniou et al. "A comprehensive study of
+//! main-memory partitioning and its application to large-scale comparison-
+//! and radix-sort.
+//!
+//! The reasoning is that the required histograms are cheap to compute. The
+//! target size at maximum 2^12 buckets, which is only 32 KiB and should fit
+//! into the CPU's L1 cache. This upper bound for buckets is given by the
+//! GPU hardware and partitioning algorithm.
+//!
 //! # Copyright notes
 //!
 //! The C/C++ CPU code is based on [code kindly published by Cagri Balkesen and
