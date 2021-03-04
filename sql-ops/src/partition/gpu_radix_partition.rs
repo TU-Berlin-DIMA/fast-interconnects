@@ -559,6 +559,16 @@ impl GpuRadixPartitioner {
         &mut self,
         pass: RadixPass,
     ) -> Result<()> {
+        // Pre-load the CUDA module. The module consumes several hundred MB of
+        // GPU memory, but is loaded lazily on first use. Thus, the preallocation
+        // must also load the module to complete all state.
+        //
+        // Note that in some configurations, the Triton join fails with an
+        // out-of-memory error if the module is not pre-loaded. The reason is
+        // that the amount of free memory isn't correct without accounting for
+        // the module.
+        let _ = *crate::MODULE;
+
         T::allocate_partition_state_impl(self, pass)
     }
 
