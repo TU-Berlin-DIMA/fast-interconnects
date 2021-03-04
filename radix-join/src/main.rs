@@ -34,7 +34,7 @@ use sql_ops::partition::cpu_radix_partition::CpuHistogramAlgorithm;
 use sql_ops::partition::cpu_radix_partition::CpuRadixPartitionable;
 use sql_ops::partition::gpu_radix_partition::GpuHistogramAlgorithm;
 use sql_ops::partition::gpu_radix_partition::GpuRadixPartitionable;
-use sql_ops::partition::RadixBits;
+use sql_ops::partition::{RadixBits, RadixPass};
 use std::convert::TryInto;
 use std::mem::size_of;
 use std::path::PathBuf;
@@ -300,12 +300,10 @@ struct CmdOpt {
     #[structopt(
         long = "radix-bits",
         default_value = "8,8",
-        require_delimiter = true,
-        min_values = 1,
-        max_values = 2
+        parse(try_from_str = parse_radix_bits)
     )]
     /// Radix bits with which to partition
-    radix_bits: Vec<u32>,
+    radix_bits: RadixBits,
 
     #[structopt(short = "i", long = "device-id", default_value = "0")]
     /// Execute on GPU (See CUDA device list)
@@ -383,6 +381,22 @@ fn is_percent(x: String) -> std::result::Result<(), String> {
         })
 }
 
+fn parse_radix_bits(input: &str) -> std::result::Result<RadixBits, String> {
+    let radix_bits_ints: Vec<u32> = input
+        .split(',')
+        .map(str::trim)
+        .map(str::parse)
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|e| format!("{}", e))?;
+
+    let radix_bits = radix_bits_ints
+        .as_slice()
+        .try_into()
+        .map_err(|e| format!("{}", e))?;
+
+    Ok(radix_bits)
+}
+
 fn args_to_bench<T>(
     cmd: &CmdOpt,
     device: Device,
@@ -449,7 +463,7 @@ where
         cmd.partition_algorithm.into(),
         cmd.partition_algorithm_2nd.into(),
     ];
-    let radix_bits: RadixBits = cmd.radix_bits.as_slice().try_into()?;
+    let radix_bits = cmd.radix_bits;
     let dmem_buffer_bytes = cmd.dmem_buffer_size * 1024; // convert KiB to bytes
     let mem_type = cmd.partitions_mem_type;
     let threads = cmd.threads;
@@ -702,6 +716,10 @@ impl CmdOptToDataPoint for DataPoint {
             execution_method: Some(cmd.execution_method),
             device_codename: Some(dev_codename_str),
             dmem_buffer_size: Some(cmd.dmem_buffer_size),
+            threads: Some(cmd.threads),
+            radix_bits_fst: cmd.radix_bits.pass_radix_bits(RadixPass::First),
+            radix_bits_snd: cmd.radix_bits.pass_radix_bits(RadixPass::Second),
+            radix_bits_trd: cmd.radix_bits.pass_radix_bits(RadixPass::Third),
             hashing_scheme: Some(cmd.hashing_scheme),
             partitions_memory_type: Some(cmd.partitions_mem_type),
             partitions_memory_location: Some(cmd.partitions_location.clone()),

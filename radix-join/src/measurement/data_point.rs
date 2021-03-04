@@ -29,6 +29,9 @@ pub struct DataPoint {
     pub device_codename: Option<Vec<String>>,
     pub dmem_buffer_size: Option<usize>,
     pub threads: Option<usize>,
+    pub radix_bits_fst: Option<u32>,
+    pub radix_bits_snd: Option<u32>,
+    pub radix_bits_trd: Option<u32>,
     pub hashing_scheme: Option<ArgHashingScheme>,
     pub partitions_memory_type: Option<ArgMemType>,
     #[serde(serialize_with = "serialize_vec")]

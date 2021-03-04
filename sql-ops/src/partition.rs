@@ -50,7 +50,7 @@ fn fanout(radix_bits: u32) -> u32 {
 pub enum RadixPass {
     First = 0,
     Second,
-    Thrird,
+    Third,
 }
 
 /// The number of radix bits per pass.
