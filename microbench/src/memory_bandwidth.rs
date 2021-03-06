@@ -4,32 +4,24 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018-2020 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2018-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
+use crate::types::*;
+use crate::ArgPageType;
 use cuda_sys::cuda::CUstream;
-
 use numa_gpu::runtime::allocator::{Allocator, MemType};
 use numa_gpu::runtime::memory::{DerefMem, Mem};
 use numa_gpu::runtime::nvml::ThrottleReasons;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 use numa_gpu::runtime::{hw_info, numa};
-
-#[cfg(not(target_arch = "aarch64"))]
-use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
-
-#[cfg(target_arch = "aarch64")]
-use numa_gpu::runtime::hw_info::CudaDeviceInfo;
-
 use rustacuda::context::CurrentContext;
 use rustacuda::device::DeviceAttribute;
 use rustacuda::event::{Event, EventFlags};
 use rustacuda::memory::DeviceBox;
 use rustacuda::prelude::*;
-
 use serde_derive::Serialize;
-
 use std::convert::TryInto;
 use std::iter;
 use std::mem::{size_of, transmute_copy};
@@ -37,7 +29,11 @@ use std::ops::RangeInclusive;
 use std::rc::Rc;
 use std::time::Instant;
 
-use crate::types::*;
+#[cfg(not(target_arch = "aarch64"))]
+use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
+
+#[cfg(target_arch = "aarch64")]
+use numa_gpu::runtime::hw_info::CudaDeviceInfo;
 
 extern "C" {
     fn cpu_bandwidth_seq(
@@ -124,7 +120,7 @@ struct DataPoint<'h, 'd, 'n> {
     pub cpu_node: Option<u16>,
     pub memory_type: Option<BareMemType>,
     pub memory_node: Option<u16>,
-    pub huge_pages: Option<bool>,
+    pub page_type: Option<ArgPageType>,
     pub warm_up: bool,
     pub bytes: usize,
     pub threads: Option<ThreadCount>,
@@ -235,7 +231,7 @@ impl MemoryBandwidth {
             cpu_node,
             memory_node: mem_type_description.location,
             memory_type: Some(mem_type_description.bare_mem_type),
-            huge_pages: mem_type_description.huge_pages,
+            page_type: Some(mem_type_description.page_type),
             bytes,
             ..Default::default()
         };

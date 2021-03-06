@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018-2020 Clemens Lutz, German Research Center for Artificial Intelligence
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2018-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 use cuda_sys::cuda::{
@@ -16,7 +16,7 @@ use cuda_sys::cuda::{
 };
 
 use numa_gpu::error::ToResult;
-use numa_gpu::runtime::numa::NumaMemory;
+use numa_gpu::runtime::numa::{NumaMemory, PageType};
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 
 use rustacuda::prelude::*;
@@ -193,7 +193,11 @@ impl<'h, 'c> Measurement<'h, 'c> {
         let (mut hmem, malloc_ns, dynamic_pin_ns) = match alloc_type {
             MemoryAllocationType::Pageable => {
                 let timer = Instant::now();
-                let m = HostMem::NumaMem(NumaMemory::new(buf_len, self.memory_node, None));
+                let m = HostMem::NumaMem(NumaMemory::new(
+                    buf_len,
+                    self.memory_node,
+                    PageType::Default,
+                ));
                 let duration = timer.elapsed();
                 let ns: u64 = duration.as_secs() * 10_u64.pow(9) + duration.subsec_nanos() as u64;
 
@@ -212,7 +216,7 @@ impl<'h, 'c> Measurement<'h, 'c> {
             },
             MemoryAllocationType::DynamicallyPinned => {
                 let alloc_timer = Instant::now();
-                let mut m = NumaMemory::new(buf_len, self.memory_node, None);
+                let mut m = NumaMemory::new(buf_len, self.memory_node, PageType::Default);
                 let alloc_duration = alloc_timer.elapsed();
                 let alloc_ns: u64 =
                     alloc_duration.as_secs() * 10_u64.pow(9) + alloc_duration.subsec_nanos() as u64;

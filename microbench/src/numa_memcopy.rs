@@ -4,16 +4,14 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018-2020 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2018-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
+use crate::ArgPageType;
 use average::{concatenate, impl_from_iterator, Estimate, Max, Min, Quantile, Variance};
-
 use numa_gpu::runtime::numa::{self, NumaMemory};
-
 use serde_derive::Serialize;
-
 use std::io;
 use std::mem::size_of;
 use std::time::{Duration, Instant};
@@ -28,14 +26,14 @@ pub struct DataPoint<'h> {
     pub cpu_node: u16,
     pub src_node: u16,
     pub dst_node: u16,
-    pub huge_pages: Option<bool>,
+    pub page_type: ArgPageType,
     pub ns: u64,
 }
 
 pub struct NumaMemcopy {
     src: NumaMemory<u8>,
     dst: NumaMemory<u8>,
-    huge_pages: Option<bool>,
+    page_type: ArgPageType,
     cpu_node: u16,
     thread_pool: rayon::ThreadPool,
 }
@@ -46,12 +44,12 @@ impl NumaMemcopy {
         cpu_node: u16,
         src_node: u16,
         dst_node: u16,
-        huge_pages: Option<bool>,
+        page_type: ArgPageType,
         num_threads: usize,
     ) -> Self {
         // Allocate NUMA memory
-        let mut src = NumaMemory::new(size, src_node, huge_pages);
-        let mut dst = NumaMemory::new(size, dst_node, huge_pages);
+        let mut src = NumaMemory::new(size, src_node, page_type.into());
+        let mut dst = NumaMemory::new(size, dst_node, page_type.into());
 
         // Ensure that arrays are physically backed by memory
         for (i, x) in src.as_mut_slice().iter_mut().by_ref().enumerate() {
@@ -71,7 +69,7 @@ impl NumaMemcopy {
         Self {
             src,
             dst,
-            huge_pages,
+            page_type,
             cpu_node,
             thread_pool,
         }
@@ -150,7 +148,7 @@ impl NumaMemcopy {
                 cpu_node: self.cpu_node,
                 src_node: self.src.node(),
                 dst_node: self.dst.node(),
-                huge_pages: self.huge_pages,
+                page_type: self.page_type,
                 ns,
             });
 

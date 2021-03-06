@@ -4,12 +4,12 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2020 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2020-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 use crate::error::Result;
-use crate::{ArgDeviceType, ArgMemType, CmdTlbLatency};
+use crate::{ArgDeviceType, ArgMemType, ArgPageType, CmdTlbLatency};
 use serde_derive::Serialize;
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -20,7 +20,7 @@ pub struct DataPoint {
     pub device_id: Option<u16>,
     pub memory_type: Option<ArgMemType>,
     pub memory_location: Option<u16>,
-    pub huge_pages: Option<bool>,
+    pub page_type: Option<ArgPageType>,
     pub range_bytes: Option<usize>,
     pub stride_bytes: Option<usize>,
     pub threads: Option<u32>,
@@ -47,7 +47,7 @@ impl DataPoint {
             device_id: Some(cmd.device_id),
             memory_type: Some(cmd.mem_type),
             memory_location: Some(cmd.mem_location),
-            huge_pages: cmd.huge_pages,
+            page_type: Some(cmd.page_type),
             ..DataPoint::default()
         };
 

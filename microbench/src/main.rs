@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018-2020 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2018-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 mod cuda_memcopy;
@@ -24,6 +24,7 @@ use crate::numa_memcopy::NumaMemcopy;
 use crate::tlb_latency::TlbLatency;
 use crate::types::*;
 use numa_gpu::runtime::allocator;
+use numa_gpu::runtime::numa::PageType;
 use serde_derive::Serialize;
 use structopt::clap::arg_enum;
 use structopt::StructOpt;
@@ -33,6 +34,41 @@ arg_enum! {
     pub enum ArgDeviceType {
         CPU,
         GPU,
+    }
+}
+
+arg_enum! {
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+    pub enum ArgPageType {
+        Default,
+        Small,
+        TransparentHuge,
+        Huge2MB,
+        Huge1GB,
+    }
+}
+
+impl From<ArgPageType> for PageType {
+    fn from(arg_page_type: ArgPageType) -> PageType {
+        match arg_page_type {
+            ArgPageType::Default => PageType::Default,
+            ArgPageType::Small => PageType::Small,
+            ArgPageType::TransparentHuge => PageType::TransparentHuge,
+            ArgPageType::Huge2MB => PageType::Huge2MB,
+            ArgPageType::Huge1GB => PageType::Huge1GB,
+        }
+    }
+}
+
+impl From<PageType> for ArgPageType {
+    fn from(page_type: PageType) -> ArgPageType {
+        match page_type {
+            PageType::Default => ArgPageType::Default,
+            PageType::Small => ArgPageType::Small,
+            PageType::TransparentHuge => ArgPageType::TransparentHuge,
+            PageType::Huge2MB => ArgPageType::Huge2MB,
+            PageType::Huge1GB => ArgPageType::Huge1GB,
+        }
     }
 }
 
@@ -50,21 +86,24 @@ arg_enum! {
 #[derive(Debug)]
 pub struct ArgMemTypeHelper {
     mem_type: ArgMemType,
-    location: u16,
-    huge_pages: Option<bool>,
+    node: u16,
+    page_type: ArgPageType,
 }
 
 impl From<ArgMemTypeHelper> for allocator::MemType {
     fn from(
         ArgMemTypeHelper {
             mem_type,
-            location,
-            huge_pages,
+            node,
+            page_type,
         }: ArgMemTypeHelper,
     ) -> Self {
         match mem_type {
             ArgMemType::System => allocator::MemType::SysMem,
-            ArgMemType::Numa => allocator::MemType::NumaMem(location, huge_pages),
+            ArgMemType::Numa => allocator::MemType::NumaMem {
+                node,
+                page_type: page_type.into(),
+            },
             ArgMemType::Pinned => allocator::MemType::CudaPinnedMem,
             ArgMemType::Unified => allocator::MemType::CudaUniMem,
             ArgMemType::Device => allocator::MemType::CudaDevMem,
@@ -141,9 +180,14 @@ struct CmdBandwidth {
     /// Allocate memory on CPU or GPU (See numactl -H and CUDA device list)
     mem_location: u16,
 
-    /// Use small pages (false) or huge pages (true); no selection defaults to the OS configuration
-    #[structopt(long = "huge-pages")]
-    huge_pages: Option<bool>,
+    /// Page type with with to allocate memory
+    #[structopt(
+        long = "page-type",
+        default_value = "Default",
+        possible_values = &ArgPageType::variants(),
+        case_insensitive = true
+    )]
+    page_type: ArgPageType,
 
     #[structopt(long = "threads-lower", default_value = "1")]
     /// Number of CPU threads (lower bound)
@@ -214,9 +258,14 @@ struct CmdLatency {
     /// Allocate memory on CPU or GPU (See numactl -H and CUDA device list)
     mem_location: u16,
 
-    /// Use small pages (false) or huge pages (true); no selection defaults to the OS configuration
-    #[structopt(long = "huge-pages")]
-    huge_pages: Option<bool>,
+    /// Page type with with to allocate memory
+    #[structopt(
+        long = "page-type",
+        default_value = "Default",
+        possible_values = &ArgPageType::variants(),
+        case_insensitive = true
+    )]
+    page_type: ArgPageType,
 
     #[structopt(short = "l", long = "range-lower", default_value = "1")]
     /// Smallest buffer size (KB)
@@ -261,9 +310,14 @@ pub struct CmdTlbLatency {
     /// Allocate memory on CPU or GPU (See numactl -H and CUDA device list)
     mem_location: u16,
 
-    /// Use small pages (false) or huge pages (true); no selection defaults to the OS configuration
-    #[structopt(long = "huge-pages")]
-    huge_pages: Option<bool>,
+    /// Page type with with to allocate memory
+    #[structopt(
+        long = "page-type",
+        default_value = "Default",
+        possible_values = &ArgPageType::variants(),
+        case_insensitive = true
+    )]
+    page_type: ArgPageType,
 
     /// Smallest buffer size (MiB)
     #[structopt(short = "x", long = "range-lower", default_value = "4")]
@@ -305,9 +359,14 @@ struct CmdNumaCopy {
     /// Destination NUMA node ID
     dst_node: u16,
 
-    /// Use small pages (false) or huge pages (true); no selection defaults to the OS configuration
-    #[structopt(long = "huge-pages")]
-    huge_pages: Option<bool>,
+    /// Page type with with to allocate memory
+    #[structopt(
+        long = "page-type",
+        default_value = "Default",
+        possible_values = &ArgPageType::variants(),
+        case_insensitive = true
+    )]
+    page_type: ArgPageType,
 }
 
 #[derive(StructOpt)]
@@ -345,8 +404,8 @@ fn main() -> Result<()> {
 
             let mem_type_helper = ArgMemTypeHelper {
                 mem_type: bw.mem_type,
-                location: bw.mem_location,
-                huge_pages: bw.huge_pages,
+                node: bw.mem_location,
+                page_type: bw.page_type,
             };
 
             MemoryBandwidth::measure(
@@ -369,8 +428,8 @@ fn main() -> Result<()> {
 
             let mem_type_helper = ArgMemTypeHelper {
                 mem_type: lat.mem_type,
-                location: lat.mem_location,
-                huge_pages: lat.huge_pages,
+                node: lat.mem_location,
+                page_type: lat.page_type,
             };
 
             MemoryLatency::measure(
@@ -385,8 +444,8 @@ fn main() -> Result<()> {
         Command::TlbLatency(ref tlb) => {
             let mem_type_helper = ArgMemTypeHelper {
                 mem_type: tlb.mem_type,
-                location: tlb.mem_location,
-                huge_pages: tlb.huge_pages,
+                node: tlb.mem_location,
+                page_type: tlb.page_type,
             };
             let template = tlb_latency::DataPoint::from_cmd_options(tlb)?;
             let strides: Vec<_> = tlb.strides.iter().map(|&s| s * kb).collect();
@@ -406,7 +465,7 @@ fn main() -> Result<()> {
                 ncpy.cpu_node,
                 ncpy.src_node,
                 ncpy.dst_node,
-                ncpy.huge_pages,
+                ncpy.page_type.into(),
                 ncpy.threads,
             );
 

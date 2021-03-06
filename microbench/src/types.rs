@@ -4,12 +4,12 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018-2020 Clemens Lutz, German Research Center for Artificial Intelligence
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2018-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
+use super::ArgPageType;
 use numa_gpu::runtime::allocator;
-
 use serde_derive::Serialize;
 
 /// The device type and it's ID
@@ -36,29 +36,31 @@ pub enum BareMemType {
 pub struct MemTypeDescription {
     pub bare_mem_type: BareMemType,
     pub location: Option<u16>,
-    pub huge_pages: Option<bool>,
+    pub page_type: ArgPageType,
 }
 
 impl From<&allocator::MemType> for MemTypeDescription {
     fn from(mem_type: &allocator::MemType) -> Self {
-        let (bare_mem_type, location, huge_pages) = match mem_type {
-            allocator::MemType::SysMem => (BareMemType::System, None, None),
-            allocator::MemType::NumaMem(loc, huge_pages) => {
-                (BareMemType::Numa, Some(*loc), *huge_pages)
+        let (bare_mem_type, location, page_type) = match mem_type {
+            allocator::MemType::SysMem => (BareMemType::System, None, ArgPageType::Default),
+            allocator::MemType::AlignedSysMem { .. } => unimplemented!(),
+            allocator::MemType::NumaMem { node, page_type } => {
+                (BareMemType::Numa, Some(*node), (*page_type).into())
             }
-            allocator::MemType::NumaPinnedMem(loc, huge_pages) => {
-                (BareMemType::NumaPinned, Some(*loc), *huge_pages)
+            allocator::MemType::NumaPinnedMem { node, page_type } => {
+                (BareMemType::NumaPinned, Some(*node), (*page_type).into())
             }
-            allocator::MemType::DistributedNumaMem(_node_ratios) => unimplemented!(),
-            allocator::MemType::CudaPinnedMem => (BareMemType::Pinned, None, None),
-            allocator::MemType::CudaUniMem => (BareMemType::Unified, None, None),
-            allocator::MemType::CudaDevMem => (BareMemType::Device, None, None),
+            allocator::MemType::DistributedNumaMem { .. } => unimplemented!(),
+            allocator::MemType::DistributedNumaMemWithLen { .. } => unimplemented!(),
+            allocator::MemType::CudaPinnedMem => (BareMemType::Pinned, None, ArgPageType::Default),
+            allocator::MemType::CudaUniMem => (BareMemType::Unified, None, ArgPageType::Default),
+            allocator::MemType::CudaDevMem => (BareMemType::Device, None, ArgPageType::Default),
         };
 
         Self {
             bare_mem_type,
             location,
-            huge_pages,
+            page_type,
         }
     }
 }
