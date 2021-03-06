@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018-2021 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2018-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 //! Rust bindings to Linux's 'numa' library.
@@ -32,6 +32,81 @@ pub use super::linux_wrapper::{
     numa_set_strict as set_strict, numa_tonode_memory as tonode_memory,
 };
 
+/// Specifies the allocation page type
+///
+/// Linux supports multiple page sizes, as well as transparent huge pages.
+/// `PageType` configures type of pages (default, THP, HugeTLB) and page size
+/// used for a memory allocation.
+///
+/// # Additional steps required
+///
+/// Before huge pages can be allocated, they first must be enabled by the system
+/// administrator. For example, this can be done by running:
+///
+/// ```ignore
+/// echo 20 > /proc/sys/vm/nr_overcommit_hugepages
+/// ```
+///
+/// # Documentation
+///
+/// See the Linux kernel documentation on [transparent huge pages][thp_docs] and
+/// [HugeTLB][hugetlb_docs] for details.
+///
+/// [thp_docs]: https://www.kernel.org/doc/Documentation/vm/transhuge.txt
+/// [hugetlb_docs]: https://www.kernel.org/doc/Documentation/vm/hugetlbpage.txt
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum PageType {
+    /// The default page type
+    ///
+    /// As configured in the operating system. Modern Linux systems usually have
+    /// transparent huge pages enabled.
+    Default,
+
+    /// Small pages
+    ///
+    /// Forces the use of small pages with `madvise`. Thus, small pages are
+    /// allocated even if transparent huge pages are enabled. The small page
+    /// size depends on the processor architecture. For x86_64 it's 4 KiB, for
+    /// ppc64le it's 64 KiB.
+    Small,
+
+    /// Transparent huge pages
+    ///
+    /// Forces the use of transparent huge pages with `madvise`, even if huge
+    /// pages are disabled.
+    TransparentHuge,
+
+    /// 2 MiB huge pages
+    ///
+    /// Allocates 2 MiB huge pages using HugeTLB with `mmap`.
+    Huge2MB,
+
+    /// 1 GiB huge pages
+    ///
+    /// Allocates 1 GiB huge pages using HugeTLB with `mmap`.
+    Huge1GB,
+}
+
+impl PageType {
+    /// Returns the page size in bytes
+    fn page_size(&self) -> Result<usize> {
+        match self {
+            PageType::Default | PageType::Small => Ok(ProcessorCache::page_size()),
+            // THP use small page size instead of ProcessorCache::huge_page_size(),
+            // because alignment for mbind and munmap is on small page size.
+            PageType::TransparentHuge => Ok(ProcessorCache::page_size()),
+            PageType::Huge2MB => Ok(1 << 21),
+            PageType::Huge1GB => Ok(1 << 30),
+        }
+    }
+}
+
+/// Returns `x` rounded up to the page size
+fn round_to_next_page(x: usize, page_size: usize) -> usize {
+    let align_mask = !(page_size - 1);
+    (x + page_size - 1) & align_mask
+}
+
 /// A contiguous memory region that is dynamically allocated on the specified
 /// NUMA node.
 #[derive(Debug)]
@@ -39,6 +114,7 @@ pub struct NumaMemory<T> {
     pointer: *mut T,
     len: usize,
     node: u16,
+    page_type: PageType,
     is_memory_locked: bool,
     is_page_locked: bool,
 }
@@ -70,8 +146,14 @@ impl<T> NumaMemory<T> {
     ///
     /// `mmap` with `MMAP_ANONYMOUS` allocates pages. Separate alignment for cacheline alignment is
     /// not necessary.
-    pub fn new(len: usize, node: u16, huge_pages: Option<bool>) -> Self {
+    pub fn new(len: usize, node: u16, page_type: PageType) -> Self {
         assert_ne!(len, 0);
+
+        let hugetlb_flags = match page_type {
+            PageType::Huge2MB => libc::MAP_HUGETLB | libc::MAP_HUGE_2MB,
+            PageType::Huge1GB => libc::MAP_HUGETLB | libc::MAP_HUGE_1GB,
+            PageType::Default | PageType::Small | PageType::TransparentHuge => 0,
+        };
 
         // Allocate memory with mmap
         let size = len * size_of::<T>();
@@ -80,7 +162,7 @@ impl<T> NumaMemory<T> {
                 ptr::null_mut(),
                 size,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | hugetlb_flags,
                 0,
                 0,
             )
@@ -90,26 +172,34 @@ impl<T> NumaMemory<T> {
                 .expect("Failed to mmap memory");
         }
 
-        // Enable or disable transparent huge pages if the option is set
-        if let Some(hp_option) = huge_pages {
-            let advice = if hp_option {
-                libc::MADV_HUGEPAGE
-            } else {
-                libc::MADV_NOHUGEPAGE
-            };
+        // Enable or disable transparent transparent huge pages
+        let advice = match page_type {
+            PageType::Small => Some(libc::MADV_NOHUGEPAGE),
+            PageType::TransparentHuge => Some(libc::MADV_HUGEPAGE),
+            PageType::Default | PageType::Huge2MB | PageType::Huge1GB => None,
+        };
+
+        if let Some(advice_flag) = advice {
             unsafe {
-                if madvise(pointer, size, advice) == -1 {
+                if madvise(pointer, size, advice_flag) == -1 {
                     let err = IoError::last_os_error();
                     std::result::Result::Err::<(), _>(err).expect("Failed to madvise memory");
                 }
             }
         }
 
-        // Bind pages to the NUMA node
+        // Set up the NUMA node set for mbind
         let mut node_set = CpuSet::new();
         node_set.add(node);
+
+        // mbind fails with `EINVAL` for HugeTLB mappings if `size` isn't a
+        // multiple of the page size
+        let page_size = page_type.page_size().expect("Failed to get the page size");
+        let aligned_size = round_to_next_page(size, page_size);
+
+        // Bind to the NUMA node
         unsafe {
-            let slice = slice::from_raw_parts(pointer, size);
+            let slice = slice::from_raw_parts(pointer, aligned_size);
 
             mbind(slice, MemPolicyModes::BIND, node_set, MemBindFlags::STRICT)
                 .expect("Failed to bind memory to NUMA node.");
@@ -119,6 +209,7 @@ impl<T> NumaMemory<T> {
             pointer: pointer as *mut T,
             len,
             node,
+            page_type,
             is_memory_locked: false,
             is_page_locked: false,
         }
@@ -223,9 +314,17 @@ impl<T> Drop for NumaMemory<T> {
             }
         }
 
+        // munmap fails with `EINVAL` for HugeTLB mappings if `size` isn't a
+        // multiple of the page size. This error is documented in `man munmap`.
         let size = self.len * size_of::<T>();
+        let page_size = self
+            .page_type
+            .page_size()
+            .expect("Failed to get the page size");
+        let aligned_size = round_to_next_page(size, page_size);
+
         unsafe {
-            if munmap(self.pointer as *mut libc::c_void, size) == -1 {
+            if munmap(self.pointer as *mut libc::c_void, aligned_size) == -1 {
                 std::result::Result::Err::<(), _>(IoError::last_os_error())
                     .expect("Failed to munmap memory");
             }
@@ -266,6 +365,7 @@ pub struct DistributedNumaMemory<T> {
     ptr: *mut T,
     len: usize,
     node_ratios: Box<[NodeRatio]>,
+    page_type: PageType,
     is_memory_locked: bool,
     is_page_locked: bool,
 }
@@ -279,7 +379,7 @@ impl<T> DistributedNumaMemory<T> {
     /// lengths are rounded to a page.
     ///
     /// Note that the sum of all node lengths must equal `len`.
-    pub fn new_with_len(len: usize, node_lengths: Box<[NodeLen]>) -> Self {
+    pub fn new_with_len(len: usize, node_lengths: Box<[NodeLen]>, page_type: PageType) -> Self {
         assert_ne!(len, 0);
         {
             let total: usize = node_lengths.iter().map(|n| n.len).sum();
@@ -287,7 +387,7 @@ impl<T> DistributedNumaMemory<T> {
         }
 
         let size = len * size_of::<T>();
-        let page_size = ProcessorCache::page_size();
+        let page_size = page_type.page_size().expect("Failed to get the page size");
         let total_pages = (size + page_size - 1) / page_size;
 
         // Round number of pages up
@@ -309,7 +409,7 @@ impl<T> DistributedNumaMemory<T> {
             })
             .collect();
 
-        Self::new_with_pages(len, node_pages)
+        Self::new_with_pages(len, node_pages, page_type)
     }
 
     /// Allocates a new memory region.
@@ -319,7 +419,7 @@ impl<T> DistributedNumaMemory<T> {
     /// ratios, because the allocation granularity is a page.
     ///
     /// Note that the sum of all ratios must equal 1.
-    pub fn new_with_ratio(len: usize, node_ratios: Box<[NodeRatio]>) -> Self {
+    pub fn new_with_ratio(len: usize, node_ratios: Box<[NodeRatio]>, page_type: PageType) -> Self {
         assert_ne!(len, 0);
         {
             let total: Ratio<usize> = node_ratios.iter().map(|n| n.ratio).sum();
@@ -328,7 +428,7 @@ impl<T> DistributedNumaMemory<T> {
 
         // Calculate number of pages, rounded up
         let size = len * size_of::<T>();
-        let page_size = ProcessorCache::page_size();
+        let page_size = page_type.page_size().expect("Failed to get the page size");
         let pages = (size + page_size - 1) / page_size;
 
         // Scale the specified ratios by the number of pages and round down to
@@ -359,10 +459,16 @@ impl<T> DistributedNumaMemory<T> {
             })
             .collect();
 
-        Self::new_with_pages(len, node_pages)
+        Self::new_with_pages(len, node_pages, page_type)
     }
 
-    fn new_with_pages(len: usize, node_pages: Box<[NodeLen]>) -> Self {
+    fn new_with_pages(len: usize, node_pages: Box<[NodeLen]>, page_type: PageType) -> Self {
+        let hugetlb_flags = match page_type {
+            PageType::Huge2MB => libc::MAP_HUGETLB | libc::MAP_HUGE_2MB,
+            PageType::Huge1GB => libc::MAP_HUGETLB | libc::MAP_HUGE_1GB,
+            PageType::Default | PageType::Small | PageType::TransparentHuge => 0,
+        };
+
         // Allocate memory with mmap
         let size = len * size_of::<T>();
         let ptr = unsafe {
@@ -370,7 +476,7 @@ impl<T> DistributedNumaMemory<T> {
                 ptr::null_mut(),
                 size,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | hugetlb_flags,
                 0,
                 0,
             )
@@ -380,9 +486,26 @@ impl<T> DistributedNumaMemory<T> {
                 .expect("Failed to mmap memory");
         }
 
+        // Enable or disable transparent transparent huge pages
+        let advice = match page_type {
+            PageType::Small => Some(libc::MADV_NOHUGEPAGE),
+            PageType::TransparentHuge => Some(libc::MADV_HUGEPAGE),
+            PageType::Default | PageType::Huge2MB | PageType::Huge1GB => None,
+        };
+
+        if let Some(advice_flag) = advice {
+            unsafe {
+                if madvise(ptr, size, advice_flag) == -1 {
+                    let err = IoError::last_os_error();
+                    std::result::Result::Err::<(), _>(err).expect("Failed to madvise memory");
+                }
+            }
+        }
+
         // Calculate number of pages, rounded up
-        let page_size = ProcessorCache::page_size();
-        let pages = (size + page_size - 1) / page_size;
+        let page_size = page_type.page_size().expect("Failed to get the page size");
+        let aligned_size = round_to_next_page(size, page_size);
+        let pages = aligned_size / page_size;
 
         {
             let pages_sum: usize = node_pages.iter().map(|n| n.len).sum();
@@ -414,6 +537,8 @@ impl<T> DistributedNumaMemory<T> {
                         page_len as usize * page_size,
                     );
 
+                    // Note that mbind fails with `EINVAL` for HugeTLB mappings if `size`
+                    // isn't a multiple of the page size
                     mbind(slice, MemPolicyModes::BIND, node_set, MemBindFlags::STRICT)?;
                 }
 
@@ -430,6 +555,7 @@ impl<T> DistributedNumaMemory<T> {
             ptr: ptr as *mut T,
             len,
             node_ratios: final_node_ratios,
+            page_type,
             is_memory_locked: false,
             is_page_locked: false,
         }
@@ -461,9 +587,17 @@ impl<T> Drop for DistributedNumaMemory<T> {
             }
         }
 
+        // munmap fails with `EINVAL` for HugeTLB mappings if `size` isn't a
+        // multiple of the page size. This error is documented in `man munmap`.
         let size = self.len * size_of::<T>();
+        let page_size = self
+            .page_type
+            .page_size()
+            .expect("Failed to get the page size");
+        let aligned_size = round_to_next_page(size, page_size);
+
         unsafe {
-            if munmap(self.ptr as *mut libc::c_void, size) == -1 {
+            if munmap(self.ptr as *mut libc::c_void, aligned_size) == -1 {
                 std::result::Result::Err::<(), _>(IoError::last_os_error())
                     .expect("Failed to munmap memory");
             }

@@ -16,6 +16,7 @@ use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::hw_info;
 use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::{DerefMem, MemLock};
+use numa_gpu::runtime::numa::PageType;
 use rustacuda::memory::DeviceCopy;
 use serde_derive::Serialize;
 use serde_repr::Serialize_repr;
@@ -32,6 +33,29 @@ use std::sync::Arc;
 use std::time::Instant;
 use structopt::clap::arg_enum;
 use structopt::StructOpt;
+
+arg_enum! {
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+    pub enum ArgPageType {
+        Default,
+        Small,
+        TransparentHuge,
+        Huge2MB,
+        Huge1GB,
+    }
+}
+
+impl From<ArgPageType> for PageType {
+    fn from(arg_page_type: ArgPageType) -> PageType {
+        match arg_page_type {
+            ArgPageType::Default => PageType::Default,
+            ArgPageType::Small => PageType::Small,
+            ArgPageType::TransparentHuge => PageType::TransparentHuge,
+            ArgPageType::Huge2MB => PageType::Huge2MB,
+            ArgPageType::Huge1GB => PageType::Huge1GB,
+        }
+    }
+}
 
 arg_enum! {
     #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
@@ -153,9 +177,14 @@ struct Options {
     #[structopt(long = "output-location", default_value = "0")]
     output_location: u16,
 
-    /// Use small pages (false) or huge pages (true); no selection defaults to the OS configuration
-    #[structopt(long = "huge-pages")]
-    huge_pages: Option<bool>,
+    /// Page type with with to allocate memory
+    #[structopt(
+        long = "page-type",
+        default_value = "Default",
+        possible_values = &ArgPageType::variants(),
+        case_insensitive = true
+    )]
+    page_type: ArgPageType,
 
     /// Relation's data distribution
     #[structopt(
@@ -193,7 +222,7 @@ struct DataPoint {
     pub block_size: Option<u32>,
     pub input_location: Option<u16>,
     pub output_location: Option<u16>,
-    pub huge_pages: Option<bool>,
+    pub page_type: Option<ArgPageType>,
     pub tuple_bytes: Option<ArgTupleBytes>,
     pub tuples: Option<usize>,
     pub data_distribution: Option<ArgDataDistribution>,
@@ -255,7 +284,10 @@ where
                         prefix_sum_algorithm,
                         partition_algorithm,
                         radix_bits,
-                        DerefMemType::NumaMem(local_node, None),
+                        DerefMemType::NumaMem {
+                            node: local_node,
+                            page_type: PageType::Default,
+                        },
                     )
                 })
                 .collect();
@@ -409,8 +441,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         CpuAffinity::default()
     };
 
-    let input_mem_type = DerefMemType::NumaMem(options.input_location, options.huge_pages);
-    let output_mem_type = MemType::NumaMem(options.output_location, options.huge_pages);
+    let input_mem_type = DerefMemType::NumaMem {
+        node: options.input_location,
+        page_type: options.page_type.into(),
+    };
+    let output_mem_type = MemType::NumaMem {
+        node: options.output_location,
+        page_type: options.page_type.into(),
+    };
 
     if let Some(parent) = options.csv.parent() {
         if !parent.exists() {
@@ -428,7 +466,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         device_codename: Some(hw_info::cpu_codename()?),
         input_location: Some(options.input_location),
         output_location: Some(options.output_location),
-        huge_pages: options.huge_pages,
+        page_type: Some(options.page_type),
         tuple_bytes: Some(options.tuple_bytes),
         tuples: Some(options.tuples),
         data_distribution: Some(options.data_distribution),

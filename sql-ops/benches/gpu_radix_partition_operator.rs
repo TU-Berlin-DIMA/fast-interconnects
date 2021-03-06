@@ -16,7 +16,7 @@ use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::{Mem, MemLock};
-use numa_gpu::runtime::numa::NodeRatio;
+use numa_gpu::runtime::numa::{NodeRatio, PageType};
 use numa_gpu::utils::DeviceType;
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
 use rustacuda::device::DeviceAttribute;
@@ -59,11 +59,34 @@ arg_enum! {
     }
 }
 
+arg_enum! {
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+    pub enum ArgPageType {
+        Default,
+        Small,
+        TransparentHuge,
+        Huge2MB,
+        Huge1GB,
+    }
+}
+
+impl From<ArgPageType> for PageType {
+    fn from(arg_page_type: ArgPageType) -> PageType {
+        match arg_page_type {
+            ArgPageType::Default => PageType::Default,
+            ArgPageType::Small => PageType::Small,
+            ArgPageType::TransparentHuge => PageType::TransparentHuge,
+            ArgPageType::Huge2MB => PageType::Huge2MB,
+            ArgPageType::Huge1GB => PageType::Huge1GB,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ArgMemTypeHelper {
     pub mem_type: ArgMemType,
     pub node_ratios: Box<[NodeRatio]>,
-    pub huge_pages: Option<bool>,
+    pub page_type: PageType,
 }
 
 impl From<ArgMemTypeHelper> for MemType {
@@ -71,14 +94,23 @@ impl From<ArgMemTypeHelper> for MemType {
         ArgMemTypeHelper {
             mem_type,
             node_ratios,
-            huge_pages,
+            page_type,
         }: ArgMemTypeHelper,
     ) -> Self {
         match mem_type {
             ArgMemType::System => MemType::SysMem,
-            ArgMemType::Numa => MemType::NumaMem(node_ratios[0].node, huge_pages),
-            ArgMemType::NumaLazyPinned => MemType::NumaPinnedMem(node_ratios[0].node, huge_pages),
-            ArgMemType::DistributedNuma => MemType::DistributedNumaMem(node_ratios),
+            ArgMemType::Numa => MemType::NumaMem {
+                node: node_ratios[0].node,
+                page_type,
+            },
+            ArgMemType::NumaLazyPinned => MemType::NumaPinnedMem {
+                node: node_ratios[0].node,
+                page_type,
+            },
+            ArgMemType::DistributedNuma => MemType::DistributedNumaMem {
+                nodes: node_ratios,
+                page_type,
+            },
             ArgMemType::Pinned => MemType::CudaPinnedMem,
             ArgMemType::Unified => MemType::CudaUniMem,
             ArgMemType::Device => MemType::CudaDevMem,
@@ -250,9 +282,14 @@ struct Options {
     #[structopt(long = "output-location", default_value = "0")]
     output_location: u16,
 
-    /// Use small pages (false) or huge pages (true); no selection defaults to the OS configuration
-    #[structopt(long = "huge-pages")]
-    huge_pages: Option<bool>,
+    /// Page type with with to allocate memory
+    #[structopt(
+        long = "page-type",
+        default_value = "Default",
+        possible_values = &ArgPageType::variants(),
+        case_insensitive = true
+    )]
+    page_type: ArgPageType,
 
     /// Relation's data distribution
     #[structopt(
@@ -293,7 +330,7 @@ struct DataPoint {
     pub output_mem_type: Option<ArgMemType>,
     pub input_location: Option<u16>,
     pub output_location: Option<u16>,
-    pub huge_pages: Option<bool>,
+    pub page_type: Option<ArgPageType>,
     pub tuple_bytes: Option<ArgTupleBytes>,
     pub tuples: Option<usize>,
     pub data_distribution: Option<ArgDataDistribution>,
@@ -420,7 +457,10 @@ where
                                             histogram_algorithm,
                                             CpuRadixPartitionAlgorithm::NC,
                                             radix_bits,
-                                            DerefMemType::NumaMem(local_node, None),
+                                            DerefMemType::NumaMem {
+                                                node: local_node,
+                                                page_type: PageType::Default,
+                                            },
                                         );
                                         radix_prnr
                                             .prefix_sum(input, output)
@@ -564,7 +604,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             node: options.input_location,
             ratio: Ratio::from_integer(0),
         }]),
-        huge_pages: options.huge_pages,
+        page_type: options.page_type.into(),
     }
     .into();
 
@@ -574,7 +614,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             node: options.output_location,
             ratio: Ratio::from_integer(0),
         }]),
-        huge_pages: options.huge_pages,
+        page_type: options.page_type.into(),
     }
     .into();
 
@@ -589,7 +629,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         output_mem_type: Some(options.output_mem_type),
         input_location: Some(options.input_location),
         output_location: Some(options.output_location),
-        huge_pages: options.huge_pages,
+        page_type: Some(options.page_type),
         tuple_bytes: Some(options.tuple_bytes),
         tuples: Some(options.tuples),
         data_distribution: Some(options.data_distribution),
