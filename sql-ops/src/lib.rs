@@ -55,6 +55,10 @@ pub(crate) mod constants {
     include!(concat!(env!("OUT_DIR"), "/constants.rs"));
 }
 
+// Export cache line constants
+pub use constants::CACHE_LINE_SIZE as CPU_CACHE_LINE_SIZE;
+pub use constants::GPU_CACHE_LINE_SIZE;
+
 static mut MODULE_OWNER: Option<Module> = None;
 static MODULE: Lazy<&'static Module> = Lazy::new(|| {
     let module_path = CString::new(env!("CUDAUTILS_PATH"))

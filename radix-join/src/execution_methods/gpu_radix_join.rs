@@ -15,7 +15,6 @@ use numa_gpu::error::Result as NumaGpuResult;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::cuda_wrapper;
-use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::*;
 use numa_gpu::runtime::numa::PageType;
 use numa_gpu::utils::DeviceType;
@@ -214,16 +213,12 @@ where
                     .chain(inner_key_chunks.into_iter().zip(inner_offsets_chunks))
                 {
                     s.spawn(move |_| {
-                        let cpu_id = CpuAffinity::get_cpu().expect("Failed to get CPU ID");
-                        let local_node: u16 = linux_wrapper::numa_node_of_cpu(cpu_id)
-                            .expect("Failed to map CPU to NUMA node");
                         let mut radix_prnr = CpuRadixPartitioner::new(
                             histogram_algorithm,
                             CpuRadixPartitionAlgorithm::NC,
                             radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
-                            DerefMemType::NumaMem {
-                                node: local_node,
-                                page_type: PageType::Default,
+                            DerefMemType::AlignedSysMem {
+                                align_bytes: sql_ops::CPU_CACHE_LINE_SIZE as usize,
                             },
                         );
                         radix_prnr
