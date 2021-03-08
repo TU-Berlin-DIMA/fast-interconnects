@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2021, Clemens Lutz <lutzcle@cml.li>
+ * Copyright 2021 Clemens Lutz
  * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
@@ -14,7 +14,7 @@ use num_rational::Ratio;
 use numa_gpu::runtime::allocator::{DerefMemType, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::hw_info::NvidiaDriverInfo;
-use numa_gpu::runtime::numa::NodeRatio;
+use numa_gpu::runtime::numa::{NodeRatio, PageType};
 use numa_gpu::utils::DeviceType;
 use once_cell::sync::Lazy;
 use radix_join::error::Result as RJResult;
@@ -72,6 +72,7 @@ where
         CpuAffinity,
         MemType,
         MemType,
+        PageType,
         (&GridSize, &BlockSize),
         (&GridSize, &BlockSize),
     ) -> RJResult<(i64, RadixJoinPoint)>,
@@ -129,6 +130,7 @@ where
         CpuAffinity::default(),
         partitions_mem_type,
         MemType::CudaDevMem,
+        PageType::Default,
         (&grid_size, &block_size),
         (&grid_size, &block_size),
     )?;
@@ -150,16 +152,19 @@ fn partitions_type_cached(device: &Device) -> Result<MemType, Box<dyn Error>> {
     let cache_node = device.numa_node()?;
     let overflow_node = device.numa_memory_affinity()?;
 
-    let mem_type = MemType::DistributedNumaMem(Box::new([
-        NodeRatio {
-            node: cache_node,
-            ratio: Ratio::from_integer(0),
-        },
-        NodeRatio {
-            node: overflow_node,
-            ratio: Ratio::from_integer(0),
-        },
-    ]));
+    let mem_type = MemType::DistributedNumaMem {
+        nodes: Box::new([
+            NodeRatio {
+                node: cache_node,
+                ratio: Ratio::from_integer(0),
+            },
+            NodeRatio {
+                node: overflow_node,
+                ratio: Ratio::from_integer(0),
+            },
+        ]),
+        page_type: PageType::Default,
+    };
 
     Ok(mem_type)
 }

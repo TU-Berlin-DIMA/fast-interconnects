@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019-2021, Clemens Lutz <lutzcle@cml.li>
+ * Copyright 2019-2021 Clemens Lutz
  * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
@@ -42,7 +42,7 @@ pub struct DataPoint {
     pub state_memory_location: Option<u16>,
     pub tuple_bytes: Option<ArgTupleBytes>,
     pub relation_memory_type: Option<ArgMemType>,
-    pub huge_pages: Option<bool>,
+    pub page_type: Option<ArgPageType>,
     pub inner_relation_memory_location: Option<u16>,
     pub outer_relation_memory_location: Option<u16>,
     pub build_tuples: Option<usize>,

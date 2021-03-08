@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018-2021 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2018-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 use data_store::join_data::{JoinDataBuilder, JoinDataGenFn};
@@ -178,9 +178,14 @@ struct CmdOpt {
     #[structopt(long = "outer-rel-location", default_value = "0")]
     outer_rel_location: u16,
 
-    /// Use small pages (false) or huge pages (true); no selection defaults to the OS configuration
-    #[structopt(long = "huge-pages")]
-    huge_pages: Option<bool>,
+    /// Page type with with to allocate memory
+    #[structopt(
+        long = "page-type",
+        default_value = "Default",
+        possible_values = &ArgPageType::variants(),
+        case_insensitive = true
+    )]
+    page_type: ArgPageType,
 
     /// Use a pre-defined or custom data set.
     //   blanas: Blanas et al. "Main memory hash join algorithms for multi-core CPUs"
@@ -426,7 +431,7 @@ where
     let grid_size = GridSize::x(multiprocessors * grid_overcommit_factor);
     let stream_grid_size = GridSize::x((multiprocessors / 2) * grid_overcommit_factor);
 
-    let huge_pages = cmd.huge_pages;
+    let page_type = cmd.page_type;
 
     let mut data_builder = JoinDataBuilder::default();
     data_builder
@@ -438,7 +443,7 @@ where
                     node: cmd.inner_rel_location,
                     ratio: Ratio::from_integer(1),
                 }]),
-                huge_pages,
+                page_type,
             }
             .into(),
         )
@@ -449,7 +454,7 @@ where
                     node: cmd.outer_rel_location,
                     ratio: Ratio::from_integer(1),
                 }]),
-                huge_pages,
+                page_type,
             }
             .into(),
         );
@@ -469,7 +474,10 @@ where
     let threads = cmd.threads;
 
     let state_mem_type = match cmd.state_mem_type {
-        ArgMemType::Numa => MemType::NumaMem(cmd.state_location, Some(true)),
+        ArgMemType::Numa => MemType::NumaMem {
+            node: cmd.state_location,
+            page_type: page_type.into(),
+        },
         ArgMemType::Device => MemType::CudaDevMem,
         _ => unreachable!(),
     };
@@ -490,7 +498,7 @@ where
     let partitions_mem_type: MemType = ArgMemTypeHelper {
         mem_type,
         node_ratios: node_ratios.clone(),
-        huge_pages,
+        page_type,
     }
     .into();
 
@@ -552,6 +560,7 @@ where
                 cpu_affinity.clone(),
                 partitions_mem_type.clone(),
                 state_mem_type.clone(),
+                page_type.into(),
                 (&grid_size, &block_size),
                 (&stream_grid_size, &block_size),
             )?;
@@ -576,6 +585,7 @@ where
                 cpu_affinity.clone(),
                 partitions_mem_type.clone(),
                 state_mem_type.clone(),
+                page_type.into(),
                 (&grid_size, &block_size),
                 (&stream_grid_size, &block_size),
             )?;
@@ -731,7 +741,7 @@ impl CmdOptToDataPoint for DataPoint {
             },
             tuple_bytes: Some(cmd.tuple_bytes),
             relation_memory_type: Some(cmd.mem_type),
-            huge_pages: cmd.huge_pages,
+            page_type: Some(cmd.page_type),
             inner_relation_memory_location: Some(cmd.inner_rel_location),
             outer_relation_memory_location: Some(cmd.outer_rel_location),
             data_distribution: Some(cmd.data_distribution),

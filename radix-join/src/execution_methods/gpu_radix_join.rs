@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2020-2021, Clemens Lutz <lutzcle@cml.li>
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2020-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 use crate::error::{ErrorKind, Result};
@@ -17,6 +17,7 @@ use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::cuda_wrapper;
 use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::*;
+use numa_gpu::runtime::numa::PageType;
 use numa_gpu::utils::DeviceType;
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
 use rustacuda::event::{Event, EventFlags};
@@ -93,6 +94,7 @@ pub fn gpu_radix_join<T>(
     cpu_affinity: CpuAffinity,
     partitions_mem_type: MemType,
     stream_state_mem_type: MemType,
+    _page_type: PageType,
     partition_dim: (&GridSize, &BlockSize),
     join_dim: (&GridSize, &BlockSize),
 ) -> Result<(i64, RadixJoinPoint)>
@@ -219,7 +221,10 @@ where
                             histogram_algorithm,
                             CpuRadixPartitionAlgorithm::NC,
                             radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
-                            DerefMemType::NumaMem(local_node, None),
+                            DerefMemType::NumaMem {
+                                node: local_node,
+                                page_type: PageType::Default,
+                            },
                         );
                         radix_prnr
                             .prefix_sum(input, output)

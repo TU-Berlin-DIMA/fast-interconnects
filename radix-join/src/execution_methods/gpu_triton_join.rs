@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2021, Clemens Lutz <lutzcle@cml.li>
+ * Copyright 2021 Clemens Lutz
  * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
@@ -18,7 +18,7 @@ use numa_gpu::runtime::cuda_wrapper;
 use numa_gpu::runtime::hw_info::ProcessorCache;
 use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::*;
-use numa_gpu::runtime::numa::NodeLen;
+use numa_gpu::runtime::numa::{NodeLen, PageType};
 use numa_gpu::utils::DeviceType;
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
 use rustacuda::event::{Event, EventFlags};
@@ -105,6 +105,7 @@ pub fn gpu_triton_join<T>(
     cpu_affinity: CpuAffinity,
     partitions_mem_type: MemType,
     stream_state_mem_type: MemType,
+    page_type: PageType,
     partition_dim: (&GridSize, &BlockSize),
     join_dim: (&GridSize, &BlockSize),
 ) -> Result<(i64, RadixJoinPoint)>
@@ -127,7 +128,7 @@ where
     let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
 
     let (cache_node, overflow_node) =
-        if let MemType::DistributedNumaMem(nodes) = partitions_mem_type {
+        if let MemType::DistributedNumaMem { nodes, .. } = partitions_mem_type {
             if let [cache_node, overflow_node] = *nodes {
                 Ok((cache_node.node, overflow_node.node))
             } else {
@@ -162,7 +163,10 @@ where
     let max_chunks_2nd = stream_grid_size.x;
     let join_result_sums_len = (stream_grid_size.x * stream_block_size.x) as usize;
 
-    let offsets_mem_type = MemType::NumaMem(overflow_node, Some(true));
+    let offsets_mem_type = MemType::NumaMem {
+        node: overflow_node,
+        page_type,
+    };
 
     let mut radix_prnr = GpuRadixPartitioner::new(
         histogram_algorithm_fst.gpu_or_else(|cpu_algo| cpu_algo.into()),
@@ -228,7 +232,10 @@ where
                             histogram_algorithm,
                             CpuRadixPartitionAlgorithm::NC,
                             radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
-                            DerefMemType::NumaMem(local_node, None),
+                            DerefMemType::NumaMem {
+                                node: local_node,
+                                page_type: PageType::Default,
+                            },
                         );
                         radix_prnr
                             .prefix_sum(input, output)
@@ -384,7 +391,7 @@ where
     let cached_len = free / 2 / mem::size_of::<Tuple<T, T>>();
 
     let (inner_rel_alloc, cached_build_tuples) =
-        build_distributed_partitions_allocator(cached_len, cache_node, overflow_node)?;
+        build_distributed_partitions_allocator(cached_len, cache_node, overflow_node, page_type)?;
     let mut inner_rel_partitions = PartitionedRelation::new(
         data.build_relation_key.len(),
         histogram_algorithm_fst.either(|cpu| cpu.into(), |gpu| gpu.into()),
@@ -395,7 +402,7 @@ where
     );
 
     let (outer_rel_alloc, cached_probe_tuples) =
-        build_distributed_partitions_allocator(cached_len, cache_node, overflow_node)?;
+        build_distributed_partitions_allocator(cached_len, cache_node, overflow_node, page_type)?;
     let mut outer_rel_partitions = PartitionedRelation::new(
         data.probe_relation_key.len(),
         histogram_algorithm_fst.either(|cpu| cpu.into(), |gpu| gpu.into()),
@@ -609,6 +616,7 @@ fn build_distributed_partitions_allocator<T>(
     cache_max_len: usize,
     gpu_node: u16,
     cpu_node: u16,
+    page_type: PageType,
 ) -> Result<(MemAllocFn<Tuple<T, T>>, Rc<RefCell<Option<usize>>>)>
 where
     T: Clone + Default + DeviceCopy,
@@ -630,16 +638,19 @@ where
         cached_len_setter.replace(Some(cached_len));
 
         // FIXME; make DistributedNumaMem use huge pages
-        let mem_type = MemType::DistributedNumaMemWithLen(Box::new([
-            NodeLen {
-                node: gpu_node,
-                len: cached_len,
-            },
-            NodeLen {
-                node: cpu_node,
-                len: overflowed_len,
-            },
-        ]));
+        let mem_type = MemType::DistributedNumaMemWithLen {
+            nodes: Box::new([
+                NodeLen {
+                    node: gpu_node,
+                    len: cached_len,
+                },
+                NodeLen {
+                    node: cpu_node,
+                    len: overflowed_len,
+                },
+            ]),
+            page_type,
+        };
 
         Allocator::alloc_mem(mem_type, len)
     };
