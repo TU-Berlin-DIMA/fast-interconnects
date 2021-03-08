@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018-2020 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2018-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 mod error;
@@ -125,9 +125,16 @@ struct CmdOpt {
     /// Allocate memory for outer relation on CPU or GPU (See numactl -H and CUDA device list)
     outer_rel_location: u16,
 
-    /// Use small pages (false) or huge pages (true); no selection defaults to the OS configuration
-    #[structopt(long = "huge-pages")]
-    huge_pages: Option<bool>,
+    /// Page type with with to allocate memory
+    #[structopt(
+        long = "page-type",
+        default_value = "Default",
+        raw(
+            possible_values = "&ArgPageType::variants()",
+            case_insensitive = "true"
+        )
+    )]
+    page_type: ArgPageType,
 
     /// Use a pre-defined or custom data set.
     //   blanas: Blanas et al. "Main memory hash join algorithms for multi-core CPUs"
@@ -337,7 +344,7 @@ where
         }]))
         .inner_mem_type(cmd.mem_type)
         .outer_mem_type(cmd.mem_type)
-        .huge_pages(cmd.huge_pages);
+        .page_type(cmd.page_type);
 
     // Select the operator to run, depending on the device type
     let exec_method = cmd.execution_method.clone();
@@ -345,7 +352,7 @@ where
     let mem_type = cmd.hash_table_mem_type;
     let threads = cmd.threads.clone();
     let device_id = cmd.device_id;
-    let huge_pages = cmd.huge_pages;
+    let page_type = cmd.page_type;
 
     let morsel_spec = MorselSpec {
         cpu_morsel_bytes: cmd.cpu_morsel_bytes,
@@ -418,7 +425,7 @@ where
                 ArgMemTypeHelper {
                     mem_type,
                     node_ratios: node_ratios.clone(),
-                    huge_pages,
+                    page_type,
                 }
                 .into(),
             );
@@ -429,7 +436,7 @@ where
                 ArgMemTypeHelper {
                     mem_type,
                     node_ratios: node_ratios.clone(),
-                    huge_pages,
+                    page_type,
                 }
                 .into(),
             );
@@ -445,7 +452,7 @@ where
                     ArgMemTypeHelper {
                         mem_type,
                         node_ratios: node_ratios.clone(),
-                        huge_pages,
+                        page_type,
                     }
                     .into(),
                 );
@@ -462,7 +469,7 @@ where
                 ArgMemTypeHelper {
                     mem_type,
                     node_ratios: node_ratios.clone(),
-                    huge_pages,
+                    page_type,
                 }
                 .into(),
             );
@@ -479,7 +486,7 @@ where
                 ArgMemTypeHelper {
                     mem_type,
                     node_ratios: node_ratios.clone(),
-                    huge_pages,
+                    page_type,
                 }
                 .into(),
             );
@@ -508,7 +515,7 @@ where
                         node: cpu_node,
                         ratio: Ratio::from_integer(0),
                     }]),
-                    huge_pages,
+                    page_type,
                 }
                 .into(),
             );
@@ -518,7 +525,7 @@ where
                 ArgMemTypeHelper {
                     mem_type,
                     node_ratios: node_ratios.clone(),
-                    huge_pages,
+                    page_type,
                 }
                 .into(),
             );

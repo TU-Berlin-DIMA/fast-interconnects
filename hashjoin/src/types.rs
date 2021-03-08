@@ -4,14 +4,14 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2019-2020 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2019-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 use clap::arg_enum;
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::cuda::CudaTransferStrategy;
-use numa_gpu::runtime::numa::NodeRatio;
+use numa_gpu::runtime::numa::{NodeRatio, PageType};
 use serde_derive::Serialize;
 use serde_repr::Serialize_repr;
 use sql_ops::join::HashingScheme;
@@ -58,6 +58,17 @@ arg_enum! {
 
 arg_enum! {
     #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+    pub enum ArgPageType {
+        Default,
+        Small,
+        TransparentHuge,
+        Huge2MB,
+        Huge1GB,
+    }
+}
+
+arg_enum! {
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
     pub enum ArgExecutionMethod {
         Cpu,
         Gpu,
@@ -99,7 +110,7 @@ arg_enum! {
 pub struct ArgMemTypeHelper {
     pub mem_type: ArgMemType,
     pub node_ratios: Box<[NodeRatio]>,
-    pub huge_pages: Option<bool>,
+    pub page_type: ArgPageType,
 }
 
 impl From<ArgMemTypeHelper> for allocator::MemType {
@@ -107,16 +118,23 @@ impl From<ArgMemTypeHelper> for allocator::MemType {
         ArgMemTypeHelper {
             mem_type,
             node_ratios,
-            huge_pages,
+            page_type,
         }: ArgMemTypeHelper,
     ) -> Self {
         match mem_type {
             ArgMemType::System => allocator::MemType::SysMem,
-            ArgMemType::Numa => allocator::MemType::NumaMem(node_ratios[0].node, huge_pages),
-            ArgMemType::NumaLazyPinned => {
-                allocator::MemType::NumaPinnedMem(node_ratios[0].node, huge_pages)
-            }
-            ArgMemType::DistributedNuma => allocator::MemType::DistributedNumaMem(node_ratios),
+            ArgMemType::Numa => allocator::MemType::NumaMem {
+                node: node_ratios[0].node,
+                page_type: page_type.into(),
+            },
+            ArgMemType::NumaLazyPinned => allocator::MemType::NumaPinnedMem {
+                node: node_ratios[0].node,
+                page_type: page_type.into(),
+            },
+            ArgMemType::DistributedNuma => allocator::MemType::DistributedNumaMem {
+                nodes: node_ratios,
+                page_type: page_type.into(),
+            },
             ArgMemType::Pinned => allocator::MemType::CudaPinnedMem,
             ArgMemType::Unified => allocator::MemType::CudaUniMem,
             ArgMemType::Device => allocator::MemType::CudaDevMem,
@@ -129,19 +147,38 @@ impl From<ArgMemTypeHelper> for allocator::DerefMemType {
         ArgMemTypeHelper {
             mem_type,
             node_ratios,
-            huge_pages,
+            page_type,
         }: ArgMemTypeHelper,
     ) -> Self {
         match mem_type {
             ArgMemType::System => allocator::DerefMemType::SysMem,
-            ArgMemType::Numa => allocator::DerefMemType::NumaMem(node_ratios[0].node, huge_pages),
-            ArgMemType::NumaLazyPinned => {
-                allocator::DerefMemType::NumaPinnedMem(node_ratios[0].node, huge_pages)
-            }
-            ArgMemType::DistributedNuma => allocator::DerefMemType::DistributedNumaMem(node_ratios),
+            ArgMemType::Numa => allocator::DerefMemType::NumaMem {
+                node: node_ratios[0].node,
+                page_type: page_type.into(),
+            },
+            ArgMemType::NumaLazyPinned => allocator::DerefMemType::NumaPinnedMem {
+                node: node_ratios[0].node,
+                page_type: page_type.into(),
+            },
+            ArgMemType::DistributedNuma => allocator::DerefMemType::DistributedNumaMem {
+                nodes: node_ratios,
+                page_type: page_type.into(),
+            },
             ArgMemType::Pinned => allocator::DerefMemType::CudaPinnedMem,
             ArgMemType::Unified => allocator::DerefMemType::CudaUniMem,
             ArgMemType::Device => panic!("Error: Device memory not supported in this context!"),
+        }
+    }
+}
+
+impl From<ArgPageType> for PageType {
+    fn from(arg_page_type: ArgPageType) -> PageType {
+        match arg_page_type {
+            ArgPageType::Default => PageType::Default,
+            ArgPageType::Small => PageType::Small,
+            ArgPageType::TransparentHuge => PageType::TransparentHuge,
+            ArgPageType::Huge2MB => PageType::Huge2MB,
+            ArgPageType::Huge1GB => PageType::Huge1GB,
         }
     }
 }

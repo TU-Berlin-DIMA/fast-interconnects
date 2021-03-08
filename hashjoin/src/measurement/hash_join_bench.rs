@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2019-2020 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2019-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 use crate::error::{ErrorKind, Result};
@@ -58,7 +58,7 @@ pub struct HashJoinBenchBuilder {
     outer_location: Box<[NodeRatio]>,
     inner_mem_type: ArgMemType,
     outer_mem_type: ArgMemType,
-    huge_pages: Option<bool>,
+    page_type: ArgPageType,
     hashing_scheme: HashingScheme,
     is_selective: bool,
 }
@@ -95,7 +95,7 @@ impl Default for HashJoinBenchBuilder {
             }]),
             inner_mem_type: ArgMemType::System,
             outer_mem_type: ArgMemType::System,
-            huge_pages: None,
+            page_type: ArgPageType::Default,
             hashing_scheme: HashingScheme::LinearProbing,
             is_selective: false,
         }
@@ -138,8 +138,8 @@ impl HashJoinBenchBuilder {
         self
     }
 
-    pub fn huge_pages(&mut self, huge_pages: Option<bool>) -> &mut Self {
-        self.huge_pages = huge_pages;
+    pub fn page_type(&mut self, page_type: ArgPageType) -> &mut Self {
+        self.page_type = page_type;
         self
     }
 
@@ -173,7 +173,7 @@ impl HashJoinBenchBuilder {
                 ArgMemTypeHelper {
                     mem_type,
                     node_ratios: node_ratios.clone(),
-                    huge_pages: self.huge_pages,
+                    page_type: self.page_type,
                 }
                 .into(),
                 len,
