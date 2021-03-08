@@ -4,12 +4,12 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2020 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2020-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 use numa_gpu::runtime::allocator;
-use numa_gpu::runtime::numa::NodeRatio;
+use numa_gpu::runtime::numa::{NodeRatio, PageType};
 use serde_derive::Serialize;
 use structopt::clap::arg_enum;
 
@@ -22,6 +22,17 @@ arg_enum! {
         DistributedNuma,
         Pinned,
         Unified,
+    }
+}
+
+arg_enum! {
+    #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+    pub enum ArgPageType {
+        Default,
+        Small,
+        TransparentHuge,
+        Huge2MB,
+        Huge1GB,
     }
 }
 
@@ -48,7 +59,7 @@ arg_enum! {
 pub struct ArgMemTypeHelper {
     pub mem_type: ArgMemType,
     pub node_ratios: Box<[NodeRatio]>,
-    pub huge_pages: Option<bool>,
+    pub page_type: ArgPageType,
 }
 
 impl From<ArgMemTypeHelper> for allocator::DerefMemType {
@@ -56,18 +67,37 @@ impl From<ArgMemTypeHelper> for allocator::DerefMemType {
         ArgMemTypeHelper {
             mem_type,
             node_ratios,
-            huge_pages,
+            page_type,
         }: ArgMemTypeHelper,
     ) -> Self {
         match mem_type {
             ArgMemType::System => allocator::DerefMemType::SysMem,
-            ArgMemType::Numa => allocator::DerefMemType::NumaMem(node_ratios[0].node, huge_pages),
-            ArgMemType::NumaPinned => {
-                allocator::DerefMemType::NumaPinnedMem(node_ratios[0].node, huge_pages)
-            }
-            ArgMemType::DistributedNuma => allocator::DerefMemType::DistributedNumaMem(node_ratios),
+            ArgMemType::Numa => allocator::DerefMemType::NumaMem {
+                node: node_ratios[0].node,
+                page_type: page_type.into(),
+            },
+            ArgMemType::NumaPinned => allocator::DerefMemType::NumaPinnedMem {
+                node: node_ratios[0].node,
+                page_type: page_type.into(),
+            },
+            ArgMemType::DistributedNuma => allocator::DerefMemType::DistributedNumaMem {
+                nodes: node_ratios,
+                page_type: page_type.into(),
+            },
             ArgMemType::Pinned => allocator::DerefMemType::CudaPinnedMem,
             ArgMemType::Unified => allocator::DerefMemType::CudaUniMem,
+        }
+    }
+}
+
+impl From<ArgPageType> for PageType {
+    fn from(arg_page_type: ArgPageType) -> PageType {
+        match arg_page_type {
+            ArgPageType::Default => PageType::Default,
+            ArgPageType::Small => PageType::Small,
+            ArgPageType::TransparentHuge => PageType::TransparentHuge,
+            ArgPageType::Huge2MB => PageType::Huge2MB,
+            ArgPageType::Huge1GB => PageType::Huge1GB,
         }
     }
 }

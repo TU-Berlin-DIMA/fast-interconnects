@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2020 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2020-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 mod data_point;
@@ -56,7 +56,7 @@ fn main() -> Result<()> {
     let mem_type: DerefMemType = ArgMemTypeHelper {
         mem_type: cmd.rel_mem_type,
         node_ratios: node_ratios.clone(),
-        huge_pages: cmd.huge_pages,
+        page_type: cmd.page_type,
     }
     .into();
 
@@ -151,9 +151,16 @@ struct CmdOpt {
     /// Allocate memory for inner relation on CPU or GPU (See numactl -H and CUDA device list)
     rel_location: u16,
 
-    /// Use small pages (false) or huge pages (true); no selection defaults to the OS configuration
-    #[structopt(long = "huge-pages")]
-    huge_pages: Option<bool>,
+    /// Page type with with to allocate memory
+    #[structopt(
+        long = "page-type",
+        default_value = "Default",
+        raw(
+            possible_values = "&ArgPageType::variants()",
+            case_insensitive = "true"
+        )
+    )]
+    page_type: ArgPageType,
 
     /// Execute on device(s) with in-place or streaming-transfer method
     #[structopt(
@@ -208,7 +215,7 @@ impl CmdOpt {
             },
             relation_memory_type: Some(self.rel_mem_type),
             relation_memory_location: Some(self.rel_location),
-            huge_pages: self.huge_pages,
+            page_type: Some(self.page_type),
             ..data_point.clone()
         };
 

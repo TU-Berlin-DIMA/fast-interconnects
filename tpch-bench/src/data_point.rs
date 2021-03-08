@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2020 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2020-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 use crate::error::{ErrorKind, Result};
@@ -25,7 +25,7 @@ pub struct DataPoint {
     pub threads: Option<usize>,
     pub relation_memory_type: Option<ArgMemType>,
     pub relation_memory_location: Option<u16>,
-    pub huge_pages: Option<bool>,
+    pub page_type: Option<ArgPageType>,
     pub tuples: Option<usize>,
     pub bytes: Option<usize>,
     pub warm_up: Option<bool>,
