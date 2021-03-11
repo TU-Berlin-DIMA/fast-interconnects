@@ -371,7 +371,7 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
     }
 
     /// Returns the total number of elements in the relation including padding.
-    pub(super) fn padded_len(&self) -> usize {
+    pub fn padded_len(&self) -> usize {
         let num_partitions = fanout(self.radix_bits) as usize;
         self.len + num_partitions * self.num_chunks() as usize * self.padding_len() as usize
     }

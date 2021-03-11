@@ -18,8 +18,8 @@ use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::{Mem, MemLock};
 use numa_gpu::runtime::numa::{NodeRatio, PageType};
 use numa_gpu::utils::DeviceType;
-use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
-use rustacuda::device::DeviceAttribute;
+use rustacuda::context::{CacheConfig, Context, ContextFlags, CurrentContext, SharedMemoryConfig};
+use rustacuda::device::{Device, DeviceAttribute};
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceBuffer;
 use rustacuda::memory::DeviceCopy;
@@ -217,7 +217,7 @@ struct Options {
     partition_algorithms: Vec<ArgRadixPartitionAlgorithm>,
 
     /// No effect (passed by Cargo to run only benchmarks instead of unit tests)
-    #[structopt(long)]
+    #[structopt(long, hidden = true)]
     bench: bool,
 
     /// Number of tuples in the relation
@@ -587,7 +587,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         CpuAffinity::default()
     };
 
-    let _context = rustacuda::quick_init()?;
+    // Initialize CUDA
+    rustacuda::init(rustacuda::CudaFlags::empty())?;
+    let device = Device::get_device(options.device_id.into())?;
+    let _context =
+        Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
 
     if let Some(parent) = options.csv.parent() {
         if !parent.exists() {

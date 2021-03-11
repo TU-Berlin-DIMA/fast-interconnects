@@ -96,6 +96,37 @@ pub enum DerefMemType {
     CudaUniMem,
 }
 
+impl MemType {
+    pub fn page_type(&self) -> PageType {
+        match *self {
+            MemType::NumaMem { page_type, .. } => page_type,
+            MemType::NumaPinnedMem { page_type, .. } => page_type,
+            MemType::DistributedNumaMem { page_type, .. } => page_type,
+            MemType::DistributedNumaMemWithLen { page_type, .. } => page_type,
+            MemType::SysMem
+            | MemType::AlignedSysMem { .. }
+            | MemType::CudaPinnedMem
+            | MemType::CudaUniMem => PageType::Default,
+            MemType::CudaDevMem => PageType::Default,
+        }
+    }
+}
+
+impl DerefMemType {
+    pub fn page_type(&self) -> PageType {
+        match *self {
+            DerefMemType::NumaMem { page_type, .. } => page_type,
+            DerefMemType::NumaPinnedMem { page_type, .. } => page_type,
+            DerefMemType::DistributedNumaMem { page_type, .. } => page_type,
+            DerefMemType::DistributedNumaMemWithLen { page_type, .. } => page_type,
+            DerefMemType::SysMem
+            | DerefMemType::AlignedSysMem { .. }
+            | DerefMemType::CudaPinnedMem
+            | DerefMemType::CudaUniMem => PageType::Default,
+        }
+    }
+}
+
 impl From<DerefMemType> for MemType {
     fn from(dmt: DerefMemType) -> Self {
         match dmt {

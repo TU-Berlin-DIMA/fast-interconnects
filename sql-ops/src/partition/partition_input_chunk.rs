@@ -45,7 +45,7 @@ pub trait RadixPartitionInputChunkable {
 /// A reference to a chunk of input data.
 ///
 /// Effectively a slice with additional metadata specifying the referenced chunk.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct RadixPartitionInputChunk<'a, T: Sized> {
     pub data: &'a [T],
     pub canonical_chunk_len: usize,
