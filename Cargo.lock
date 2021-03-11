@@ -1103,7 +1103,7 @@ checksum = "cabe4fa914dec5870285fa7f71f602645da47c486e68486d2b4ceb4a343e90ac"
 [[package]]
 name = "rustacuda"
 version = "0.1.1"
-source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#cc20ddcde19cf9381b613246794ddb830bd57a47"
+source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#fcc0a0d3ff251aefc8a4c4de43ed570ea9e7d144"
 dependencies = [
  "bitflags",
  "cuda-sys",
@@ -1114,12 +1114,12 @@ dependencies = [
 [[package]]
 name = "rustacuda_core"
 version = "0.1.1"
-source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#cc20ddcde19cf9381b613246794ddb830bd57a47"
+source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#fcc0a0d3ff251aefc8a4c4de43ed570ea9e7d144"
 
 [[package]]
 name = "rustacuda_derive"
 version = "0.1.1"
-source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#cc20ddcde19cf9381b613246794ddb830bd57a47"
+source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#fcc0a0d3ff251aefc8a4c4de43ed570ea9e7d144"
 dependencies = [
  "proc-macro2 0.4.30",
  "quote 0.6.13",

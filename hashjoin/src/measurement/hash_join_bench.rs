@@ -819,7 +819,7 @@ where
             .probe_dim(probe_dim.0.clone(), probe_dim.1.clone())
             .hash_table(hash_table.clone());
 
-        let executor = HetMorselExecutorBuilder::new()
+        let mut executor = HetMorselExecutorBuilder::new()
             .cpu_threads(cpu_threads)
             .worker_cpu_affinity(worker_cpu_affinity.clone())
             .gpu_ids(gpu_ids)
@@ -828,7 +828,7 @@ where
 
         let build_timer = Instant::now();
         (build_rel_key, build_rel_pay)
-            .into_het_morsel_iter(&executor)
+            .into_het_morsel_iter(&mut executor)
             .fold(
                 |(rel, pay)| {
                     let mut hj_op = cpu_hj_builder.build();
@@ -849,7 +849,7 @@ where
 
         let probe_timer = Instant::now();
         (probe_rel_key, probe_rel_pay)
-            .into_het_morsel_iter(&executor)
+            .into_het_morsel_iter(&mut executor)
             .fold(
                 |(rel, pay)| {
                     let mut hj_op = cpu_hj_builder.build();
@@ -935,7 +935,7 @@ where
             .probe_dim(probe_dim.0.clone(), probe_dim.1.clone())
             .hash_table(gpu_hash_table.clone());
 
-        let executor = HetMorselExecutorBuilder::new()
+        let mut executor = HetMorselExecutorBuilder::new()
             .cpu_threads(cpu_threads)
             .worker_cpu_affinity(worker_cpu_affinity.clone())
             .gpu_ids(gpu_ids)
@@ -964,7 +964,7 @@ where
             .is_selective(self.is_selective)
             .hash_table(cpu_hash_table.clone());
         (probe_rel_key, probe_rel_pay)
-            .into_het_morsel_iter(&executor)
+            .into_het_morsel_iter(&mut executor)
             .fold(
                 |(rel, pay)| {
                     let mut hj_op = cpu_hj_builder.build();

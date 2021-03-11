@@ -4,14 +4,16 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019, Clemens Lutz <lutzcle@cml.li>
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2019-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 use crate::error::Result;
 use crate::runtime::cpu_affinity::CpuAffinity;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use rustacuda::context::CurrentContext;
+use rustacuda::error::CudaError;
+use rustacuda::stream::{Stream, StreamFlags};
 use std::default::Default;
 use std::sync::Arc;
 
@@ -33,6 +35,7 @@ pub struct HetMorselExecutor {
     pub(super) gpu_workers: usize,
     pub(super) cpu_thread_pool: ThreadPool,
     pub(super) gpu_thread_pool: ThreadPool,
+    pub(super) streams: Vec<Stream>,
 }
 
 pub struct HetMorselExecutorBuilder {
@@ -53,7 +56,7 @@ impl HetMorselExecutorBuilder {
                 cpu_morsel_bytes,
                 gpu_morsel_bytes,
             },
-            cpu_threads: 1,
+            cpu_threads: 0,
             cpu_worker_affinity: Arc::new(CpuAffinity::default()),
             gpu_worker_affinity: Arc::new(CpuAffinity::default()),
             gpu_ids: Vec::new(),
@@ -93,11 +96,15 @@ impl HetMorselExecutorBuilder {
         let cpu_affinity = self.cpu_worker_affinity.clone();
         let gpu_affinity = self.gpu_worker_affinity.clone();
 
-        let unowned_context = CurrentContext::get_current()?;
+        let unowned_context_cpu_pool = CurrentContext::get_current()?;
+        let unowned_context_gpu_pool = unowned_context_cpu_pool.clone();
 
         let cpu_thread_pool = ThreadPoolBuilder::new()
             .num_threads(cpu_workers)
             .start_handler(move |tid| {
+                CurrentContext::set_current(&unowned_context_cpu_pool)
+                    .expect("Failed to set CUDA context in CPU worker thread");
+
                 cpu_affinity
                     .clone()
                     .set_affinity(tid as u16)
@@ -108,7 +115,7 @@ impl HetMorselExecutorBuilder {
         let gpu_thread_pool = ThreadPoolBuilder::new()
             .num_threads(gpu_workers)
             .start_handler(move |tid| {
-                CurrentContext::set_current(&unowned_context)
+                CurrentContext::set_current(&unowned_context_gpu_pool)
                     .expect("Failed to set CUDA context in GPU worker thread");
 
                 gpu_affinity
@@ -118,12 +125,17 @@ impl HetMorselExecutorBuilder {
             })
             .build()?;
 
+        let streams = (0..gpu_workers)
+            .map(|_| Stream::new(StreamFlags::NON_BLOCKING, None))
+            .collect::<std::result::Result<Vec<_>, CudaError>>()?;
+
         Ok(HetMorselExecutor {
             morsel_spec: self.morsel_spec,
             cpu_workers,
             gpu_workers,
             cpu_thread_pool,
             gpu_thread_pool,
+            streams,
         })
     }
 }
