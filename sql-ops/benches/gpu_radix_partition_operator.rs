@@ -14,7 +14,6 @@ use num_rational::Ratio;
 use num_traits::cast::FromPrimitive;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
-use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::{Mem, MemLock};
 use numa_gpu::runtime::numa::{NodeRatio, PageType};
 use numa_gpu::utils::DeviceType;
@@ -448,19 +447,12 @@ where
                             thread_pool.scope(|s| {
                                 for (input, output) in key_chunks.into_iter().zip(out_chunks) {
                                     s.spawn(move |_| {
-                                        let cpu_id =
-                                            CpuAffinity::get_cpu().expect("Failed to get CPU ID");
-                                        let local_node: u16 =
-                                            linux_wrapper::numa_node_of_cpu(cpu_id)
-                                                .expect("Failed to map CPU to NUMA node");
+                                        let align_bytes = sql_ops::CPU_CACHE_LINE_SIZE as usize;
                                         let mut radix_prnr = CpuRadixPartitioner::new(
                                             histogram_algorithm,
                                             CpuRadixPartitionAlgorithm::NC,
                                             radix_bits,
-                                            DerefMemType::NumaMem {
-                                                node: local_node,
-                                                page_type: PageType::Default,
-                                            },
+                                            DerefMemType::AlignedSysMem { align_bytes },
                                         );
                                         radix_prnr
                                             .prefix_sum(input, output)

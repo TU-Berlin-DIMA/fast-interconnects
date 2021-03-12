@@ -18,7 +18,6 @@ use numa_gpu::runtime::dispatcher::{
     HetMorselExecutorBuilder, IntoHetMorselIterator, MorselSpec, WorkerCpuAffinity,
 };
 use numa_gpu::runtime::hw_info;
-use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::{DerefMem, MemLock};
 use numa_gpu::runtime::numa::{NodeRatio, PageType};
 use rustacuda::context::{Context, ContextFlags, CurrentContext};
@@ -385,21 +384,15 @@ where
     radix_bits_list
         .iter()
         .map(|&radix_bits| {
+            let align_bytes = sql_ops::CPU_CACHE_LINE_SIZE as usize;
+
             let mut radix_prnrs: Vec<_> = (0..threads)
-                .map(|tid| {
-                    let cpu_id = cpu_affinity
-                        .thread_to_cpu(tid as u16)
-                        .expect("Failed to map thread ID to CPU ID");
-                    let local_node = linux_wrapper::numa_node_of_cpu(cpu_id)
-                        .expect("Failed to map CPU to NUMA node");
+                .map(|_| {
                     CpuRadixPartitioner::new(
                         prefix_sum_algorithm,
                         partition_algorithm,
                         radix_bits,
-                        DerefMemType::NumaMem {
-                            node: local_node,
-                            page_type: PageType::Default,
-                        },
+                        DerefMemType::AlignedSysMem { align_bytes },
                     )
                 })
                 .collect();
@@ -408,7 +401,7 @@ where
                 prefix_sum_algorithm.into(),
                 threads as u32,
                 radix_bits,
-                Allocator::mem_alloc_fn(MemType::SysMem),
+                Allocator::mem_alloc_fn(MemType::AlignedSysMem { align_bytes }),
             );
             partition_offsets.mlock()?;
 
@@ -534,21 +527,16 @@ where
         .map(|&radix_bits| {
             let mut data_ref = (input_data.0.as_mut_slice(), input_data.1.as_mut_slice());
             let mut morsel_iter = data_ref.into_het_morsel_iter(&mut executor).with_state(
-                |tid| {
+                |_| {
                     const PARTITION_CHUNKS: u32 = 1;
                     const PIPELINE_STAGES: usize = 2;
-
-                    let cpu_id = cpu_affinity
-                        .thread_to_cpu(tid)
-                        .expect("Failed to map thread ID to CPU ID");
-                    let local_node = linux_wrapper::numa_node_of_cpu(cpu_id)
-                        .expect("Failed to map CPU to NUMA node");
+                    let align_bytes = sql_ops::CPU_CACHE_LINE_SIZE as usize;
 
                     let radix_prnr = CpuRadixPartitioner::new(
                         prefix_sum_algorithm,
                         partition_algorithm,
                         radix_bits,
-                        DerefMemType::AlignedSysMem{align_bytes: sql_ops::CPU_CACHE_LINE_SIZE as usize},
+                        DerefMemType::AlignedSysMem { align_bytes },
                     );
 
                     let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
@@ -557,12 +545,7 @@ where
                         prefix_sum_algorithm.into(),
                         PARTITION_CHUNKS,
                         radix_bits,
-                        Allocator::mem_alloc_fn(
-                        MemType::NumaMem {
-                            node: local_node,
-                            page_type: output_mem_type.page_type(),
-                        },
-                            ),
+                        Allocator::mem_alloc_fn(MemType::AlignedSysMem { align_bytes }),
                     );
 
                     let partitioned_relations: [_; PIPELINE_STAGES] = [PartitionedRelation::new(
@@ -577,17 +560,8 @@ where
                         prefix_sum_algorithm.into(),
                         radix_bits,
                         PARTITION_CHUNKS,
-                        Allocator::mem_alloc_fn(
-                            MemType::NumaPinnedMem {
-                                node: local_node,
-                                page_type: output_mem_type.page_type(),
-                            }
-                            ),
-                        Allocator::mem_alloc_fn(
-                        MemType::NumaMem {
-                            node: local_node,
-                            page_type: output_mem_type.page_type(),
-                        }),
+                        Allocator::mem_alloc_fn(output_mem_type.clone()),
+                        Allocator::mem_alloc_fn(output_mem_type.clone()),
                     )];
 
                     let device_relation: DeviceBuffer<Tuple<T, T>> =
