@@ -317,9 +317,9 @@ struct Options {
 
 #[derive(Clone, Debug, Default, Serialize)]
 struct DataPoint {
-    pub group: String,
-    pub function: String,
     pub hostname: String,
+    pub histogram_algorithm: Option<ArgHistogramAlgorithm>,
+    pub partition_algorithm: Option<ArgRadixPartitionAlgorithm>,
     pub device_codename: Option<String>,
     pub threads: Option<usize>,
     pub grid_size: Option<u32>,
@@ -341,8 +341,6 @@ struct DataPoint {
 }
 
 fn gpu_radix_partition_benchmark<T, W>(
-    bench_group: &str,
-    bench_function: &str,
     histogram_algorithm: DeviceType<CpuHistogramAlgorithm, GpuHistogramAlgorithm>,
     partition_algorithm: GpuRadixPartitionAlgorithm,
     radix_bits_list: &[u32],
@@ -382,13 +380,6 @@ where
         .unwrap_or_else(|| GridSize::x(multiprocessors * grid_overcommit_factor));
 
     let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
-
-    let template = DataPoint {
-        group: bench_group.to_string(),
-        function: bench_function.to_string(),
-        dmem_buffer_bytes: Some(dmem_buffer_bytes),
-        ..template.clone()
-    };
 
     let boxed_cpu_affinity = Arc::new(cpu_affinity.clone());
     let thread_pool = rayon::ThreadPoolBuilder::new()
@@ -646,9 +637,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 options.partition_algorithms,
                 options.dmem_buffer_sizes
             ) {
+                let template = DataPoint {
+                    histogram_algorithm: Some(histogram_algorithm),
+                    partition_algorithm: Some(partition_algorithm),
+                    dmem_buffer_bytes: Some(dmem_buffer_size),
+                    ..template.clone()
+                };
+
                 gpu_radix_partition_benchmark::<i32, _>(
-                    "gpu_radix_partition",
-                    &(histogram_algorithm.to_string() + &partition_algorithm.to_string()),
                     histogram_algorithm.into(),
                     partition_algorithm.into(),
                     &options.radix_bits,
@@ -676,9 +672,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 options.partition_algorithms,
                 options.dmem_buffer_sizes
             ) {
+                let template = DataPoint {
+                    histogram_algorithm: Some(histogram_algorithm),
+                    partition_algorithm: Some(partition_algorithm),
+                    dmem_buffer_bytes: Some(dmem_buffer_size),
+                    ..template.clone()
+                };
+
                 gpu_radix_partition_benchmark::<i64, _>(
-                    "gpu_radix_partition",
-                    &(histogram_algorithm.to_string() + &partition_algorithm.to_string()),
                     histogram_algorithm.into(),
                     partition_algorithm.into(),
                     &options.radix_bits,
