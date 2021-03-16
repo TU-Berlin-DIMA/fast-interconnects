@@ -723,6 +723,7 @@ dependencies = [
  "num-rational",
  "num-traits",
  "nvml-wrapper",
+ "once_cell",
  "procfs",
  "rayon",
  "rustacuda",

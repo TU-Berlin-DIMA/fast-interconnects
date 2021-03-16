@@ -4,13 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2020-2021, Clemens Lutz
+ * Copyright 2021 Clemens Lutz
  * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
-mod cache_padded;
-mod device_type;
-pub mod gpu_utils;
-
-pub use cache_padded::CachePadded;
-pub use device_type::DeviceType;
+extern "C" __global__ void noop(int const *) {}
