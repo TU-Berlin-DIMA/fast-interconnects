@@ -20,6 +20,7 @@ use numa_gpu::runtime::dispatcher::{
 use numa_gpu::runtime::hw_info;
 use numa_gpu::runtime::memory::{DerefMem, MemLock};
 use numa_gpu::runtime::numa::{NodeRatio, PageType};
+use numa_gpu::utils::gpu_utils;
 use rustacuda::context::{Context, ContextFlags, CurrentContext};
 use rustacuda::device::Device;
 use rustacuda::memory::{AsyncCopyDestination, DeviceBuffer, DeviceCopy};
@@ -539,7 +540,7 @@ where
                         DerefMemType::AlignedSysMem { align_bytes },
                     );
 
-                    let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
+                    let streams: [_; PIPELINE_STAGES] = [Stream::new(StreamFlags::NON_BLOCKING, None)?, Stream::new(StreamFlags::NON_BLOCKING, None)?];
 
                     let partition_offsets = PartitionOffsets::new(
                         prefix_sum_algorithm.into(),
@@ -569,7 +570,7 @@ where
 
                     Ok((
                         radix_prnr,
-                        stream,
+                        streams,
                         partition_offsets,
                         partitioned_relations,
                         device_relation,
@@ -588,7 +589,7 @@ where
                 |(key_morsel, pay_morsel), thread_state| {
                     let (
                         radix_prnr,
-                        stream,
+                        streams,
                         partition_offsets,
                         partitioned_relations,
                         device_relation,
@@ -608,6 +609,8 @@ where
 
                     let offsets_chunk = partition_offsets.chunks_mut().nth(0).unwrap();
 
+                    streams[0].synchronize()?;
+
                     radix_prnr
                         .partition(
                             key_chunks[0].clone(),
@@ -625,12 +628,15 @@ where
                         );
 
                     unsafe {
-                        device_relation.async_copy_from(relation_ref, stream)?;
+                        device_relation.async_copy_from(relation_ref, &streams[0])?;
                     }
+
+                    gpu_utils::noop(device_relation.as_device_ptr(), 1, 1, &streams[0])?;
 
                     // Swap the relations so that the CPU partitioning and DMA
                     // transfer can take place concurrently
                     partitioned_relations.swap(0, 1);
+                    streams.swap(0, 1);
 
                     Ok(())
                 },
