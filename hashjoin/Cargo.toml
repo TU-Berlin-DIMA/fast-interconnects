@@ -22,7 +22,7 @@ rustacuda = { git = "https://github.com/LutzCle/RustaCUDA", branch = "custom_mod
 serde = "~1.0.76"
 serde_derive = "~1.0.76"
 serde_repr = "~0.1"
-structopt = "~0.2"
+structopt = "0.3"
 
 [dependencies.datagen]
 path = "../datagen"

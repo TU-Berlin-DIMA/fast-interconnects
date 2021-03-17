@@ -462,7 +462,7 @@ dependencies = [
  "serde_derive",
  "serde_repr",
  "sql-ops",
- "structopt 0.2.18",
+ "structopt 0.3.20",
 ]
 
 [[package]]

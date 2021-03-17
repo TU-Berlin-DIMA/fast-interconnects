@@ -74,7 +74,8 @@ struct CmdOpt {
     #[structopt(
         long = "rel-mem-type",
         default_value = "Unified",
-        raw(possible_values = "&ArgMemType::variants()", case_insensitive = "true")
+        possible_values = &ArgMemType::variants(),
+        case_insensitive = true
     )]
     mem_type: ArgMemType,
 
@@ -84,10 +85,8 @@ struct CmdOpt {
     #[structopt(
         long = "hashing-scheme",
         default_value = "LinearProbing",
-        raw(
-            possible_values = "&ArgHashingScheme::variants()",
-            case_insensitive = "true"
-        )
+        possible_values = &ArgHashingScheme::variants(),
+        case_insensitive = true
     )]
     hashing_scheme: ArgHashingScheme,
 
@@ -97,14 +96,15 @@ struct CmdOpt {
     #[structopt(
         long = "hash-table-mem-type",
         default_value = "Device",
-        raw(possible_values = "&ArgMemType::variants()", case_insensitive = "true")
+        possible_values = &ArgMemType::variants(),
+        case_insensitive = true
     )]
     hash_table_mem_type: ArgMemType,
 
     #[structopt(
         long = "hash-table-location",
         default_value = "0",
-        raw(require_delimiter = "true")
+        require_delimiter = true
     )]
     /// Allocate memory for hash table on NUMA nodes (e.g.: 0,1,2) or GPU (See numactl -H and CUDA device list)
     hash_table_location: Vec<u16>,
@@ -112,7 +112,7 @@ struct CmdOpt {
     #[structopt(
         long = "hash-table-proportions",
         default_value = "100",
-        raw(require_delimiter = "true")
+        require_delimiter = true
     )]
     /// Proportions with with the hash table is allocate on multiple nodes in percent (e.g.: 20,60,20)
     hash_table_proportions: Vec<usize>,
@@ -129,10 +129,8 @@ struct CmdOpt {
     #[structopt(
         long = "page-type",
         default_value = "Default",
-        raw(
-            possible_values = "&ArgPageType::variants()",
-            case_insensitive = "true"
-        )
+        possible_values = &ArgPageType::variants(),
+        case_insensitive = true
     )]
     page_type: ArgPageType,
 
@@ -145,7 +143,8 @@ struct CmdOpt {
         short = "s",
         long = "data-set",
         default_value = "Test",
-        raw(possible_values = "&ArgDataSet::variants()", case_insensitive = "true")
+        possible_values = &ArgDataSet::variants(),
+        case_insensitive = true
     )]
     data_set: ArgDataSet,
 
@@ -153,25 +152,20 @@ struct CmdOpt {
     #[structopt(
         long = "data-distribution",
         default_value = "Uniform",
-        raw(
-            possible_values = "&ArgDataDistribution::variants()",
-            case_insensitive = "true"
-        )
+        possible_values = &ArgDataDistribution::variants(),
+        case_insensitive = true
     )]
     data_distribution: ArgDataDistribution,
 
     /// Zipf exponent for Zipf-sampled outer relations
-    #[structopt(
-        long = "zipf-exponent",
-        raw(required_if = r#""data-distribution", "Zipf""#)
-    )]
+    #[structopt(long = "zipf-exponent", required_if("data-distribution", "Zipf"))]
     zipf_exponent: Option<f64>,
 
     /// Selectivity of the join, in percent
     #[structopt(
         long = "selectivity",
         default_value = "100",
-        raw(validator = "is_percent")
+        validator = is_percent
     )]
     selectivity: u32,
 
@@ -197,35 +191,25 @@ struct CmdOpt {
     #[structopt(
         long = "tuple-bytes",
         default_value = "Bytes8",
-        raw(
-            possible_values = "&ArgTupleBytes::variants()",
-            case_insensitive = "true"
-        )
+        possible_values = &ArgTupleBytes::variants(),
+        case_insensitive = true
     )]
     tuple_bytes: ArgTupleBytes,
 
     /// Set the inner relation size (tuples); required for `-data-set Custom`
-    #[structopt(
-        long = "inner-rel-tuples",
-        raw(required_if = r#""data_set", "Custom""#)
-    )]
+    #[structopt(long = "inner-rel-tuples", required_if("data_set", "Custom"))]
     inner_rel_tuples: Option<usize>,
 
     /// Set the outer relation size (tuples); required for `--data-set Custom`
-    #[structopt(
-        long = "outer-rel-tuples",
-        raw(required_if = r#""data_set", "Custom""#)
-    )]
+    #[structopt(long = "outer-rel-tuples", required_if("data_set", "Custom"))]
     outer_rel_tuples: Option<usize>,
 
     /// Execute on device(s) with in-place or streaming-transfer method.
     #[structopt(
         long = "execution-method",
         default_value = "CPU",
-        raw(
-            possible_values = "&ArgExecutionMethod::variants()",
-            case_insensitive = "true"
-        )
+        possible_values = &ArgExecutionMethod::variants(),
+        case_insensitive = true
     )]
     execution_method: ArgExecutionMethod,
 
@@ -233,10 +217,8 @@ struct CmdOpt {
     #[structopt(
         long = "transfer-strategy",
         default_value = "PageableCopy",
-        raw(
-            possible_values = "&ArgTransferStrategy::variants()",
-            case_insensitive = "true"
-        )
+        possible_values = &ArgTransferStrategy::variants(),
+        case_insensitive = true
     )]
     transfer_strategy: ArgTransferStrategy,
 
