@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019, Clemens Lutz <lutzcle@cml.li>
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2019-2021, Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 use super::data_point::DataPoint;
@@ -48,6 +48,7 @@ pub fn measure(
                 probe_compute_ns: p.probe_compute_ns,
                 build_cool_down_ns: p.build_cool_down_ns,
                 probe_cool_down_ns: p.probe_cool_down_ns,
+                cached_hash_table_tuples: p.cached_hash_table_tuples,
                 ..template.clone()
             })
         })

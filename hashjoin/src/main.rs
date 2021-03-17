@@ -12,7 +12,7 @@ mod error;
 mod measurement;
 mod types;
 
-use crate::error::Result;
+use crate::error::{ErrorKind, Result};
 use crate::measurement::data_point::DataPoint;
 use crate::measurement::harness;
 use crate::measurement::hash_join_bench::{HashJoinBenchBuilder, HashJoinPoint};
@@ -22,6 +22,7 @@ use num_rational::Ratio;
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::dispatcher::{MorselSpec, WorkerCpuAffinity};
+use numa_gpu::runtime::hw_info::NvidiaDriverInfo;
 use numa_gpu::runtime::numa::{self, NodeRatio};
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
@@ -35,13 +36,17 @@ use structopt::StructOpt;
 
 fn main() -> Result<()> {
     // Parse commandline arguments
-    let cmd = CmdOpt::from_args();
+    let mut cmd = CmdOpt::from_args();
 
     // Initialize CUDA
     rustacuda::init(CudaFlags::empty())?;
     let device = Device::get_device(cmd.device_id.into())?;
     let _context =
         Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
+
+    let cache_node = device.numa_node().ok();
+    let overflow_node = device.numa_memory_affinity()?;
+    cmd.set_spill_hash_table(cache_node, overflow_node)?;
 
     match cmd.tuple_bytes {
         ArgTupleBytes::Bytes8 => {
@@ -116,6 +121,12 @@ struct CmdOpt {
     )]
     /// Proportions with with the hash table is allocate on multiple nodes in percent (e.g.: 20,60,20)
     hash_table_proportions: Vec<usize>,
+
+    /// Cache the hash table in GPU memory and spill to the nearest CPU memory node
+    ///
+    /// This option only works with NVLink 2.0, and sets `--hash-table-mem-type DistributedNuma`
+    #[structopt(long)]
+    spill_hash_table: Option<bool>,
 
     #[structopt(long = "inner-rel-location", default_value = "0")]
     /// Allocate memory for inner relation on CPU or GPU (See numactl -H and CUDA device list)
@@ -244,6 +255,28 @@ struct CmdOpt {
     gpu_affinity: Option<PathBuf>,
 }
 
+impl CmdOpt {
+    fn set_spill_hash_table(
+        &mut self,
+        cache_location: Option<u16>,
+        overflow_location: u16,
+    ) -> Result<()> {
+        if self.spill_hash_table == Some(true) {
+            let cache_location = cache_location.ok_or_else(|| {
+                ErrorKind::RuntimeError(
+                    "Failed to set the cache NUMA location. Are you using PCI-e?".to_string(),
+                )
+            })?;
+
+            self.hash_table_mem_type = ArgMemType::DistributedNuma;
+            self.hash_table_location = vec![cache_location, overflow_location];
+            self.hash_table_proportions = vec![0, 0];
+        }
+
+        Ok(())
+    }
+}
+
 fn is_percent(x: String) -> std::result::Result<(), String> {
     x.parse::<i32>()
         .map_err(|_| {
@@ -332,6 +365,7 @@ where
     let exec_method = cmd.execution_method.clone();
     let transfer_strategy = cmd.transfer_strategy.clone();
     let mem_type = cmd.hash_table_mem_type;
+    let spill_hash_table = cmd.spill_hash_table;
     let threads = cmd.threads.clone();
     let device_id = cmd.device_id;
     let page_type = cmd.page_type;
@@ -414,16 +448,42 @@ where
             hjb.cpu_hash_join(threads, &worker_cpu_affinity.cpu_workers, ht_alloc)
         }),
         ArgExecutionMethod::Gpu => Box::new(move || {
-            let ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
-                ArgMemTypeHelper {
-                    mem_type,
-                    node_ratios: node_ratios.clone(),
-                    page_type,
-                }
-                .into(),
-            );
+            let (cache_and_spill, cache_node) = if spill_hash_table == Some(true) {
+                let (cache_node, spill_node) = if let [cache_node, spill_node] = *node_ratios {
+                    Ok((cache_node.node, spill_node.node))
+                } else {
+                    Err(ErrorKind::InvalidArgument(
+                        "Hash table memory type must define exactly two NUMA nodes".to_string(),
+                    ))
+                }?;
+
+                let cache_spill_type = allocator::CacheSpillType::CacheAndSpill {
+                    cache_node,
+                    spill_node,
+                    page_type: page_type.into(),
+                };
+
+                (cache_spill_type, cache_node)
+            } else {
+                let cache_spill_type: allocator::CacheSpillType =
+                    allocator::MemType::from(ArgMemTypeHelper {
+                        mem_type,
+                        node_ratios: node_ratios.clone(),
+                        page_type,
+                    })
+                    .into();
+                let cache_node: u16 = 0;
+
+                (cache_spill_type, cache_node)
+            };
+
+            let (ht_alloc_fn, cache_bytes_future) =
+                allocator::Allocator::mem_spill_alloc_fn::<T>(cache_and_spill);
+
             hjb.cuda_hash_join(
-                ht_alloc,
+                ht_alloc_fn,
+                cache_node,
+                cache_bytes_future,
                 (grid_size.clone(), block_size.clone()),
                 (grid_size.clone(), block_size.clone()),
             )

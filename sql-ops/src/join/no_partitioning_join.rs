@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018-2021 Clemens Lutz, German Research Center for Artificial Intelligence
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2018-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 //! Hash join operators for CPU and GPU.
@@ -668,6 +668,10 @@ impl<T: DeviceCopy + NullKey> MemLock for HashTable<T> {
 
 impl<T: DeviceCopy + NullKey> ::std::default::Default for CudaHashJoinBuilder<T> {
     fn default() -> Self {
+        // Pre-load the CUDA module to enable callers to compute the amount of
+        // free GPU memory after instatiating `CudaHashJoinBuilder`.
+        let _ = *crate::MODULE;
+
         Self {
             hashing_scheme: HashingScheme::default(),
             is_selective: false,

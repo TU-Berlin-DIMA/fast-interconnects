@@ -12,13 +12,12 @@ use crate::error::{ErrorKind, Result};
 use crate::measurement::harness::RadixJoinPoint;
 use data_store::join_data::JoinData;
 use numa_gpu::error::Result as NumaGpuResult;
-use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemAllocFn, MemType};
+use numa_gpu::runtime::allocator::{Allocator, CacheSpillType, DerefMemType, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::cuda_wrapper;
-use numa_gpu::runtime::hw_info::ProcessorCache;
 use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::*;
-use numa_gpu::runtime::numa::{NodeLen, PageType};
+use numa_gpu::runtime::numa::PageType;
 use numa_gpu::utils::DeviceType;
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
 use rustacuda::event::{Event, EventFlags};
@@ -36,12 +35,10 @@ use sql_ops::partition::{
     PartitionOffsets, PartitionedRelation, RadixBits, RadixPartitionInputChunkable, RadixPass,
     Tuple,
 };
-use std::cell::RefCell;
 use std::cmp;
 use std::convert::TryInto;
 use std::iter;
 use std::mem;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -127,10 +124,10 @@ where
     CurrentContext::set_shared_memory_config(SharedMemoryConfig::FourByteBankSize)?;
     let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
 
-    let (cache_node, overflow_node) =
+    let (cache_node, spill_node) =
         if let MemType::DistributedNumaMem { nodes, .. } = partitions_mem_type {
-            if let [cache_node, overflow_node] = *nodes {
-                Ok((cache_node.node, overflow_node.node))
+            if let [cache_node, spill_node] = *nodes {
+                Ok((cache_node.node, spill_node.node))
             } else {
                 Err(ErrorKind::InvalidArgument(
                     "Partitioned memory type define exactly two NUMA nodes".to_string(),
@@ -164,7 +161,7 @@ where
     let join_result_sums_len = (stream_grid_size.x * stream_block_size.x) as usize;
 
     let offsets_mem_type = MemType::NumaMem {
-        node: overflow_node,
+        node: spill_node,
         page_type,
     };
 
@@ -387,24 +384,32 @@ where
     let cached_len = free / 2 / mem::size_of::<Tuple<T, T>>();
 
     let (inner_rel_alloc, cached_build_tuples) =
-        build_distributed_partitions_allocator(cached_len, cache_node, overflow_node, page_type)?;
+        Allocator::mem_spill_alloc_fn(CacheSpillType::CacheAndSpill {
+            cache_node,
+            spill_node,
+            page_type,
+        });
     let mut inner_rel_partitions = PartitionedRelation::new(
         data.build_relation_key.len(),
         histogram_algorithm_fst.either(|cpu| cpu.into(), |gpu| gpu.into()),
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         max_chunks_1st,
-        inner_rel_alloc,
+        inner_rel_alloc(cached_len),
         Allocator::mem_alloc_fn(offsets_mem_type.clone()),
     );
 
     let (outer_rel_alloc, cached_probe_tuples) =
-        build_distributed_partitions_allocator(cached_len, cache_node, overflow_node, page_type)?;
+        Allocator::mem_spill_alloc_fn(CacheSpillType::CacheAndSpill {
+            cache_node,
+            spill_node,
+            page_type,
+        });
     let mut outer_rel_partitions = PartitionedRelation::new(
         data.probe_relation_key.len(),
         histogram_algorithm_fst.either(|cpu| cpu.into(), |gpu| gpu.into()),
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         max_chunks_1st,
-        outer_rel_alloc,
+        outer_rel_alloc(cached_len),
         Allocator::mem_alloc_fn(offsets_mem_type.clone()),
     );
 
@@ -593,63 +598,4 @@ where
     };
 
     Ok((sum, data_point))
-}
-
-/// Builds an allocator that caches partitions in GPU memory
-///
-/// The allocator uses GPU memory until `cache_max_len` is reached. Then, the
-/// allocator overflows the remainder to CPU memory.
-///
-/// The functional programming approach used here solves the leaky abstraction
-/// problem. In the execution method, we know how much cache space is available,
-/// but not the required space for the partitioned relation (due to padding).
-/// We embed this knowledge into a closure, instead of leaking the internal
-/// length of `PartitionedRelation`.
-///
-/// Returns a "future" that is set to the cached length when the allocator is
-/// invoked, for logging purposes.
-fn build_distributed_partitions_allocator<T>(
-    cache_max_len: usize,
-    gpu_node: u16,
-    cpu_node: u16,
-    page_type: PageType,
-) -> Result<(MemAllocFn<Tuple<T, T>>, Rc<RefCell<Option<usize>>>)>
-where
-    T: Clone + Default + DeviceCopy,
-{
-    // Round down to page size
-    let page_size = ProcessorCache::huge_page_size()?;
-    let cache_max_len = (cache_max_len / page_size) * page_size;
-
-    let cached_len_future = Rc::new(RefCell::new(None));
-    let cached_len_setter = cached_len_future.clone();
-
-    let alloc = move |len| {
-        let (cached_len, overflowed_len) = if len <= cache_max_len {
-            (len, 0)
-        } else {
-            (cache_max_len, len - cache_max_len)
-        };
-
-        cached_len_setter.replace(Some(cached_len));
-
-        // FIXME; make DistributedNumaMem use huge pages
-        let mem_type = MemType::DistributedNumaMemWithLen {
-            nodes: Box::new([
-                NodeLen {
-                    node: gpu_node,
-                    len: cached_len,
-                },
-                NodeLen {
-                    node: cpu_node,
-                    len: overflowed_len,
-                },
-            ]),
-            page_type,
-        };
-
-        Allocator::alloc_mem(mem_type, len)
-    };
-
-    Ok((Box::new(alloc), cached_len_future))
 }

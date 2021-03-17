@@ -39,6 +39,7 @@ pub struct DataPoint {
     #[serde(serialize_with = "serialize_vec")]
     pub hash_table_proportions: Option<Vec<usize>>,
     pub hash_table_bytes: Option<usize>,
+    pub cached_hash_table_tuples: Option<usize>,
     pub tuple_bytes: Option<ArgTupleBytes>,
     pub relation_memory_type: Option<ArgMemType>,
     pub page_type: Option<ArgPageType>,

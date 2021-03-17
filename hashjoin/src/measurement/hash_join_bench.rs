@@ -22,6 +22,7 @@ use numa_gpu::runtime::cuda::{
 use numa_gpu::runtime::dispatcher::{
     HetMorselExecutorBuilder, IntoHetMorselIterator, MorselSpec, WorkerCpuAffinity,
 };
+use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::*;
 use numa_gpu::runtime::numa::NodeRatio;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
@@ -32,12 +33,23 @@ use rustacuda::memory::DeviceCopy;
 use rustacuda::stream::{Stream, StreamFlags};
 use serde::de::DeserializeOwned;
 use sql_ops::join::{no_partitioning_join, HashingScheme};
+use std::cell::RefCell;
 use std::collections::vec_deque::VecDeque;
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::Read;
+use std::mem;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// GPU memory to leave free when allocating a hybrid hash table
+///
+/// Getting the amount of free GPU memory and allocating the memory is
+/// *not atomic*. Sometimes the allocation spuriously fails.
+///
+/// Instead of allocating every last byte of GPU memory, leave some slack space.
+const GPU_MEM_SLACK_BYTES: usize = 32 * 1024 * 1024;
 
 pub struct HashJoinBench<T: DeviceCopy> {
     pub hashing_scheme: HashingScheme,
@@ -76,6 +88,7 @@ pub struct HashJoinPoint {
     pub probe_compute_ns: Option<f64>,
     pub build_cool_down_ns: Option<f64>,
     pub probe_cool_down_ns: Option<f64>,
+    pub cached_hash_table_tuples: Option<usize>,
 }
 
 impl Default for HashJoinBenchBuilder {
@@ -395,7 +408,9 @@ where
 {
     pub fn cuda_hash_join(
         &mut self,
-        hash_table_alloc: allocator::MemAllocFn<T>,
+        hash_table_alloc: allocator::MemSpillAllocFn<T>,
+        cache_node: u16,
+        cached_hash_table_tuples: Rc<RefCell<Option<usize>>>,
         build_dim: (GridSize, BlockSize),
         probe_dim: (GridSize, BlockSize),
     ) -> Result<HashJoinPoint> {
@@ -403,7 +418,19 @@ where
 
         // FIXME: specify load factor as argument
         let ht_malloc_timer = Instant::now();
-        let mut hash_table_mem = hash_table_alloc(self.hash_table_len);
+
+        // Builder loads the CUDA module. The module requires some GPU memory.
+        // Thus, module needs to be loaded before calculating the available GPU
+        // memory.
+        let hj_op_builder = no_partitioning_join::CudaHashJoinBuilder::<T>::default();
+
+        let linux_wrapper::NumaMemInfo { free, .. } = linux_wrapper::numa_mem_info(cache_node)?;
+        let free = free - GPU_MEM_SLACK_BYTES;
+        // Note: T is an integer, and self.hash_table_elems_per_entry == 2
+        let cache_max_len = free / mem::size_of::<T>();
+        let ht_alloc = hash_table_alloc(cache_max_len);
+
+        let mut hash_table_mem = ht_alloc(self.hash_table_len);
         if let CudaUniMem(ref mut _mem) = hash_table_mem {
             // mem_advise(
             //     mem.as_unified_ptr(),
@@ -431,7 +458,7 @@ where
 
         stream.synchronize()?;
 
-        let hj_op = no_partitioning_join::CudaHashJoinBuilder::<T>::default()
+        let hj_op = hj_op_builder
             .hashing_scheme(self.hashing_scheme)
             .is_selective(self.is_selective)
             .build_dim(build_dim.0.clone(), build_dim.1.clone())
@@ -470,6 +497,7 @@ where
             build_ns: Some(build_millis as f64 * 10_f64.powf(6.0)),
             probe_ns: Some(probe_millis as f64 * 10_f64.powf(6.0)),
             hash_table_malloc_ns: Some(ht_malloc_time.as_nanos() as f64),
+            cached_hash_table_tuples: *cached_hash_table_tuples.borrow(),
             ..Default::default()
         })
     }
@@ -574,6 +602,7 @@ where
             probe_compute_ns: probe_mnts.compute_ns,
             build_cool_down_ns: build_mnts.cool_down_ns,
             probe_cool_down_ns: probe_mnts.cool_down_ns,
+            cached_hash_table_tuples: None,
         })
     }
 
@@ -666,6 +695,7 @@ where
             probe_compute_ns: probe_mnts.compute_ns,
             build_cool_down_ns: build_mnts.cool_down_ns,
             probe_cool_down_ns: probe_mnts.cool_down_ns,
+            cached_hash_table_tuples: None,
         })
     }
 

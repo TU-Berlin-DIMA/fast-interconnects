@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2019-2021 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2019-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 //! Heterogeneous memory allocator.
@@ -20,11 +20,14 @@
 use rustacuda::memory::{DeviceBuffer, DeviceCopy, LockedBuffer, UnifiedBuffer};
 
 use std::alloc::{self, Layout};
+use std::cell::RefCell;
 use std::convert::TryFrom;
 use std::default::Default;
 use std::mem::size_of;
+use std::rc::Rc;
 use std::slice;
 
+use super::hw_info::ProcessorCache;
 use super::memory::{DerefMem, Mem, PageLock};
 use super::numa::{DistributedNumaMemory, NodeLen, NodeRatio, NumaMemory, PageType};
 use crate::error::{Error, ErrorKind, Result};
@@ -96,6 +99,16 @@ pub enum DerefMemType {
     CudaUniMem,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum CacheSpillType {
+    NoSpill(MemType),
+    CacheAndSpill {
+        cache_node: u16,
+        spill_node: u16,
+        page_type: PageType,
+    },
+}
+
 impl MemType {
     pub fn page_type(&self) -> PageType {
         match *self {
@@ -148,6 +161,12 @@ impl From<DerefMemType> for MemType {
     }
 }
 
+impl From<MemType> for CacheSpillType {
+    fn from(mem_type: MemType) -> CacheSpillType {
+        CacheSpillType::NoSpill(mem_type)
+    }
+}
+
 impl TryFrom<MemType> for DerefMemType {
     type Error = Error;
 
@@ -190,6 +209,11 @@ pub type MemAllocFn<T> = Box<dyn Fn(usize) -> Mem<T>>;
 /// memory. In this case, the caller can pass in a generic memory allocator
 /// This allows the callee to generalize over all memory types.
 pub type DerefMemAllocFn<T> = Box<dyn Fn(usize) -> DerefMem<T>>;
+
+/// A curried memory allocator for caching and spilling memory
+///
+/// Takes as an argument the maximum GPU cache length.
+pub type MemSpillAllocFn<T> = Box<dyn Fn(usize) -> MemAllocFn<T>>;
 
 impl Allocator {
     /// Allocates memory of the specified type
@@ -384,5 +408,100 @@ impl Allocator {
                 len * size_of::<T>()
             )))
         }
+    }
+
+    /// Captures the cache memory type and returns a function that returns an allocator
+    ///
+    /// Effectively, we're gathering the arguments by currying
+    /// `mem_spill_alloc_fn_internal`.
+    ///
+    /// The returned allocator uses GPU memory until `cache_max_len` is reached.
+    /// Then, the allocator spills the remainder to CPU memory.
+    ///
+    /// The functional programming approach used here solves the leaky abstraction
+    /// problem. Oftentimes, the knowledge about how much cache space is available,
+    /// and the total required space for the data relation reside in two different
+    /// code modules. Thus, we aggregate this knowledge in a closure to retain
+    /// modularity, instead of leaking internal details of the modules.
+    ///
+    /// Returns a "future" that is set to the cached length when the allocator is
+    /// invoked, for logging purposes.
+    pub fn mem_spill_alloc_fn<T>(
+        cache_spill_type: CacheSpillType,
+    ) -> (MemSpillAllocFn<T>, Rc<RefCell<Option<usize>>>)
+    where
+        T: Clone + Default + DeviceCopy,
+    {
+        let cached_len_future = Rc::new(RefCell::new(None));
+        let cached_len_setter = cached_len_future.clone();
+
+        let alloc: MemSpillAllocFn<T> = match cache_spill_type {
+            CacheSpillType::CacheAndSpill {
+                cache_node,
+                spill_node,
+                page_type,
+            } => Box::new(move |cache_max_len| {
+                Self::mem_spill_alloc_fn_internal(
+                    cache_max_len,
+                    cache_node,
+                    spill_node,
+                    page_type,
+                    cached_len_setter.clone(),
+                )
+            }),
+            CacheSpillType::NoSpill(mem_type) => {
+                cached_len_setter.replace(None);
+                let mem_alloc: MemSpillAllocFn<T> =
+                    Box::new(move |_| Self::mem_alloc_fn(mem_type.clone()));
+                mem_alloc
+            }
+        };
+
+        (alloc, cached_len_future)
+    }
+
+    /// Builds an allocator that caches data in GPU memory
+    fn mem_spill_alloc_fn_internal<T>(
+        cache_max_len: usize,
+        gpu_node: u16,
+        cpu_node: u16,
+        page_type: PageType,
+        cached_len_setter: Rc<RefCell<Option<usize>>>,
+    ) -> MemAllocFn<T>
+    where
+        T: Clone + Default + DeviceCopy,
+    {
+        // Round down to the page size. Assume huge pages, as this will also work
+        // with small pages, but not vice-versa.
+        let page_size = ProcessorCache::huge_page_size().expect("Failed to get the huge page size");
+        let cache_max_len = (cache_max_len / page_size) * page_size;
+
+        let alloc = move |len| {
+            let (cached_len, spilled_len) = if len <= cache_max_len {
+                (len, 0)
+            } else {
+                (cache_max_len, len - cache_max_len)
+            };
+
+            cached_len_setter.replace(Some(cached_len));
+
+            let mem_type = MemType::DistributedNumaMemWithLen {
+                nodes: Box::new([
+                    NodeLen {
+                        node: gpu_node,
+                        len: cached_len,
+                    },
+                    NodeLen {
+                        node: cpu_node,
+                        len: spilled_len,
+                    },
+                ]),
+                page_type,
+            };
+
+            Allocator::alloc_mem(mem_type, len)
+        };
+
+        Box::new(alloc)
     }
 }
