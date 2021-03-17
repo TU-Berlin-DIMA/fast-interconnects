@@ -25,6 +25,7 @@ use rustacuda::context::{Context, ContextFlags, CurrentContext};
 use rustacuda::device::Device;
 use rustacuda::memory::{AsyncCopyDestination, DeviceBuffer, DeviceCopy};
 use rustacuda::stream::{Stream, StreamFlags};
+use serde::Serializer;
 use serde_derive::Serialize;
 use serde_repr::Serialize_repr;
 use sql_ops::partition::cpu_radix_partition::{
@@ -274,9 +275,30 @@ struct Options {
     #[structopt(long = "input-location", default_value = "0")]
     input_location: u16,
 
-    /// Allocate memory for output relation on NUMA node (See numactl -H)
-    #[structopt(long = "output-location", default_value = "0")]
-    output_location: u16,
+    /// NUMA nodes on which the output data is allocated
+    ///
+    /// NUMA nodes are specified as a list (e.g.: 0,1,2). See numactl -H for
+    /// the available NUMA nodes.
+    ///
+    /// The NUMA node list is only used for the `Numa` and `DistributedNuma`
+    /// memory types. Multiple nodes are only valid for the `DistributedNuma`
+    /// memory type.
+    #[structopt(
+        long = "output-location",
+        default_value = "0",
+        require_delimiter = true
+    )]
+    output_location: Vec<u16>,
+
+    /// Proportions with which the output data are allocated on multiple nodes
+    ///
+    /// Given as a list of percentages (e.g.: 20,60,20), that should add up to
+    /// 100%.
+    ///
+    /// The proportions are used only for the `DistributedNuma` memory type and
+    /// have no effect on other memory types.
+    #[structopt(long, default_value = "100", require_delimiter = true)]
+    output_proportions: Vec<usize>,
 
     /// Page type with with to allocate memory
     #[structopt(
@@ -326,7 +348,10 @@ struct DataPoint {
     pub input_mem_type: Option<ArgMemType>,
     pub output_mem_type: Option<ArgMemType>,
     pub input_location: Option<u16>,
-    pub output_location: Option<u16>,
+    #[serde(serialize_with = "serialize_vec")]
+    pub output_location: Option<Vec<u16>>,
+    #[serde(serialize_with = "serialize_vec")]
+    pub output_proportions: Option<Vec<usize>>,
     pub page_type: Option<ArgPageType>,
     pub tuple_bytes: Option<ArgTupleBytes>,
     pub tuples: Option<usize>,
@@ -752,12 +777,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     .into();
 
+    let node_ratios: Box<[NodeRatio]> = options
+        .output_location
+        .iter()
+        .zip(options.output_proportions.iter())
+        .map(|(node, pct)| NodeRatio {
+            node: *node,
+            ratio: Ratio::new(*pct, 100),
+        })
+        .collect();
+
     let output_mem_type: DerefMemType = ArgMemTypeHelper {
         mem_type: options.output_mem_type,
-        node_ratios: Box::new([NodeRatio {
-            node: options.output_location,
-            ratio: Ratio::from_integer(0),
-        }]),
+        node_ratios,
         page_type: options.page_type.into(),
     }
     .into();
@@ -772,7 +804,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         cpu_morsel_bytes: Some(options.cpu_morsel_bytes),
         output_mem_type: Some(options.output_mem_type),
         input_location: Some(options.input_location),
-        output_location: Some(options.output_location),
+        output_location: Some(options.output_location.clone()),
+        output_proportions: Some(options.output_proportions.clone()),
         page_type: Some(options.page_type),
         tuple_bytes: Some(options.tuple_bytes),
         tuples: Some(options.tuples),
@@ -873,4 +906,31 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+/// Serialize `Option<Vec<T>>` by converting it into a `String`.
+///
+/// This is necessary because the `csv` crate does not support nesting `Vec`
+/// instead of flattening it.
+fn serialize_vec<S, T>(option: &Option<Vec<T>>, ser: S) -> std::result::Result<S::Ok, S::Error>
+where
+    S: Serializer,
+    T: ToString,
+{
+    if let Some(vec) = option {
+        let record = vec
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                if i == 0 {
+                    e.to_string()
+                } else {
+                    ",".to_owned() + &e.to_string()
+                }
+            })
+            .collect::<String>();
+        ser.serialize_str(&record)
+    } else {
+        ser.serialize_none()
+    }
 }
