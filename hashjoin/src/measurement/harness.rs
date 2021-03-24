@@ -21,7 +21,7 @@ pub fn measure(
     template: DataPoint,
     mut func: Box<dyn FnMut() -> Result<HashJoinPoint>>,
 ) -> Result<()> {
-    let measurements = (0..=repeat)
+    let measurements = (0..repeat)
         .zip(std::iter::once(true).chain(std::iter::repeat(false)))
         .map(|(_, warm_up)| {
             func().map(|p| DataPoint {
