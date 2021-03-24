@@ -8,13 +8,13 @@
  * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
-use clap::arg_enum;
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::cuda::CudaTransferStrategy;
 use numa_gpu::runtime::numa::{NodeRatio, PageType};
 use serde_derive::Serialize;
 use serde_repr::Serialize_repr;
 use sql_ops::join::HashingScheme;
+use structopt::clap::arg_enum;
 
 arg_enum! {
     #[derive(Copy, Clone, Debug, PartialEq)]

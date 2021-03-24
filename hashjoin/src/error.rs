@@ -4,10 +4,11 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019, Clemens Lutz <lutzcle@cml.li>
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2019-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
+use data_store::error::Error as DataStoreError;
 use datagen::error::Error as DatagenError;
 use error_chain::error_chain;
 use numa_gpu::error::Error as NumaGpuError;
@@ -42,6 +43,7 @@ error_chain! {
     foreign_links {
         Csv(csv::Error);
         Cuda(CudaError);
+        DataStore(DataStoreError);
         Datagen(DatagenError);
         Io(::std::io::Error);
         NumaGpu(NumaGpuError);

@@ -447,11 +447,10 @@ name = "hashjoin"
 version = "0.1.0"
 dependencies = [
  "average",
- "clap",
  "csv",
+ "data-store",
  "datagen",
  "error-chain",
- "flate2",
  "hostname 0.1.5",
  "num-rational",
  "num-traits",

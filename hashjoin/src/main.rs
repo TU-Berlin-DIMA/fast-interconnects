@@ -17,6 +17,7 @@ use crate::measurement::data_point::DataPoint;
 use crate::measurement::harness;
 use crate::measurement::hash_join_bench::{HashJoinBenchBuilder, HashJoinPoint};
 use crate::types::*;
+use data_store::join_data::{JoinDataBuilder, JoinDataGenFn};
 use datagen::relation::KeyAttribute;
 use num_rational::Ratio;
 use numa_gpu::runtime::allocator;
@@ -344,22 +345,31 @@ where
         );
     }
 
-    let mut hjb_builder = HashJoinBenchBuilder::default();
-    hjb_builder
-        .hashing_scheme(hashing_scheme)
-        .is_selective(cmd.selectivity != 100)
-        .hash_table_load_factor(hash_table_load_factor)
-        .inner_location(Box::new([NodeRatio {
-            node: cmd.inner_rel_location,
-            ratio: Ratio::from_integer(1),
-        }]))
-        .outer_location(Box::new([NodeRatio {
-            node: cmd.outer_rel_location,
-            ratio: Ratio::from_integer(1),
-        }]))
-        .inner_mem_type(cmd.mem_type)
-        .outer_mem_type(cmd.mem_type)
-        .page_type(cmd.page_type);
+    let mut data_builder = JoinDataBuilder::default();
+    data_builder
+        .mlock(true)
+        .inner_mem_type(
+            ArgMemTypeHelper {
+                mem_type: cmd.mem_type,
+                node_ratios: Box::new([NodeRatio {
+                    node: cmd.inner_rel_location,
+                    ratio: Ratio::from_integer(1),
+                }]),
+                page_type: cmd.page_type,
+            }
+            .into(),
+        )
+        .outer_mem_type(
+            ArgMemTypeHelper {
+                mem_type: cmd.mem_type,
+                node_ratios: Box::new([NodeRatio {
+                    node: cmd.outer_rel_location,
+                    ratio: Ratio::from_integer(1),
+                }]),
+                page_type: cmd.page_type,
+            }
+            .into(),
+        );
 
     // Select the operator to run, depending on the device type
     let exec_method = cmd.execution_method.clone();
@@ -386,12 +396,12 @@ where
         .collect();
 
     // Load file or generate data set
-    let (mut hjb, malloc_time, data_gen_time) =
+    let (mut join_data, malloc_time, data_gen_time) =
         if let (Some(inner_rel_path), Some(outer_rel_path)) = (
             cmd.inner_rel_file.as_ref().and_then(|p| p.to_str()),
             cmd.outer_rel_file.as_ref().and_then(|p| p.to_str()),
         ) {
-            hjb_builder.build_with_files(inner_rel_path, outer_rel_path)?
+            data_builder.build_with_files::<T>(inner_rel_path, outer_rel_path)?
         } else {
             let data_distribution = match cmd.data_distribution {
                 ArgDataDistribution::Uniform => DataDistribution::Uniform,
@@ -405,15 +415,23 @@ where
                 data_distribution,
                 Some(cmd.selectivity),
             );
-            hjb_builder
+            data_builder
                 .inner_len(inner_relation_len)
                 .outer_len(outer_relation_len)
                 .build_with_data_gen(data_gen)?
         };
 
+    let mut hjb_builder = HashJoinBenchBuilder::default();
+    let hjb = hjb_builder
+        .hashing_scheme(hashing_scheme)
+        .is_selective(cmd.selectivity != 100)
+        .hash_table_load_factor(hash_table_load_factor)
+        .build(join_data.build_relation_key.len())?;
+
     // Construct data point template for CSV
     let dp = DataPoint::new()?
         .fill_from_cmd_options(cmd)?
+        .fill_from_join_data(&join_data)
         .fill_from_hash_join_bench(&hjb)
         .set_init_time(malloc_time, data_gen_time);
 
@@ -445,7 +463,12 @@ where
                 }
                 .into(),
             );
-            hjb.cpu_hash_join(threads, &worker_cpu_affinity.cpu_workers, ht_alloc)
+            hjb.cpu_hash_join(
+                &mut join_data,
+                threads,
+                &worker_cpu_affinity.cpu_workers,
+                ht_alloc,
+            )
         }),
         ArgExecutionMethod::Gpu => Box::new(move || {
             let (cache_and_spill, cache_node) = if spill_hash_table == Some(true) {
@@ -481,6 +504,7 @@ where
                 allocator::Allocator::mem_spill_alloc_fn::<T>(cache_and_spill);
 
             hjb.cuda_hash_join(
+                &mut join_data,
                 ht_alloc_fn,
                 cache_node,
                 cache_bytes_future,
@@ -499,6 +523,7 @@ where
                     .into(),
                 );
                 hjb.cuda_streaming_unified_hash_join(
+                    &mut join_data,
                     ht_alloc,
                     (grid_size.clone(), block_size.clone()),
                     (grid_size.clone(), block_size.clone()),
@@ -516,6 +541,7 @@ where
                 .into(),
             );
             hjb.cuda_streaming_hash_join(
+                &mut join_data,
                 ht_alloc,
                 (grid_size.clone(), block_size.clone()),
                 (grid_size.clone(), block_size.clone()),
@@ -533,6 +559,7 @@ where
                 .into(),
             );
             hjb.hetrogeneous_hash_join(
+                &mut join_data,
                 ht_alloc,
                 threads,
                 &worker_cpu_affinity,
@@ -573,6 +600,7 @@ where
             );
 
             hjb.gpu_build_heterogeneous_probe(
+                &mut join_data,
                 cpu_ht_alloc,
                 gpu_ht_alloc,
                 threads,
@@ -588,15 +616,13 @@ where
     Ok((hjc, dp))
 }
 
-type DataGenFn<T> = Box<dyn FnMut(&mut [T], &mut [T]) -> Result<()>>;
-
 fn data_gen_fn<T>(
     description: ArgDataSet,
     inner_rel_tuples: Option<usize>,
     outer_rel_tuples: Option<usize>,
     data_distribution: DataDistribution,
     selectivity: Option<u32>,
-) -> (usize, usize, DataGenFn<T>)
+) -> (usize, usize, JoinDataGenFn<T>)
 where
     T: Copy + Send + KeyAttribute + num_traits::FromPrimitive,
 {
@@ -604,19 +630,19 @@ where
         ArgDataSet::Blanas => (
             datagen::popular::Blanas::primary_key_len(),
             datagen::popular::Blanas::foreign_key_len(),
-            Box::new(move |pk_rel, fk_rel| {
+            Box::new(move |pk_rel, _, fk_rel, _| {
                 datagen::popular::Blanas::gen(pk_rel, fk_rel, selectivity).map_err(|e| e.into())
             }),
         ),
         ArgDataSet::Kim => (
             datagen::popular::Kim::primary_key_len(),
             datagen::popular::Kim::foreign_key_len(),
-            Box::new(move |pk_rel, fk_rel| {
+            Box::new(move |pk_rel, _, fk_rel, _| {
                 datagen::popular::Kim::gen(pk_rel, fk_rel, selectivity).map_err(|e| e.into())
             }),
         ),
         ArgDataSet::Blanas4MB => {
-            let gen = move |pk_rel: &mut [_], fk_rel: &mut [_]| {
+            let gen = move |pk_rel: &mut [_], _: &mut [_], fk_rel: &mut [_], _: &mut [_]| {
                 datagen::relation::UniformRelation::gen_primary_key_par(pk_rel, selectivity)?;
                 datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
                 Ok(())
@@ -625,7 +651,7 @@ where
             (512 * 2_usize.pow(10), 256 * 2_usize.pow(20), Box::new(gen))
         }
         ArgDataSet::Test => {
-            let gen = move |pk_rel: &mut [_], fk_rel: &mut [_]| {
+            let gen = move |pk_rel: &mut [_], _: &mut [_], fk_rel: &mut [_], _: &mut [_]| {
                 datagen::relation::UniformRelation::gen_primary_key(pk_rel, selectivity)?;
                 datagen::relation::UniformRelation::gen_foreign_key_from_primary_key(
                     fk_rel, pk_rel,
@@ -636,7 +662,7 @@ where
             (1000, 1000, Box::new(gen))
         }
         ArgDataSet::Lutz2Gv32G => {
-            let gen = move |pk_rel: &mut [_], fk_rel: &mut [_]| {
+            let gen = move |pk_rel: &mut [_], _: &mut [_], fk_rel: &mut [_], _: &mut [_]| {
                 datagen::relation::UniformRelation::gen_primary_key_par(pk_rel, selectivity)?;
                 datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
                 Ok(())
@@ -649,7 +675,7 @@ where
             )
         }
         ArgDataSet::Lutz32Gv32G => {
-            let gen = move |pk_rel: &mut [_], fk_rel: &mut [_]| {
+            let gen = move |pk_rel: &mut [_], _: &mut [_], fk_rel: &mut [_], _: &mut [_]| {
                 datagen::relation::UniformRelation::gen_primary_key_par(pk_rel, selectivity)?;
                 datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
                 Ok(())
@@ -662,25 +688,27 @@ where
             )
         }
         ArgDataSet::Custom => {
-            let uniform_gen = Box::new(move |pk_rel: &mut [_], fk_rel: &mut [_]| {
-                datagen::relation::UniformRelation::gen_primary_key_par(pk_rel, selectivity)?;
-                datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
-                Ok(())
-            });
+            let uniform_gen = Box::new(
+                move |pk_rel: &mut [_], _: &mut [_], fk_rel: &mut [_], _: &mut [_]| {
+                    datagen::relation::UniformRelation::gen_primary_key_par(pk_rel, selectivity)?;
+                    datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
+                    Ok(())
+                },
+            );
 
-            let gen: DataGenFn<T> = match data_distribution {
+            let gen: JoinDataGenFn<T> = match data_distribution {
                 DataDistribution::Uniform => uniform_gen,
                 DataDistribution::Zipf(exp) if !(exp > 0.0) => uniform_gen,
-                DataDistribution::Zipf(exp) => {
-                    Box::new(move |pk_rel: &mut [_], fk_rel: &mut [_]| {
+                DataDistribution::Zipf(exp) => Box::new(
+                    move |pk_rel: &mut [_], _: &mut [_], fk_rel: &mut [_], _: &mut [_]| {
                         datagen::relation::UniformRelation::gen_primary_key_par(
                             pk_rel,
                             selectivity,
                         )?;
                         datagen::relation::ZipfRelation::gen_attr_par(fk_rel, pk_rel.len(), exp)?;
                         Ok(())
-                    })
-                }
+                    },
+                ),
             };
 
             (
