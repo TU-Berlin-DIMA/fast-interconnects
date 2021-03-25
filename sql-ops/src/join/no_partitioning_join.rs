@@ -376,7 +376,7 @@ macro_rules! impl_cuda_hash_join_for_type {
                         (HashingScheme::LinearProbing, false) => unsafe { launch!(
                                 module.[<gpu_ht_build_linearprobing_ $Suffix>]<<<grid, block, 0, stream>>>(
                                     hj.hash_table.mem.as_launchable_ptr(),
-                                    hash_table_size,
+                                    hash_table_size / 2, // FIXME: don't divide
                                     join_attr.as_launchable_ptr(),
                                     payload_attr.as_launchable_ptr(),
                                     join_attr_len
@@ -434,7 +434,7 @@ macro_rules! impl_cuda_hash_join_for_type {
                         HashingScheme::LinearProbing => unsafe { launch!(
                                 module.[<gpu_ht_probe_aggregate_linearprobing_ $Suffix>]<<<grid, block, 0, stream>>>(
                                     hj.hash_table.mem.as_launchable_ptr(),
-                                    hash_table_size,
+                                    hash_table_size / 2, // FIXME: don't divide
                                     join_attr.as_launchable_ptr(),
                                     payload_attr.as_launchable_ptr(),
                                     join_attr_len,
