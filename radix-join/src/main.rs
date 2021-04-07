@@ -408,12 +408,13 @@ fn args_to_bench<T>(
 ) -> Result<(Box<dyn FnMut() -> Result<RadixJoinPoint>>, DataPoint)>
 where
     T: Default
+        + Clone
+        + Copy
         + DeviceCopy
         + Sync
         + Send
         + CpuRadixPartitionable
         + GpuRadixPartitionable
-        + no_partitioning_join::NullKey
         + no_partitioning_join::CudaHashJoinable
         + no_partitioning_join::CpuHashJoinable
         + cuda_radix_join::CudaRadixJoinable

@@ -33,7 +33,7 @@ typedef unsigned long long int uint64_t;
 
 __device__
 void gpu_ht_insert_linearprobing_int32(
-        Tuple<int, int> *const __restrict__ hash_table,
+        HtEntry<int, int> *const __restrict__ hash_table,
         uint64_t hash_table_mask,
         int key,
         int payload
@@ -73,7 +73,7 @@ void gpu_ht_insert_linearprobing_int32(
 
 __device__
 void gpu_ht_insert_linearprobing_int64(
-        Tuple<long long, long long> *const __restrict__ hash_table,
+        HtEntry<long long, long long> *const __restrict__ hash_table,
         uint64_t hash_table_mask,
         long long key,
         long long payload
@@ -100,7 +100,7 @@ void gpu_ht_insert_linearprobing_int64(
 extern "C"
 __global__
 void gpu_ht_build_linearprobing_int32(
-        Tuple<int, int> *const __restrict__ hash_table,
+        HtEntry<int, int> *const __restrict__ hash_table,
         uint64_t const hash_table_entries,
         const int *const __restrict__ join_attr_data,
         const int *const __restrict__ payload_attr_data,
@@ -128,7 +128,7 @@ void gpu_ht_build_linearprobing_int32(
 extern "C"
 __global__
 void gpu_ht_build_linearprobing_int64(
-        Tuple<long long, long long> *const __restrict__ hash_table,
+        HtEntry<long long, long long> *const __restrict__ hash_table,
         uint64_t const hash_table_entries,
         const long long *const __restrict__ join_attr_data,
         const long long *const __restrict__ payload_attr_data,
@@ -155,7 +155,7 @@ void gpu_ht_build_linearprobing_int64(
 
 __device__
 bool gpu_ht_findkey_linearprobing_int32(
-        const Tuple<int, int> *const __restrict__ hash_table,
+        const HtEntry<int, int> *const __restrict__ hash_table,
         uint64_t hash_table_mask,
         int key,
         int *found_payload,
@@ -174,7 +174,7 @@ bool gpu_ht_findkey_linearprobing_int32(
     for (uint64_t i = 0; i < hash_table_mask + 1ULL; ++i, index += 1ULL) {
         index &= hash_table_mask;
 
-        Tuple<int, int> entry;
+        HtEntry<int, int> entry;
         entry.load(hash_table[index]);
 
         if (entry.key == key) {
@@ -191,7 +191,7 @@ bool gpu_ht_findkey_linearprobing_int32(
 
 __device__
 bool gpu_ht_findkey_linearprobing_int64(
-        const Tuple<long long, long long> *const __restrict__ hash_table,
+        const HtEntry<long long, long long> *const __restrict__ hash_table,
         uint64_t hash_table_mask,
         long long key,
         long long *found_payload,
@@ -210,7 +210,7 @@ bool gpu_ht_findkey_linearprobing_int64(
     for (uint64_t i = 0; i < hash_table_mask + 1ULL; ++i, index += 1ULL) {
         index &= hash_table_mask;
 
-        Tuple<long long, long long> entry;
+        HtEntry<long long, long long> entry;
         entry.load(hash_table[index]);
 
         if (entry.key == key) {
@@ -228,7 +228,7 @@ bool gpu_ht_findkey_linearprobing_int64(
 extern "C"
 __global__
 void gpu_ht_probe_aggregate_linearprobing_int32(
-        const Tuple<int, int> *const __restrict__ hash_table,
+        const HtEntry<int, int> *const __restrict__ hash_table,
         uint64_t const hash_table_entries,
         const int *const __restrict__ join_attr_data,
         const int *const __restrict__ payload_attr_data,
@@ -267,7 +267,7 @@ void gpu_ht_probe_aggregate_linearprobing_int32(
 extern "C"
 __global__
 void gpu_ht_probe_aggregate_linearprobing_int64(
-        const Tuple<long long, long long> *const __restrict__ hash_table,
+        const HtEntry<long long, long long> *const __restrict__ hash_table,
         uint64_t const hash_table_entries,
         const long long *const __restrict__ join_attr_data,
         const long long *const __restrict__ payload_attr_data,
@@ -306,7 +306,7 @@ void gpu_ht_probe_aggregate_linearprobing_int64(
 extern "C"
 __global__
 void gpu_ht_build_perfect_int32(
-        Tuple<int, int> *const __restrict__ hash_table,
+        HtEntry<int, int> *const __restrict__ hash_table,
         uint64_t const /* hash_table_entries */,
         const int *const __restrict__ join_attribute_data,
         const int *const __restrict__ payload_attributed_data,
@@ -317,7 +317,7 @@ void gpu_ht_build_perfect_int32(
     const uint32_t global_threads = blockDim.x * gridDim.x;
 
     for (uint64_t i = global_idx; i < data_length; i += global_threads) {
-        Tuple<int, int> tuple;
+        HtEntry<int, int> tuple;
         tuple.key = join_attribute_data[i];
         tuple.value = payload_attributed_data[i];
 
@@ -328,7 +328,7 @@ void gpu_ht_build_perfect_int32(
 extern "C"
 __global__
 void gpu_ht_build_selective_perfect_int32(
-        Tuple<int, int> *const __restrict__ hash_table,
+        HtEntry<int, int> *const __restrict__ hash_table,
         uint64_t const /* hash_table_entries */,
         const int *const __restrict__ join_attribute_data,
         const int *const __restrict__ payload_attributed_data,
@@ -341,7 +341,7 @@ void gpu_ht_build_selective_perfect_int32(
     for (uint64_t i = global_idx; i < data_length; i += global_threads) {
         int key = join_attribute_data[i];
         if (key != null_key<int>()) {
-            Tuple<int, int> tuple;
+            HtEntry<int, int> tuple;
             tuple.key = key;
             tuple.value = payload_attributed_data[i];
 
@@ -353,7 +353,7 @@ void gpu_ht_build_selective_perfect_int32(
 extern "C"
 __global__
 void gpu_ht_build_perfect_int64(
-        Tuple<long long, long long> *const __restrict__ hash_table,
+        HtEntry<long long, long long> *const __restrict__ hash_table,
         uint64_t const /* hash_table_entries */,
         const long long *const __restrict__ join_attribute_data,
         const long long *const __restrict__ payload_attributed_data,
@@ -364,7 +364,7 @@ void gpu_ht_build_perfect_int64(
     const uint32_t global_threads = blockDim.x * gridDim.x;
 
     for (uint64_t i = global_idx; i < data_length; i += global_threads) {
-        Tuple<long long, long long> tuple;
+        HtEntry<long long, long long> tuple;
         tuple.key = join_attribute_data[i];
         tuple.value = payload_attributed_data[i];
 
@@ -375,7 +375,7 @@ void gpu_ht_build_perfect_int64(
 extern "C"
 __global__
 void gpu_ht_build_selective_perfect_int64(
-        Tuple<long long, long long> *const __restrict__ hash_table,
+        HtEntry<long long, long long> *const __restrict__ hash_table,
         uint64_t const /* hash_table_entries */,
         const long long *const __restrict__ join_attribute_data,
         const long long *const __restrict__ payload_attributed_data,
@@ -388,7 +388,7 @@ void gpu_ht_build_selective_perfect_int64(
     for (uint64_t i = global_idx; i < data_length; i += global_threads) {
         long long key = join_attribute_data[i];
         if (key != null_key<long long>()) {
-            Tuple<long long, long long> tuple;
+            HtEntry<long long, long long> tuple;
             tuple.key = key;
             tuple.value = payload_attributed_data[i];
 
@@ -400,7 +400,7 @@ void gpu_ht_build_selective_perfect_int64(
 extern "C"
 __global__
 void gpu_ht_probe_aggregate_perfect_int32(
-        const Tuple<int, int> *const __restrict__ hash_table,
+        const HtEntry<int, int> *const __restrict__ hash_table,
         uint64_t const /* hash_table_entries */,
         const int *const __restrict__ join_attribute_data,
         const int *const __restrict__ payload_attribute_data,
@@ -422,7 +422,7 @@ void gpu_ht_probe_aggregate_perfect_int32(
 extern "C"
 __global__
 void gpu_ht_probe_aggregate_perfect_int64(
-        const Tuple<long long, long long> *const __restrict__ hash_table,
+        const HtEntry<long long, long long> *const __restrict__ hash_table,
         uint64_t const /* hash_table_entries */,
         const long long *const __restrict__ join_attribute_data,
         const long long *const __restrict__ payload_attribute_data,

@@ -10,6 +10,8 @@
 
 use crate::error::{ErrorKind, Result};
 use data_store::join_data::JoinData;
+use datagen::relation::KeyAttribute;
+use num_traits::cast::AsPrimitive;
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::cuda::{
@@ -25,10 +27,11 @@ use rustacuda::event::{Event, EventFlags};
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
 use rustacuda::stream::{Stream, StreamFlags};
-use sql_ops::join::{no_partitioning_join, HashingScheme};
+use sql_ops::join::{no_partitioning_join, HashingScheme, HtEntry};
 use std::cell::RefCell;
 use std::convert::TryInto;
 use std::mem;
+use std::os::raw::c_uint;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
@@ -50,7 +53,6 @@ pub struct HashJoinBench<T> {
 
 pub struct HashJoinBenchBuilder {
     hash_table_load_factor: usize,
-    hash_table_elems_per_entry: usize,
     hashing_scheme: HashingScheme,
     is_selective: bool,
 }
@@ -75,7 +77,6 @@ impl Default for HashJoinBenchBuilder {
     fn default() -> HashJoinBenchBuilder {
         HashJoinBenchBuilder {
             hash_table_load_factor: 2,
-            hash_table_elems_per_entry: 2, // FIXME: replace constant with an HtEntry type
             hashing_scheme: HashingScheme::LinearProbing,
             is_selective: false,
         }
@@ -102,17 +103,11 @@ impl HashJoinBenchBuilder {
         let hash_table_len = match self.hashing_scheme {
             HashingScheme::LinearProbing => inner_relation_len
                 .checked_next_power_of_two()
-                .and_then(|x| {
-                    x.checked_mul(self.hash_table_load_factor * self.hash_table_elems_per_entry)
-                })
+                .and_then(|x| x.checked_mul(self.hash_table_load_factor))
                 .ok_or_else(|| {
                     ErrorKind::IntegerOverflow("Failed to compute hash table length".to_string())
                 })?,
-            HashingScheme::Perfect => inner_relation_len
-                .checked_mul(self.hash_table_elems_per_entry)
-                .ok_or_else(|| {
-                    ErrorKind::IntegerOverflow("Failed to compute hash table length".to_string())
-                })?,
+            HashingScheme::Perfect => inner_relation_len,
             HashingScheme::BucketChaining => unimplemented!(),
         };
 
@@ -132,17 +127,18 @@ impl HashJoinBenchBuilder {
 impl<T> HashJoinBench<T>
 where
     T: Default
+        + AsPrimitive<c_uint>
         + DeviceCopy
         + Sync
         + Send
-        + no_partitioning_join::NullKey
+        + KeyAttribute
         + no_partitioning_join::CudaHashJoinable
         + no_partitioning_join::CpuHashJoinable,
 {
     pub fn cuda_hash_join(
         &self,
         data: &mut JoinData<T>,
-        hash_table_alloc: allocator::MemSpillAllocFn<T>,
+        hash_table_alloc: allocator::MemSpillAllocFn<HtEntry<T, T>>,
         cache_node: u16,
         cached_hash_table_tuples: Rc<RefCell<Option<usize>>>,
         build_dim: (GridSize, BlockSize),
@@ -160,8 +156,7 @@ where
 
         let linux_wrapper::NumaMemInfo { free, .. } = linux_wrapper::numa_mem_info(cache_node)?;
         let free = free - GPU_MEM_SLACK_BYTES;
-        // Note: T is an integer, and self.hash_table_elems_per_entry == 2
-        let cache_max_len = free / mem::size_of::<T>();
+        let cache_max_len = free / mem::size_of::<HtEntry<T, T>>();
         let ht_alloc = hash_table_alloc(cache_max_len);
 
         let mut hash_table_mem = ht_alloc(self.hash_table_len);
@@ -239,7 +234,7 @@ where
     pub fn cuda_streaming_hash_join(
         &self,
         data: &mut JoinData<T>,
-        hash_table_alloc: allocator::MemAllocFn<T>,
+        hash_table_alloc: allocator::MemAllocFn<HtEntry<T, T>>,
         build_dim: (GridSize, BlockSize),
         probe_dim: (GridSize, BlockSize),
         transfer_strategy: CudaTransferStrategy,
@@ -344,7 +339,7 @@ where
     pub fn cuda_streaming_unified_hash_join(
         &self,
         data: &mut JoinData<T>,
-        hash_table_alloc: allocator::MemAllocFn<T>,
+        hash_table_alloc: allocator::MemAllocFn<HtEntry<T, T>>,
         build_dim: (GridSize, BlockSize),
         probe_dim: (GridSize, BlockSize),
         gpu_morsel_bytes: usize,
@@ -440,7 +435,7 @@ where
         data: &mut JoinData<T>,
         threads: usize,
         cpu_affinity: &CpuAffinity,
-        hash_table_alloc: allocator::DerefMemAllocFn<T>,
+        hash_table_alloc: allocator::DerefMemAllocFn<HtEntry<T, T>>,
     ) -> Result<HashJoinPoint> {
         let ht_malloc_timer = Instant::now();
         let hash_table_mem = hash_table_alloc(self.hash_table_len);
@@ -534,7 +529,7 @@ where
     pub fn hetrogeneous_hash_join(
         &self,
         data: &mut JoinData<T>,
-        hash_table_alloc: allocator::MemAllocFn<T>,
+        hash_table_alloc: allocator::MemAllocFn<HtEntry<T, T>>,
         cpu_threads: usize,
         worker_cpu_affinity: &WorkerCpuAffinity,
         gpu_ids: Vec<u16>,
@@ -658,8 +653,8 @@ where
     pub fn gpu_build_heterogeneous_probe(
         &self,
         data: &mut JoinData<T>,
-        cpu_hash_table_alloc: allocator::MemAllocFn<T>,
-        gpu_hash_table_alloc: allocator::MemAllocFn<T>,
+        cpu_hash_table_alloc: allocator::MemAllocFn<HtEntry<T, T>>,
+        gpu_hash_table_alloc: allocator::MemAllocFn<HtEntry<T, T>>,
         cpu_threads: usize,
         worker_cpu_affinity: &WorkerCpuAffinity,
         gpu_ids: Vec<u16>,

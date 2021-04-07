@@ -11,6 +11,7 @@
 use crate::error::{ErrorKind, Result};
 use crate::measurement::harness::RadixJoinPoint;
 use data_store::join_data::JoinData;
+use datagen::relation::KeyAttribute;
 use numa_gpu::error::Result as NumaGpuResult;
 use numa_gpu::runtime::allocator::{Allocator, CacheSpillType, DerefMemType, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
@@ -108,12 +109,13 @@ pub fn gpu_triton_join<T>(
 ) -> Result<(i64, RadixJoinPoint)>
 where
     T: Default
+        + Clone
         + DeviceCopy
         + Sync
         + Send
         + CpuRadixPartitionable
         + GpuRadixPartitionable
-        + no_partitioning_join::NullKey
+        + KeyAttribute
         + no_partitioning_join::CudaHashJoinable
         + no_partitioning_join::CpuHashJoinable
         + cuda_radix_join::CudaRadixJoinable,

@@ -20,6 +20,7 @@ use crate::types::*;
 use data_store::join_data::{JoinDataBuilder, JoinDataGenFn};
 use datagen::relation::KeyAttribute;
 use num_rational::Ratio;
+use num_traits::cast::AsPrimitive;
 use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::dispatcher::{MorselSpec, WorkerCpuAffinity};
@@ -30,8 +31,9 @@ use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
 use rustacuda::prelude::*;
 use serde::de::DeserializeOwned;
-use sql_ops::join::{no_partitioning_join, HashingScheme};
+use sql_ops::join::{no_partitioning_join, HashingScheme, HtEntry};
 use std::mem::size_of;
+use std::os::raw::c_uint;
 use std::path::PathBuf;
 use structopt::StructOpt;
 
@@ -302,13 +304,14 @@ fn args_to_bench<T>(
 ) -> Result<(Box<dyn FnMut() -> Result<HashJoinPoint>>, DataPoint)>
 where
     T: Default
+        + AsPrimitive<c_uint>
+        + Copy
         + DeviceCopy
         + Sync
         + Send
-        + no_partitioning_join::NullKey
+        + KeyAttribute
         + no_partitioning_join::CudaHashJoinable
         + no_partitioning_join::CpuHashJoinable
-        + KeyAttribute
         + num_traits::FromPrimitive
         + DeserializeOwned,
 {
@@ -455,7 +458,7 @@ where
     // Create closure that wraps a hash join benchmark function
     let hjc: Box<dyn FnMut() -> Result<HashJoinPoint>> = match exec_method {
         ArgExecutionMethod::Cpu => Box::new(move || {
-            let ht_alloc = allocator::Allocator::deref_mem_alloc_fn::<T>(
+            let ht_alloc = allocator::Allocator::deref_mem_alloc_fn::<HtEntry<T, T>>(
                 ArgMemTypeHelper {
                     mem_type,
                     node_ratios: node_ratios.clone(),
@@ -501,7 +504,7 @@ where
             };
 
             let (ht_alloc_fn, cache_bytes_future) =
-                allocator::Allocator::mem_spill_alloc_fn::<T>(cache_and_spill);
+                allocator::Allocator::mem_spill_alloc_fn::<HtEntry<T, T>>(cache_and_spill);
 
             hjb.cuda_hash_join(
                 &mut join_data,
@@ -514,7 +517,7 @@ where
         }),
         ArgExecutionMethod::GpuStream if transfer_strategy == ArgTransferStrategy::Unified => {
             Box::new(move || {
-                let ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
+                let ht_alloc = allocator::Allocator::mem_alloc_fn::<HtEntry<T, T>>(
                     ArgMemTypeHelper {
                         mem_type,
                         node_ratios: node_ratios.clone(),
@@ -532,7 +535,7 @@ where
             })
         }
         ArgExecutionMethod::GpuStream => Box::new(move || {
-            let ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
+            let ht_alloc = allocator::Allocator::mem_alloc_fn::<HtEntry<T, T>>(
                 ArgMemTypeHelper {
                     mem_type,
                     node_ratios: node_ratios.clone(),
@@ -550,7 +553,7 @@ where
             )
         }),
         ArgExecutionMethod::Het => Box::new(move || {
-            let ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
+            let ht_alloc = allocator::Allocator::mem_alloc_fn::<HtEntry<T, T>>(
                 ArgMemTypeHelper {
                     mem_type,
                     node_ratios: node_ratios.clone(),
@@ -577,7 +580,7 @@ where
                     .thread_to_cpu(0)
                     .expect("Couldn't map thread to a core"),
             )?;
-            let cpu_ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
+            let cpu_ht_alloc = allocator::Allocator::mem_alloc_fn::<HtEntry<T, T>>(
                 ArgMemTypeHelper {
                     mem_type: ArgMemType::Numa,
                     node_ratios: Box::new([NodeRatio {
@@ -590,7 +593,7 @@ where
             );
 
             // Allocate GPU memory as specified on the commandline
-            let gpu_ht_alloc = allocator::Allocator::mem_alloc_fn::<T>(
+            let gpu_ht_alloc = allocator::Allocator::mem_alloc_fn::<HtEntry<T, T>>(
                 ArgMemTypeHelper {
                     mem_type,
                     node_ratios: node_ratios.clone(),

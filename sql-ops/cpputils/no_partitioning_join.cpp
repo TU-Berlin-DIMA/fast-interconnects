@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2018-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  *
  * Note that parts of this code are based on the Hawk query compiler by
  * Sebastian Breß et al.
@@ -22,43 +22,35 @@
  * Hash table is initialized with all entries set to -1
  */
 
-/* See Richter et al., Seven-Dimensional Analysis of Hashing Methods
- * Multiply-shift hash function
- * Requirement: hash factor is an odd 64-bit integer
-*/
-#define HASH_FACTOR 123456789123456789ull
-
-#define NULL_KEY ((long)0xFFFFFFFFFFFFFFFFL)
+#define CUDA_MODIFIER
+#include <gpu_common.h>
 
 #include <atomic>
 #include <cstdint>
 
 template<typename T>
 void cpu_ht_insert_linearprobing(
-        std::atomic<T> * __restrict__ hash_table,
+        HtEntry<T, T> *const  __restrict__ hash_table,
         uint64_t hash_table_mask,
         T key,
         T payload
         )
 {
-    uint64_t index = 0;
-    index = key;
+    uint64_t index = hash<T>(key);
 
-    index *= HASH_FACTOR;
-    for (uint64_t i = 0; i < hash_table_mask + 1; ++i, index += 2) {
+    for (uint64_t i = 0; i < hash_table_mask + 1ULL; ++i, index += 1ULL) {
         index &= hash_table_mask;
-        index &= ~1ul;
 
-        T old = hash_table[index];
-        if (old == NULL_KEY) {
-            uint64_t expected = (uint64_t) NULL_KEY;
+        T old = hash_table[index].key;
+        if (old == null_key<T>()) {
+            T expected = null_key<T>();
             bool is_inserted = std::atomic_compare_exchange_strong(
-                    (std::atomic<uint64_t>*) &hash_table[index],
+                    (std::atomic<T>*) &hash_table[index].key,
                     &expected,
-                    (uint64_t) key
+                    key
                     );
             if (is_inserted) {
-                hash_table[index + 1] = payload;
+                hash_table[index].value = payload;
                 return;
             }
         }
@@ -68,7 +60,7 @@ void cpu_ht_insert_linearprobing(
 // extern "C"
 template<typename T>
 void cpu_ht_build_linearprobing(
-        std::atomic<T> *const __restrict__ hash_table,
+        HtEntry<T, T> *const __restrict__ hash_table,
         uint64_t const hash_table_entries,
         const T *const __restrict__ join_attr_data,
         const T *const __restrict__ payload_attr_data,
@@ -92,10 +84,10 @@ void cpu_ht_build_linearprobing(
 
 extern "C"
 void cpu_ht_build_linearprobing_int32(
-        std::atomic<int32_t> *const __restrict__ hash_table,
+        HtEntry<int, int> *const __restrict__ hash_table,
         uint64_t const hash_table_entries,
-        const int32_t *const __restrict__ join_attr_data,
-        const int32_t *const __restrict__ payload_attr_data,
+        const int *const __restrict__ join_attr_data,
+        const int *const __restrict__ payload_attr_data,
         uint64_t const data_length
         )
 {
@@ -104,10 +96,10 @@ void cpu_ht_build_linearprobing_int32(
 
 extern "C"
 void cpu_ht_build_linearprobing_int64(
-        std::atomic<int64_t> *const __restrict__ hash_table,
+        HtEntry<long long, long long> *const __restrict__ hash_table,
         uint64_t const hash_table_entries,
-        const int64_t *const __restrict__ join_attr_data,
-        const int64_t *const __restrict__ payload_attr_data,
+        const long long *const __restrict__ join_attr_data,
+        const long long *const __restrict__ payload_attr_data,
         uint64_t const data_length
         )
 {
@@ -116,7 +108,7 @@ void cpu_ht_build_linearprobing_int64(
 
 template<typename T>
 bool cpu_ht_findkey_linearprobing(
-        T const *const __restrict__ hash_table,
+        HtEntry<T, T> const *const __restrict__ hash_table,
         uint64_t hash_table_mask,
         T key,
         T const **found_payload,
@@ -127,21 +119,19 @@ bool cpu_ht_findkey_linearprobing(
     uint64_t index = 0;
     if (use_last_index) {
         index = *last_index;
-        index += 2;
+        index += 1ULL;
     } else {
-        index = key;
-        index *= HASH_FACTOR;
+        index = hash<T>(key);
     }
 
-    for (uint64_t i = 0; i < hash_table_mask + 1; ++i, index += 2) {
+    for (uint64_t i = 0; i < hash_table_mask + 1ULL; ++i, index += 1ULL) {
         index &= hash_table_mask;
-        index &= ~1ul;
 
-        if (hash_table[index] == key) {
-            *found_payload = &hash_table[index + 1];
+        if (hash_table[index].key == key) {
+            *found_payload = &hash_table[index].value;
             *last_index = index;
             return true;
-        } else if (hash_table[index] == NULL_KEY) {
+        } else if (hash_table[index].key == null_key<T>()) {
             return false;
         }
     }
@@ -151,7 +141,7 @@ bool cpu_ht_findkey_linearprobing(
 
 template<typename T>
 void cpu_ht_probe_aggregate_linearprobing(
-        T const *const __restrict__ hash_table,
+        HtEntry<T, T> const *const __restrict__ hash_table,
         uint64_t const hash_table_entries,
         const T *const __restrict__ join_attr_data,
         const T *const __restrict__ payload_attr_data,
@@ -182,10 +172,10 @@ void cpu_ht_probe_aggregate_linearprobing(
 
 extern "C"
 void cpu_ht_probe_aggregate_linearprobing_int32(
-        int32_t const *const __restrict__ hash_table,
+        HtEntry<int, int> const *const __restrict__ hash_table,
         uint64_t const hash_table_entries,
-        const int32_t *const __restrict__ join_attr_data,
-        const int32_t *const __restrict__ payload_attr_data,
+        const int *const __restrict__ join_attr_data,
+        const int *const __restrict__ payload_attr_data,
         uint64_t const data_length,
         uint64_t *const __restrict__ aggregation_result
         )
@@ -202,10 +192,10 @@ void cpu_ht_probe_aggregate_linearprobing_int32(
 
 extern "C"
 void cpu_ht_probe_aggregate_linearprobing_int64(
-        int64_t const *const __restrict__ hash_table,
+        HtEntry<long long, long long> const *const __restrict__ hash_table,
         uint64_t const hash_table_entries,
-        const int64_t *const __restrict__ join_attr_data,
-        const int64_t *const __restrict__ payload_attr_data,
+        const long long *const __restrict__ join_attr_data,
+        const long long *const __restrict__ payload_attr_data,
         uint64_t const data_length,
         uint64_t *const __restrict__ aggregation_result
         )
@@ -222,7 +212,7 @@ void cpu_ht_probe_aggregate_linearprobing_int64(
 
 template<typename T>
 void cpu_ht_build_perfect(
-        T *const __restrict__ hash_table,
+        HtEntry<T, T> *const __restrict__ hash_table,
         uint64_t const /* hash_table_entries */,
         const T *const __restrict__ join_attribute_data,
         const T *const __restrict__ payload_attributed_data,
@@ -232,14 +222,14 @@ void cpu_ht_build_perfect(
     for (uint64_t tuple_id = 0; tuple_id < data_length; ++tuple_id) {
         T key = join_attribute_data[tuple_id];
         T val = payload_attributed_data[tuple_id];
-        hash_table[key] = key;
-        hash_table[key + 1] = val;
+        hash_table[key].key = key;
+        hash_table[key].value = val;
     }
 }
 
 template<typename T>
 void cpu_ht_build_selective_perfect(
-        T *const __restrict__ hash_table,
+        HtEntry<T, T> *const __restrict__ hash_table,
         uint64_t const /* hash_table_entries */,
         const T *const __restrict__ join_attribute_data,
         const T *const __restrict__ payload_attributed_data,
@@ -248,20 +238,20 @@ void cpu_ht_build_selective_perfect(
 {
     for (uint64_t tuple_id = 0; tuple_id < data_length; ++tuple_id) {
         T key = join_attribute_data[tuple_id];
-        if (key != NULL_KEY) {
+        if (key != null_key<T>()) {
             T val = payload_attributed_data[tuple_id];
-            hash_table[key] = key;
-            hash_table[key + 1] = val;
+            hash_table[key].key = key;
+            hash_table[key].value = val;
         }
     }
 }
 
 extern "C"
 void cpu_ht_build_perfect_int32(
-        int32_t *const __restrict__ hash_table,
+        HtEntry<int, int> *const __restrict__ hash_table,
         uint64_t const hash_table_entries,
-        const int32_t *const __restrict__ join_attribute_data,
-        const int32_t *const __restrict__ payload_attributed_data,
+        const int *const __restrict__ join_attribute_data,
+        const int *const __restrict__ payload_attributed_data,
         uint64_t const data_length
         )
 {
@@ -276,10 +266,10 @@ void cpu_ht_build_perfect_int32(
 
 extern "C"
 void cpu_ht_build_selective_perfect_int32(
-        int32_t *const __restrict__ hash_table,
+        HtEntry<int, int> *const __restrict__ hash_table,
         uint64_t const hash_table_entries,
-        const int32_t *const __restrict__ join_attribute_data,
-        const int32_t *const __restrict__ payload_attributed_data,
+        const int *const __restrict__ join_attribute_data,
+        const int *const __restrict__ payload_attributed_data,
         uint64_t const data_length
         )
 {
@@ -294,10 +284,10 @@ void cpu_ht_build_selective_perfect_int32(
 
 extern "C"
 void cpu_ht_build_perfect_int64(
-        int64_t *const __restrict__ hash_table,
+        HtEntry<long long, long long> *const __restrict__ hash_table,
         uint64_t const hash_table_entries,
-        const int64_t *const __restrict__ join_attribute_data,
-        const int64_t *const __restrict__ payload_attributed_data,
+        const long long *const __restrict__ join_attribute_data,
+        const long long *const __restrict__ payload_attributed_data,
         uint64_t const data_length
         )
 {
@@ -312,10 +302,10 @@ void cpu_ht_build_perfect_int64(
 
 extern "C"
 void cpu_ht_build_selective_perfect_int64(
-        int64_t *const __restrict__ hash_table,
+        HtEntry<long long, long long> *const __restrict__ hash_table,
         uint64_t const hash_table_entries,
-        const int64_t *const __restrict__ join_attribute_data,
-        const int64_t *const __restrict__ payload_attributed_data,
+        const long long *const __restrict__ join_attribute_data,
+        const long long *const __restrict__ payload_attributed_data,
         uint64_t const data_length
         )
 {
@@ -330,7 +320,7 @@ void cpu_ht_build_selective_perfect_int64(
 
 template<typename T>
 void cpu_ht_probe_aggregate_perfect(
-        const T *const __restrict__ hash_table,
+        const HtEntry<T, T> *const __restrict__ hash_table,
         uint64_t const /* hash_table_entries */,
         const T *const __restrict__ join_attribute_data,
         const T *const __restrict__ payload_attribute_data,
@@ -340,7 +330,7 @@ void cpu_ht_probe_aggregate_perfect(
 {
     for (uint64_t tuple_id = 0; tuple_id < data_length; ++tuple_id) {
         T key = join_attribute_data[tuple_id];
-        if (hash_table[key] != NULL_KEY) {
+        if (hash_table[key].key == key) {
             *aggregation_result += payload_attribute_data[tuple_id];
         }
     }
@@ -348,10 +338,10 @@ void cpu_ht_probe_aggregate_perfect(
 
 extern "C"
 void cpu_ht_probe_aggregate_perfect_int32(
-        const int32_t *const __restrict__ hash_table,
+        const HtEntry<int, int> *const __restrict__ hash_table,
         uint64_t const hash_table_entries,
-        const int32_t *const __restrict__ join_attribute_data,
-        const int32_t *const __restrict__ payload_attribute_data,
+        const int *const __restrict__ join_attribute_data,
+        const int *const __restrict__ payload_attribute_data,
         uint64_t const data_length,
         uint64_t * __restrict__ aggregation_result
         )
@@ -368,10 +358,10 @@ void cpu_ht_probe_aggregate_perfect_int32(
 
 extern "C"
 void cpu_ht_probe_aggregate_perfect_int64(
-        const int64_t *const __restrict__ hash_table,
+        const HtEntry<long long, long long> *const __restrict__ hash_table,
         uint64_t const hash_table_entries,
-        const int64_t *const __restrict__ join_attribute_data,
-        const int64_t *const __restrict__ payload_attribute_data,
+        const long long *const __restrict__ join_attribute_data,
+        const long long *const __restrict__ payload_attribute_data,
         uint64_t const data_length,
         uint64_t * __restrict__ aggregation_result
         )

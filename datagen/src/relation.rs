@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2019 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2019-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 //! Data set generators for generating database relations.
@@ -27,7 +27,19 @@ use rayon::prelude::*;
 
 use zipf::ZipfDistribution;
 
-pub trait KeyAttribute: Sized {
+/// Specifies that the type is suitable to be a join, grouping, or partitioning key.
+///
+/// A key attribute is a primitive type (e.g., an integer or floating point type).
+/// It reserves a `NULL` value in it's value range and `usize` values map to a
+/// unique key value.
+///
+/// The `NULL` value is expected to have a binary representation of all ones. For
+/// signed integers, that value equals -1, for unsigned integers, the value
+/// equals 0xF...F.
+///
+/// The `NULL` value in Rust must be kept in sync with the `NULL` value in C++
+/// and CUDA.
+pub trait KeyAttribute: Sized + 'static {
     fn null_key() -> Self;
     fn try_from_usize(x: usize) -> Result<Self>;
 }

@@ -26,7 +26,7 @@
 //! can also be parallelized over multiple GPUs by calling the methods multiple
 //! times using different CUDA devices.
 
-use super::HashingScheme;
+use super::{HashingScheme, HtEntry};
 use crate::error::{ErrorKind, Result};
 use cuda_sys::cuda::cuMemsetD32_v2;
 use datagen::relation::KeyAttribute;
@@ -46,7 +46,7 @@ use std::sync::Arc;
 
 extern "C" {
     fn cpu_ht_build_linearprobing_int32(
-        hash_table: *mut i32, // FIXME: replace i32 with atomic_i32
+        hash_table: *mut HtEntry<i32, i32>,
         hash_table_entries: u64,
         join_attr_data: *const i32,
         payload_attr_data: *const i32,
@@ -54,7 +54,7 @@ extern "C" {
     );
 
     fn cpu_ht_build_linearprobing_int64(
-        hash_table: *mut i64, // FIXME: replace i64 with atomic_i64
+        hash_table: *mut HtEntry<i64, i64>,
         hash_table_entries: u64,
         join_attr_data: *const i64,
         payload_attr_data: *const i64,
@@ -62,7 +62,7 @@ extern "C" {
     );
 
     fn cpu_ht_probe_aggregate_linearprobing_int32(
-        hash_table: *const i32, // FIXME: replace i32 with atomic_i32
+        hash_table: *const HtEntry<i32, i32>,
         hash_table_entries: u64,
         join_attr_data: *const i32,
         payload_attr_data: *const i32,
@@ -71,7 +71,7 @@ extern "C" {
     );
 
     fn cpu_ht_probe_aggregate_linearprobing_int64(
-        hash_table: *const i64, // FIXME: replace i64 with atomic_i64
+        hash_table: *const HtEntry<i64, i64>,
         hash_table_entries: u64,
         join_attr_data: *const i64,
         payload_attr_data: *const i64,
@@ -80,7 +80,7 @@ extern "C" {
     );
 
     fn cpu_ht_build_perfect_int32(
-        hash_table: *mut i32, // FIXME: replace i32 with atomic_i32
+        hash_table: *mut HtEntry<i32, i32>,
         hash_table_entries: u64,
         join_attr_data: *const i32,
         payload_attr_data: *const i32,
@@ -88,7 +88,7 @@ extern "C" {
     );
 
     fn cpu_ht_build_selective_perfect_int32(
-        hash_table: *mut i32, // FIXME: replace i32 with atomic_i32
+        hash_table: *mut HtEntry<i32, i32>,
         hash_table_entries: u64,
         join_attr_data: *const i32,
         payload_attr_data: *const i32,
@@ -96,7 +96,7 @@ extern "C" {
     );
 
     fn cpu_ht_build_perfect_int64(
-        hash_table: *mut i64, // FIXME: replace i64 with atomic_i64
+        hash_table: *mut HtEntry<i64, i64>,
         hash_table_entries: u64,
         join_attr_data: *const i64,
         payload_attr_data: *const i64,
@@ -104,7 +104,7 @@ extern "C" {
     );
 
     fn cpu_ht_build_selective_perfect_int64(
-        hash_table: *mut i64, // FIXME: replace i64 with atomic_i64
+        hash_table: *mut HtEntry<i64, i64>,
         hash_table_entries: u64,
         join_attr_data: *const i64,
         payload_attr_data: *const i64,
@@ -112,7 +112,7 @@ extern "C" {
     );
 
     fn cpu_ht_probe_aggregate_perfect_int32(
-        hash_table: *const i32, // FIXME: replace i32 with atomic_i32
+        hash_table: *const HtEntry<i32, i32>,
         hash_table_entries: u64,
         join_attr_data: *const i32,
         payload_attr_data: *const i32,
@@ -121,37 +121,13 @@ extern "C" {
     );
 
     fn cpu_ht_probe_aggregate_perfect_int64(
-        hash_table: *const i64, // FIXME: replace i64 with atomic_i64
+        hash_table: *const HtEntry<i64, i64>,
         hash_table_entries: u64,
         join_attr_data: *const i64,
         payload_attr_data: *const i64,
         data_length: u64,
         aggregation_result: *mut u64,
     );
-}
-
-/// Specifies the null key value of the given type.
-///
-/// The null key is expected to have a binary representation of all ones. For
-/// signed integers, that value equals -1, for unsigned integers, the value
-/// equals 0xF...F.
-///
-/// The null key in Rust must be kept in sync with the null key in C++ and CUDA.
-// FIXME: Replace with datagen::relation::KeyAttribute
-pub trait NullKey: AsPrimitive<c_uint> {
-    fn null_key() -> Self;
-}
-
-impl NullKey for i32 {
-    fn null_key() -> i32 {
-        <Self as KeyAttribute>::null_key()
-    }
-}
-
-impl NullKey for i64 {
-    fn null_key() -> i64 {
-        <Self as KeyAttribute>::null_key()
-    }
 }
 
 /// Specifies that the implementing type can be used as a join key in
@@ -168,7 +144,7 @@ impl NullKey for i64 {
 /// support [impl specializations with default implementations](https://github.com/rust-lang/rfcs/blob/master/text/1210-impl-specialization.md).
 /// [Rust issue #31844](https://github.com/rust-lang/rust/issues/31844) tracks
 /// the RFC.
-pub trait CudaHashJoinable: DeviceCopy + NullKey {
+pub trait CudaHashJoinable: DeviceCopy + KeyAttribute {
     /// Implements `CudaHashJoin::build` for the implementing type.
     fn build_impl(
         hj: &CudaHashJoin<Self>,
@@ -191,7 +167,7 @@ pub trait CudaHashJoinable: DeviceCopy + NullKey {
 /// `CpuHashJoin`.
 ///
 /// See `CudaHashJoinable` for more details on the design decision.
-pub trait CpuHashJoinable: DeviceCopy + NullKey {
+pub trait CpuHashJoinable: DeviceCopy + KeyAttribute {
     /// Implements `CpuHashJoin::build` for the implementing type.
     fn build_impl(
         hj: &mut CpuHashJoin<Self>,
@@ -217,7 +193,7 @@ pub trait CpuHashJoinable: DeviceCopy + NullKey {
 /// necessary due to the specialization for each type `T`. See the documentation
 /// of `CudaHashJoinable` for details.
 #[derive(Debug)]
-pub struct CudaHashJoin<T: DeviceCopy + NullKey> {
+pub struct CudaHashJoin<T: DeviceCopy + KeyAttribute> {
     hashing_scheme: HashingScheme,
     is_selective: bool,
     hash_table: Arc<HashTable<T>>,
@@ -234,7 +210,7 @@ pub struct CudaHashJoin<T: DeviceCopy + NullKey> {
 /// necessary due to the specialization for each type `T`. See the documentation
 /// of `CpuHashJoinable` for details.
 #[derive(Debug)]
-pub struct CpuHashJoin<T: DeviceCopy + NullKey> {
+pub struct CpuHashJoin<T: DeviceCopy + KeyAttribute> {
     hashing_scheme: HashingScheme,
     is_selective: bool,
     hash_table: Arc<HashTable<T>>,
@@ -242,14 +218,14 @@ pub struct CpuHashJoin<T: DeviceCopy + NullKey> {
 
 /// Hash table for `CpuHashJoin` and `CudaHashJoin`.
 #[derive(Debug)]
-pub struct HashTable<T: DeviceCopy + NullKey> {
-    mem: Mem<T>,
+pub struct HashTable<T: DeviceCopy + KeyAttribute> {
+    mem: Mem<HtEntry<T, T>>,
     size: usize,
 }
 
 /// Build a `CudaHashJoin`.
 #[derive(Clone, Debug)]
-pub struct CudaHashJoinBuilder<T: DeviceCopy + NullKey> {
+pub struct CudaHashJoinBuilder<T: DeviceCopy + KeyAttribute> {
     hashing_scheme: HashingScheme,
     is_selective: bool,
     hash_table_i: Option<Arc<HashTable<T>>>,
@@ -259,7 +235,7 @@ pub struct CudaHashJoinBuilder<T: DeviceCopy + NullKey> {
 
 /// Build a `CpuHashJoin`.
 #[derive(Clone, Debug)]
-pub struct CpuHashJoinBuilder<T: DeviceCopy + NullKey> {
+pub struct CpuHashJoinBuilder<T: DeviceCopy + KeyAttribute> {
     hashing_scheme: HashingScheme,
     is_selective: bool,
     hash_table_i: Option<Arc<HashTable<T>>>,
@@ -267,7 +243,7 @@ pub struct CpuHashJoinBuilder<T: DeviceCopy + NullKey> {
 
 impl<T> CudaHashJoin<T>
 where
-    T: DeviceCopy + NullKey + CudaHashJoinable,
+    T: DeviceCopy + KeyAttribute + CudaHashJoinable,
 {
     /// Build a hash table on the GPU.
     pub fn build(
@@ -298,7 +274,7 @@ where
 
 impl<T> CpuHashJoin<T>
 where
-    T: DeviceCopy + NullKey + CpuHashJoinable,
+    T: DeviceCopy + KeyAttribute + CpuHashJoinable,
 {
     /// Build a hash table on the CPU.
     pub fn build(&mut self, join_attr: &[T], payload_attr: &[T]) -> Result<()> {
@@ -376,7 +352,7 @@ macro_rules! impl_cuda_hash_join_for_type {
                         (HashingScheme::LinearProbing, false) => unsafe { launch!(
                                 module.[<gpu_ht_build_linearprobing_ $Suffix>]<<<grid, block, 0, stream>>>(
                                     hj.hash_table.mem.as_launchable_ptr(),
-                                    hash_table_size / 2, // FIXME: don't divide
+                                    hash_table_size,
                                     join_attr.as_launchable_ptr(),
                                     payload_attr.as_launchable_ptr(),
                                     join_attr_len
@@ -434,7 +410,7 @@ macro_rules! impl_cuda_hash_join_for_type {
                         HashingScheme::LinearProbing => unsafe { launch!(
                                 module.[<gpu_ht_probe_aggregate_linearprobing_ $Suffix>]<<<grid, block, 0, stream>>>(
                                     hj.hash_table.mem.as_launchable_ptr(),
-                                    hash_table_size / 2, // FIXME: don't divide
+                                    hash_table_size,
                                     join_attr.as_launchable_ptr(),
                                     payload_attr.as_launchable_ptr(),
                                     join_attr_len,
@@ -482,7 +458,7 @@ macro_rules! impl_cpu_hash_join_for_type {
                     match (&hj.hashing_scheme, &hj.is_selective) {
                         (HashingScheme::Perfect, false) => unsafe {
                             [<cpu_ht_build_perfect_ $Suffix>](
-                                hj.hash_table.mem.as_ptr() as *mut $Type,
+                                hj.hash_table.mem.as_ptr() as *mut _,
                                 hash_table_size,
                                 join_attr.as_ptr(),
                                 payload_attr.as_ptr(),
@@ -491,7 +467,7 @@ macro_rules! impl_cpu_hash_join_for_type {
                         },
                         (HashingScheme::Perfect, true) => unsafe {
                             [<cpu_ht_build_selective_perfect_ $Suffix>](
-                                hj.hash_table.mem.as_ptr() as *mut $Type,
+                                hj.hash_table.mem.as_ptr() as *mut _,
                                 hash_table_size,
                                 join_attr.as_ptr(),
                                 payload_attr.as_ptr(),
@@ -500,7 +476,7 @@ macro_rules! impl_cpu_hash_join_for_type {
                         },
                         (HashingScheme::LinearProbing, false) => unsafe {
                             [<cpu_ht_build_linearprobing_ $Suffix>](
-                                hj.hash_table.mem.as_ptr() as *mut $Type,
+                                hj.hash_table.mem.as_ptr() as *mut _,
                                 hash_table_size,
                                 join_attr.as_ptr(),
                                 payload_attr.as_ptr(),
@@ -568,19 +544,19 @@ macro_rules! impl_cpu_hash_join_for_type {
 impl_cpu_hash_join_for_type!(i32, int32);
 impl_cpu_hash_join_for_type!(i64, int64);
 
-impl<T: DeviceCopy + NullKey> HashTable<T> {
+impl<T: AsPrimitive<c_uint> + DeviceCopy + KeyAttribute> HashTable<T> {
     /// Create a new CPU hash table.
     ///
     /// The hash table can be used on CPUs. In the case of NVLink 2.0 on POWER9,
     /// it can also be used on GPUs.
-    pub fn new_on_cpu(mut mem: DerefMem<T>, size: usize) -> Result<Self> {
+    pub fn new_on_cpu(mut mem: DerefMem<HtEntry<T, T>>, size: usize) -> Result<Self> {
         if mem.len() < size {
             Err(ErrorKind::InvalidArgument(
                 "Provided memory must be larger than hash table size".to_string(),
             ))?;
         }
 
-        mem.iter_mut().by_ref().for_each(|x| *x = T::null_key());
+        mem.iter_mut().by_ref().for_each(|x| x.key = T::null_key());
 
         Ok(Self {
             mem: mem.into(),
@@ -593,7 +569,7 @@ impl<T: DeviceCopy + NullKey> HashTable<T> {
     /// The hash table can be used on GPUs. It cannot always be used on CPUs,
     /// due to the possibility of using GPU device memory. This also holds true
     /// for NVLink 2.0 on POWER9.
-    pub fn new_on_gpu(mut mem: Mem<T>, size: usize) -> Result<Self> {
+    pub fn new_on_gpu(mut mem: Mem<HtEntry<T, T>>, size: usize) -> Result<Self> {
         if mem.len() < size {
             Err(ErrorKind::InvalidArgument(
                 "Provided memory must be larger than hash table size".to_string(),
@@ -605,13 +581,15 @@ impl<T: DeviceCopy + NullKey> HashTable<T> {
 
         // Initialize hash table
         match mem {
-            Mem::SysMem(ref mut mem) => mem.iter_mut().by_ref().for_each(|x| *x = T::null_key()),
-            Mem::NumaMem(ref mut mem) => mem.iter_mut().by_ref().for_each(|x| *x = T::null_key()),
+            Mem::SysMem(ref mut mem) => mem.iter_mut().by_ref().for_each(|x| x.key = T::null_key()),
+            Mem::NumaMem(ref mut mem) => {
+                mem.iter_mut().by_ref().for_each(|x| x.key = T::null_key())
+            }
             Mem::CudaPinnedMem(ref mut mem) => {
-                mem.iter_mut().by_ref().for_each(|x| *x = T::null_key())
+                mem.iter_mut().by_ref().for_each(|x| x.key = T::null_key())
             }
             Mem::DistributedNumaMem(ref mut mem) => {
-                mem.iter_mut().by_ref().for_each(|x| *x = T::null_key())
+                mem.iter_mut().by_ref().for_each(|x| x.key = T::null_key())
             }
             _ => {
                 unsafe {
@@ -619,7 +597,7 @@ impl<T: DeviceCopy + NullKey> HashTable<T> {
                         mem_ptr as *mut c_void as u64,
                         T::null_key().as_(),
                         mem_len
-                            .checked_mul(size_of::<T>() / size_of::<c_uint>())
+                            .checked_mul(size_of::<HtEntry<T, T>>() / size_of::<c_uint>())
                             .ok_or_else(|| {
                                 ErrorKind::IntegerOverflow(
                                     "Failed to compute hash table bytes".to_string(),
@@ -642,7 +620,7 @@ impl<T: DeviceCopy + NullKey> HashTable<T> {
     /// Create a new hash table from another hash table.
     ///
     /// Copies the contents of the source hash table into the new hash table.
-    pub fn new_from_hash_table(mut mem: Mem<T>, src: &Self) -> Result<Self> {
+    pub fn new_from_hash_table(mut mem: Mem<HtEntry<T, T>>, src: &Self) -> Result<Self> {
         mem.copy_from_mem(&src.mem)?;
 
         Ok(Self {
@@ -652,7 +630,7 @@ impl<T: DeviceCopy + NullKey> HashTable<T> {
     }
 }
 
-impl<T: DeviceCopy + NullKey> MemLock for HashTable<T> {
+impl<T: DeviceCopy + KeyAttribute> MemLock for HashTable<T> {
     fn mlock(&mut self) -> NumaGpuResult<()> {
         self.mem.mlock()?;
 
@@ -666,7 +644,7 @@ impl<T: DeviceCopy + NullKey> MemLock for HashTable<T> {
     }
 }
 
-impl<T: DeviceCopy + NullKey> ::std::default::Default for CudaHashJoinBuilder<T> {
+impl<T: DeviceCopy + KeyAttribute> ::std::default::Default for CudaHashJoinBuilder<T> {
     fn default() -> Self {
         // Pre-load the CUDA module to enable callers to compute the amount of
         // free GPU memory after instatiating `CudaHashJoinBuilder`.
@@ -684,7 +662,7 @@ impl<T: DeviceCopy + NullKey> ::std::default::Default for CudaHashJoinBuilder<T>
 
 impl<T> CudaHashJoinBuilder<T>
 where
-    T: Clone + Default + DeviceCopy + NullKey,
+    T: Clone + Default + DeviceCopy + KeyAttribute,
 {
     const DEFAULT_HT_SIZE: usize = 1024;
 
@@ -722,7 +700,7 @@ where
             ht
         } else {
             Arc::new(HashTable {
-                mem: allocator::Allocator::alloc_mem::<T>(
+                mem: allocator::Allocator::alloc_mem::<HtEntry<T, T>>(
                     allocator::MemType::CudaUniMem,
                     Self::DEFAULT_HT_SIZE,
                 ),
@@ -740,7 +718,7 @@ where
     }
 }
 
-impl<T: DeviceCopy + NullKey> ::std::default::Default for CpuHashJoinBuilder<T> {
+impl<T: DeviceCopy + KeyAttribute> ::std::default::Default for CpuHashJoinBuilder<T> {
     fn default() -> Self {
         Self {
             hashing_scheme: HashingScheme::default(),
@@ -750,7 +728,7 @@ impl<T: DeviceCopy + NullKey> ::std::default::Default for CpuHashJoinBuilder<T> 
     }
 }
 
-impl<T: Default + DeviceCopy + NullKey> CpuHashJoinBuilder<T> {
+impl<T: Clone + Default + DeviceCopy + KeyAttribute> CpuHashJoinBuilder<T> {
     const DEFAULT_HT_SIZE: usize = 1024;
 
     pub fn hashing_scheme(mut self, hashing_scheme: HashingScheme) -> Self {
@@ -772,7 +750,7 @@ impl<T: Default + DeviceCopy + NullKey> CpuHashJoinBuilder<T> {
         let hash_table = match &self.hash_table_i {
             Some(ht) => ht.clone(),
             None => Arc::new(HashTable {
-                mem: allocator::Allocator::alloc_mem::<T>(
+                mem: allocator::Allocator::alloc_mem::<HtEntry<T, T>>(
                     allocator::MemType::SysMem,
                     Self::DEFAULT_HT_SIZE,
                 ),
@@ -790,7 +768,7 @@ impl<T: Default + DeviceCopy + NullKey> CpuHashJoinBuilder<T> {
 
 impl<T> ::std::fmt::Display for HashTable<T>
 where
-    T: DeviceCopy + ::std::fmt::Display + NullKey,
+    T: DeviceCopy + ::std::fmt::Display + KeyAttribute,
 {
     fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
         if let CudaDevMem(_) = self.mem {
@@ -804,7 +782,7 @@ where
             }
             .iter()
             .take(self.size)
-            .map(|entry| write!(f, "{},", entry))
+            .map(|entry| write!(f, "{}:{},", entry.key, entry.value))
             .collect::<::std::fmt::Result>()?;
             write!(f, "]")?;
         }
@@ -850,7 +828,7 @@ mod tests {
             #[test]
             fn $name() -> Result<(), Box<dyn Error>> {
                 const ROWS: usize = (32 << 20) / std::mem::size_of::<$type>();
-                const HT_LEN: usize = 4 * ROWS;
+                const HT_LEN: usize = 2 * ROWS;
                 let alloc_fn = Allocator::deref_mem_alloc_fn::<$type>($mem_type);
 
                 let mut inner_rel_key = alloc_fn(ROWS);
@@ -873,7 +851,7 @@ mod tests {
                     .enumerate()
                     .for_each(|(i, x)| *x = (i + 1) as $type);
 
-                let ht_mem = alloc_fn(HT_LEN);
+                let ht_mem = Allocator::alloc_deref_mem($mem_type, HT_LEN);
 
                 let hash_table = HashTable::new_on_cpu(ht_mem, HT_LEN)?;
 
@@ -925,7 +903,7 @@ mod tests {
                 const GRID_SIZE: u32 = 16;
                 const BLOCK_SIZE: u32 = 1024;
                 const ROWS: usize = (32 << 20) / std::mem::size_of::<$type>();
-                const HT_LEN: usize = 4 * ROWS;
+                const HT_LEN: usize = 2 * ROWS;
 
                 CurrentContext::set_current(&*CUDA_CONTEXT)?;
                 let alloc_fn = Allocator::deref_mem_alloc_fn::<$type>($mem_type);

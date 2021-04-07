@@ -8,12 +8,12 @@
  * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
-use super::no_partitioning_join::NullKey;
-use super::HashingScheme;
+use super::{HashingScheme, HtEntry};
 use crate::error::{ErrorKind, Result};
 use crate::partition::PartitionedRelation;
 use crate::partition::Tuple;
 use crate::partition::{RadixBits, RadixPass};
+use datagen::relation::KeyAttribute;
 use numa_gpu::runtime::memory::{LaunchableMutPtr, LaunchableMutSlice, LaunchablePtr};
 use rustacuda::context::CurrentContext;
 use rustacuda::device::DeviceAttribute;
@@ -48,18 +48,7 @@ struct JoinAggregateArgs {
 
 unsafe impl DeviceCopy for JoinAggregateArgs {}
 
-/// A hash table entry in the C/C++ implementation.
-///
-/// Note that the struct's layout must be kept in sync with its counterpart in
-/// C/C++.
-#[repr(C)]
-#[derive(Clone, Debug)]
-struct HtEntry<K, P> {
-    key: K,
-    payload: P,
-}
-
-pub trait CudaRadixJoinable: DeviceCopy + NullKey {
+pub trait CudaRadixJoinable: DeviceCopy + KeyAttribute {
     fn join_impl(
         rj: &CudaRadixJoin,
         build_rel: &PartitionedRelation<Tuple<Self, Self>>,
@@ -105,7 +94,7 @@ impl CudaRadixJoin {
         stream: &Stream,
     ) -> Result<()>
     where
-        T: DeviceCopy + NullKey + CudaRadixJoinable,
+        T: DeviceCopy + KeyAttribute + CudaRadixJoinable,
     {
         T::join_impl(
             self,

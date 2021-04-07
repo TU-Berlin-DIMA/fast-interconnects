@@ -4,25 +4,32 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2020-2021 Clemens Lutz, German Research Center for Artificial
- * Intelligence
- * Author: Clemens Lutz, DFKI GmbH <clemens.lutz@dfki.de>
+ * Copyright 2020-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 #ifndef GPU_COMMON_H
 #define GPU_COMMON_H
 
+#ifdef __CUDACC__
 #include <ptx_memory.h>
+#endif /* __CUDACC__ */
+
+#ifndef __CUDACC__
+#define __forceinline__ __attribute__((always_inline)) inline
+#endif /* not __CUDACC__ */
 
 #ifndef CUDA_MODIFIER
 #define CUDA_MODIFIER __device__
 #endif
 
+#ifdef __CUDACC__
 // Returns the log2 of the next-lower power of two
 __device__ int log2_floor_power_of_two(int x);
 
 // Returns the log2 of the next-higher power of two
 __device__ int log2_ceil_power_of_two(int x);
+#endif /* __CUDACC__ */
 
 // A key-value tuple.
 //
@@ -33,6 +40,7 @@ struct Tuple {
   K key;
   V value;
 
+#ifdef __CUDACC__
   __device__ __forceinline__ void load(Tuple<int, int> const &src) {
     int2 tmp = *reinterpret_cast<int2 const *>(&src);
     this->key = tmp.x;
@@ -79,17 +87,15 @@ struct Tuple {
     longlong2 tmp = make_longlong2(this->key, this->value);
     ptx_store_cache_streaming(reinterpret_cast<longlong2 *>(&dst), tmp);
   }
+#endif /* __CUDACC__ */
 };
 
 // A hash table entry.
 //
 // Note that the struct's layout must be kept in sync with its counterpart in
 // Rust.
-template <typename K, typename P>
-struct HtEntry {
-  K key;
-  P payload;
-};
+template <typename K, typename V>
+using HtEntry = Tuple<K, V>;
 
 template <typename K>
 CUDA_MODIFIER constexpr K null_key();
@@ -109,7 +115,7 @@ CUDA_MODIFIER constexpr long long null_key<long long>() {
 // Requirement: hash factor is an odd 64-bit integer
 // See Richter et al., Seven-Dimensional Analysis of Hashing Methods
 template <typename T>
-CUDA_MODIFIER T mult_shift_hash(T value) {}
+CUDA_MODIFIER T mult_shift_hash(T value);
 
 template <>
 CUDA_MODIFIER __forceinline__ int mult_shift_hash(int value) {
@@ -132,7 +138,7 @@ CUDA_MODIFIER __forceinline__ long long mult_shift_hash(long long value) {
 // in Richter et al. See Richter et al., Seven-Dimensional Analysis of Hashing
 // Methods
 template <typename T>
-CUDA_MODIFIER T murmur3_hash(T value) {}
+CUDA_MODIFIER T murmur3_hash(T value);
 
 template <>
 CUDA_MODIFIER __forceinline__ int murmur3_hash(int value) {
