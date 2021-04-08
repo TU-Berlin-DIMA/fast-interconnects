@@ -24,6 +24,7 @@
 #include <gpu_common.h>
 
 #define OPTIMIZE_INT32
+/* #define PREDICATED_AGGREGATION */
 
 /*
  * Note: uint64_t in cstdint header doesn't match atomicCAS()
@@ -404,9 +405,18 @@ void gpu_ht_probe_aggregate_perfect_int32(
 
     for (uint64_t i = global_idx; i < data_length; i += global_threads) {
         int key = join_attribute_data[i];
+
+#ifdef PREDICATED_AGGREGATION
+        int condition = hash_table[key].key == key;
+        condition = (condition << 31) >> 31;
+
+        int payload = condition & payload_attribute_data[i];
+        aggregation_result[global_idx] += static_cast<uint64_t>(payload);
+#else
         if (hash_table[key].key == key) {
             aggregation_result[global_idx] += payload_attribute_data[i];
         }
+#endif /* PREDICATED_AGGREGATION */
     }
 }
 
@@ -426,8 +436,17 @@ void gpu_ht_probe_aggregate_perfect_int64(
 
     for (uint64_t i = global_idx; i < data_length; i += global_threads) {
         long long key = join_attribute_data[i];
+
+#ifdef PREDICATED_AGGREGATION
+        long long condition = hash_table[key].key == key;
+        condition = (condition << 63) >> 63;
+
+        long long payload = condition & payload_attribute_data[i];
+        aggregation_result[global_idx] += static_cast<uint64_t>(payload);
+#else
         if (hash_table[key].key == key) {
             aggregation_result[global_idx] += payload_attribute_data[i];
         }
+#endif /* PREDICATED_AGGREGATION */
     }
 }
