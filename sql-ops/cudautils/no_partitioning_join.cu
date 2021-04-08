@@ -46,26 +46,20 @@ void gpu_ht_insert_linearprobing_int32(
         index &= hash_table_mask;
 
 #ifdef OPTIMIZE_INT32
-        uint64_t null_key_64 = null_key<long long>();
-        int32_t old_key = hash_table[index].key;
+        uint64_t null_key_64 = static_cast<uint64_t>(null_key<long long>());
         // Negative int32_t is promoted when cast to uint64_t,
         // need to drop the sign flags added by the cast
-        uint64_t entry = (((uint64_t)key) & 0x00000000FFFFFFFF) | (((uint64_t)payload) << 32);
-        if (old_key == null_key<int>()) {
-            uint64_t old_entry = atomicCAS((uint64_t*)&hash_table[index], null_key_64, entry);
-            if (old_entry == null_key<long long>()) {
-                return;
-            }
+        uint64_t entry = (static_cast<uint64_t>(key) & 0x00000000FFFFFFFF) | (static_cast<uint64_t>(payload) << 32);
+        uint64_t old_entry = atomicCAS(reinterpret_cast<uint64_t*>(&hash_table[index]), null_key_64, entry);
+        if (old_entry == null_key<long long>()) {
+            return;
         }
 #else
         unsigned int null_key_u = static_cast<unsigned int>(null_key<int>());
-        int old = hash_table[index].key;
+        int old = static_cast<int>(atomicCAS(reinterpret_cast<unsigned int*>(&hash_table[index].key), null_key_u, static_cast<unsigned int>(key)));
         if (old == null_key<int>()) {
-            old = static_cast<int>(atomicCAS((unsigned int*)&hash_table[index].key, null_key_u, (unsigned int)key));
-            if (old == null_key<int>()) {
-                hash_table[index].value = payload;
-                return;
-            }
+            hash_table[index].value = payload;
+            return;
         }
 #endif
     }
@@ -79,20 +73,17 @@ void gpu_ht_insert_linearprobing_int64(
         long long payload
         )
 {
-    uint64_t index = hash<long long>(key);
+    uint64_t index = static_cast<uint64_t>(hash<long long>(key));
 
     for (uint64_t i = 0; i < hash_table_mask + 1ULL; ++i, index += 1ULL) {
         // Effectively index = index % ht_size
         index &= hash_table_mask;
 
         unsigned long long int null_key_u = static_cast<unsigned long long>(null_key<long long>());
-        long long old = hash_table[index].key;
+        long long old = static_cast<long long>(atomicCAS(reinterpret_cast<unsigned long long int*>(&hash_table[index].key), null_key_u, static_cast<unsigned long long int>(key)));
         if (old == null_key<long long>()) {
-            old = static_cast<long long>(atomicCAS((unsigned long long int*)&hash_table[index].key, null_key_u, (unsigned long long int)key));
-            if (old == null_key<long long>()) {
-                hash_table[index].value = payload;
-                return;
-            }
+            hash_table[index].value = payload;
+            return;
         }
     }
 }
