@@ -39,7 +39,7 @@ pub struct DataPoint {
     pub hash_table_memory_location: Option<Vec<u16>>,
     #[serde(serialize_with = "serialize_vec")]
     pub hash_table_proportions: Option<Vec<usize>>,
-    pub hash_table_bytes: Option<usize>,
+    pub hash_table_tuples: Option<usize>,
     pub cached_hash_table_tuples: Option<usize>,
     pub tuple_bytes: Option<ArgTupleBytes>,
     pub relation_memory_type: Option<ArgMemType>,
@@ -150,7 +150,7 @@ impl DataPoint {
 
     pub fn fill_from_hash_join_bench<T>(&self, hjb: &HashJoinBench<T>) -> DataPoint {
         DataPoint {
-            hash_table_bytes: Some(hjb.hash_table_len * size_of::<T>()),
+            hash_table_tuples: Some(hjb.hash_table_len),
             ..self.clone()
         }
     }
