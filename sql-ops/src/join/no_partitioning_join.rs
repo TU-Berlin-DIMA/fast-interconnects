@@ -800,7 +800,7 @@ impl ::std::default::Default for HashingScheme {
 #[cfg(test)]
 mod tests {
     use super::{CpuHashJoinBuilder, CudaHashJoinBuilder, HashTable, HashingScheme};
-    use datagen::relation::UniformRelation;
+    use datagen::relation::{KeyAttribute, UniformRelation};
     use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
     use numa_gpu::runtime::memory::Mem;
     use once_cell::sync::Lazy;
@@ -824,11 +824,13 @@ mod tests {
     });
 
     macro_rules! test_cpu_seq {
-        ($name:ident, $mem_type:expr, $scheme:expr, $type:ty) => {
+        ($name:ident, $mem_type:expr, $scheme:expr, $is_selective:expr, $type:ty) => {
             #[test]
             fn $name() -> Result<(), Box<dyn Error>> {
                 const ROWS: usize = (32 << 20) / std::mem::size_of::<$type>();
                 const HT_LEN: usize = 2 * ROWS;
+                const EXCLUDE_KEY: $type = 1;
+
                 let alloc_fn = Allocator::deref_mem_alloc_fn::<$type>($mem_type);
 
                 let mut inner_rel_key = alloc_fn(ROWS);
@@ -851,6 +853,27 @@ mod tests {
                     .enumerate()
                     .for_each(|(i, x)| *x = (i + 1) as $type);
 
+                let exclude_sum = if $is_selective {
+                    let pos = inner_rel_key
+                        .iter_mut()
+                        .find(|&&mut key| key == EXCLUDE_KEY);
+
+                    if let Some(key) = pos {
+                        *key = <$type>::null_key();
+                    } else {
+                        panic!("Failed to find the excluded key! The test is buggy.");
+                    }
+
+                    outer_rel_key
+                        .iter()
+                        .zip(outer_rel_pay.iter())
+                        .filter(|(&key, _)| key == EXCLUDE_KEY)
+                        .map(|(_, &pay)| pay)
+                        .sum()
+                } else {
+                    0
+                };
+
                 let ht_mem = Allocator::alloc_deref_mem($mem_type, HT_LEN);
 
                 let hash_table = HashTable::new_on_cpu(ht_mem, HT_LEN)?;
@@ -858,13 +881,16 @@ mod tests {
                 let mut hj_op = CpuHashJoinBuilder::default()
                     .hashing_scheme($scheme)
                     .hash_table(Arc::new(hash_table))
+                    .is_selective($is_selective)
                     .build();
 
                 hj_op.build(&inner_rel_key, &inner_rel_pay)?;
                 let mut result_sum: u64 = 0;
                 hj_op.probe_sum(&outer_rel_key, &outer_rel_pay, &mut result_sum)?;
 
-                assert_eq!((ROWS as u64 * (ROWS as u64 + 1)) / 2, result_sum);
+                let expected_sum = (ROWS as u64 * (ROWS as u64 + 1)) / 2 - exclude_sum as u64;
+
+                assert_eq!(expected_sum, result_sum);
 
                 Ok(())
             }
@@ -875,35 +901,54 @@ mod tests {
         cpu_seq_sysmem_perfect_i32,
         DerefMemType::SysMem,
         HashingScheme::Perfect,
+        false,
+        i32
+    );
+    test_cpu_seq!(
+        cpu_seq_sysmem_perfect_selective_i32,
+        DerefMemType::SysMem,
+        HashingScheme::Perfect,
+        true,
         i32
     );
     test_cpu_seq!(
         cpu_seq_sysmem_perfect_i64,
         DerefMemType::SysMem,
         HashingScheme::Perfect,
+        false,
+        i64
+    );
+    test_cpu_seq!(
+        cpu_seq_sysmem_perfect_selective_i64,
+        DerefMemType::SysMem,
+        HashingScheme::Perfect,
+        true,
         i64
     );
     test_cpu_seq!(
         cpu_seq_sysmem_linearprobing_i32,
         DerefMemType::SysMem,
         HashingScheme::LinearProbing,
+        false,
         i32
     );
     test_cpu_seq!(
         cpu_seq_sysmem_linearprobing_i64,
         DerefMemType::SysMem,
         HashingScheme::LinearProbing,
+        false,
         i64
     );
 
     macro_rules! test_cuda {
-        ($name:ident, $mem_type:expr, $scheme:expr, $type:ty) => {
+        ($name:ident, $mem_type:expr, $scheme:expr, $is_selective:expr, $type:ty) => {
             #[test]
             fn $name() -> Result<(), Box<dyn Error>> {
                 const GRID_SIZE: u32 = 16;
                 const BLOCK_SIZE: u32 = 1024;
                 const ROWS: usize = (32 << 20) / std::mem::size_of::<$type>();
                 const HT_LEN: usize = 2 * ROWS;
+                const EXCLUDE_KEY: $type = 1;
 
                 CurrentContext::set_current(&*CUDA_CONTEXT)?;
                 let alloc_fn = Allocator::deref_mem_alloc_fn::<$type>($mem_type);
@@ -928,6 +973,27 @@ mod tests {
                     .enumerate()
                     .for_each(|(i, x)| *x = (i + 1) as $type);
 
+                let exclude_sum = if $is_selective {
+                    let pos = inner_rel_key
+                        .iter_mut()
+                        .find(|&&mut key| key == EXCLUDE_KEY);
+
+                    if let Some(key) = pos {
+                        *key = <$type>::null_key();
+                    } else {
+                        panic!("Failed to find the excluded key! The test is buggy.");
+                    }
+
+                    outer_rel_key
+                        .iter()
+                        .zip(outer_rel_pay.iter())
+                        .filter(|(&key, _)| key == EXCLUDE_KEY)
+                        .map(|(_, &pay)| pay)
+                        .sum()
+                } else {
+                    0
+                };
+
                 let ht_mem = Allocator::alloc_mem(MemType::CudaDevMem, HT_LEN);
                 let hash_table = HashTable::new_on_gpu(ht_mem, HT_LEN)?;
 
@@ -939,6 +1005,7 @@ mod tests {
                     .hash_table(Arc::new(hash_table))
                     .build_dim(GRID_SIZE.into(), BLOCK_SIZE.into())
                     .probe_dim(GRID_SIZE.into(), BLOCK_SIZE.into())
+                    .is_selective($is_selective)
                     .build()?;
 
                 let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
@@ -960,7 +1027,9 @@ mod tests {
                     .map_err(|(err, _)| err)?;
                 let result_sum = result_sum_slice.iter().sum();
 
-                assert_eq!((ROWS as u64 * (ROWS as u64 + 1)) / 2, result_sum);
+                let expected_sum = (ROWS as u64 * (ROWS as u64 + 1)) / 2 - exclude_sum as u64;
+
+                assert_eq!(expected_sum, result_sum);
 
                 Ok(())
             }
@@ -971,30 +1040,49 @@ mod tests {
         cuda_pinnedmem_perfect_i32,
         DerefMemType::CudaPinnedMem,
         HashingScheme::Perfect,
+        false,
+        i32
+    );
+    test_cuda!(
+        cuda_pinnedmem_perfect_selective_i32,
+        DerefMemType::CudaPinnedMem,
+        HashingScheme::Perfect,
+        true,
         i32
     );
     test_cuda!(
         cuda_pinnedmem_perfect_i64,
         DerefMemType::CudaPinnedMem,
         HashingScheme::Perfect,
+        false,
+        i64
+    );
+    test_cuda!(
+        cuda_pinnedmem_perfect_selective_i64,
+        DerefMemType::CudaPinnedMem,
+        HashingScheme::Perfect,
+        true,
         i64
     );
     test_cuda!(
         cuda_pinnedmem_linearprobing_i32,
         DerefMemType::CudaPinnedMem,
         HashingScheme::LinearProbing,
+        false,
         i32
     );
     test_cuda!(
         cuda_pinnedmem_linearprobing_i64,
         DerefMemType::CudaPinnedMem,
         HashingScheme::LinearProbing,
+        false,
         i64
     );
     test_cuda!(
         cuda_unimem,
         DerefMemType::CudaUniMem,
         HashingScheme::Perfect,
+        false,
         i32
     );
 }
