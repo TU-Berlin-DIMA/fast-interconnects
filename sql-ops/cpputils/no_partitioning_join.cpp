@@ -29,12 +29,15 @@
 
 template <typename T>
 void cpu_ht_insert_linearprobing(HtEntry<T, T> *const __restrict__ hash_table,
-                                 uint64_t hash_table_mask, T key, T payload) {
-  uint64_t index = hash<T>(key);
+                                 unsigned int log2_hash_table_entries, T key,
+                                 T payload) {
+  uint64_t index = hash<T>(key, log2_hash_table_entries);
 
-  for (uint64_t i = 0; i < hash_table_mask + 1ULL; ++i, index += 1ULL) {
-    index &= hash_table_mask;
+  uint64_t hash_table_entries = 1ULL << log2_hash_table_entries;
+  uint64_t hash_table_mask = hash_table_entries - 1ULL;
 
+  for (uint64_t i = 0; i < hash_table_entries;
+       ++i, index = (index + 1ULL) & hash_table_mask) {
     T old = hash_table[index].key;
     if (old == null_key<T>()) {
       T expected = null_key<T>();
@@ -55,8 +58,11 @@ void cpu_ht_build_linearprobing(HtEntry<T, T> *const __restrict__ hash_table,
                                 const T *const __restrict__ join_attr_data,
                                 const T *const __restrict__ payload_attr_data,
                                 uint64_t const data_length) {
+  const unsigned int log2_hash_table_entries =
+      log2_floor_power_of_two(hash_table_entries);
+
   for (uint64_t tuple_id = 0; tuple_id < data_length; ++tuple_id) {
-    cpu_ht_insert_linearprobing(hash_table, hash_table_entries - 1,
+    cpu_ht_insert_linearprobing(hash_table, log2_hash_table_entries,
                                 join_attr_data[tuple_id],
                                 payload_attr_data[tuple_id]);
   }
@@ -85,19 +91,21 @@ extern "C" void cpu_ht_build_linearprobing_int64(
 template <typename T>
 bool cpu_ht_findkey_linearprobing(
     HtEntry<T, T> const *const __restrict__ hash_table,
-    uint64_t hash_table_mask, T key, T const **found_payload,
+    unsigned int log2_hash_table_entries, T key, T const **found_payload,
     uint64_t *__restrict__ last_index, bool use_last_index) {
   uint64_t index = 0;
   if (use_last_index) {
     index = *last_index;
     index += 1ULL;
   } else {
-    index = hash<T>(key);
+    index = hash<T>(key, log2_hash_table_entries);
   }
 
-  for (uint64_t i = 0; i < hash_table_mask + 1ULL; ++i, index += 1ULL) {
-    index &= hash_table_mask;
+  uint64_t hash_table_entries = 1ULL << log2_hash_table_entries;
+  uint64_t hash_table_mask = hash_table_entries - 1ULL;
 
+  for (uint64_t i = 0; i < hash_table_mask + 1ULL;
+       ++i, index = (index + 1ULL) & hash_table_mask) {
     if (hash_table[index].key == key) {
       *found_payload = &hash_table[index].value;
       *last_index = index;
@@ -117,12 +125,15 @@ void cpu_ht_probe_aggregate_linearprobing(
     const T *const __restrict__ join_attr_data,
     const T *const __restrict__ payload_attr_data, uint64_t const data_length,
     uint64_t *const __restrict__ aggregation_result) {
+  const unsigned int log2_hash_table_entries =
+      log2_floor_power_of_two(hash_table_entries);
+
   for (uint64_t tuple_id = 0; tuple_id < data_length; ++tuple_id) {
     T const *hash_table_payload = nullptr;
     uint64_t hash_table_last_index = 0;
     bool hash_table_use_last_index = false;
     while (cpu_ht_findkey_linearprobing(
-        hash_table, hash_table_entries - 1, join_attr_data[tuple_id],
+        hash_table, log2_hash_table_entries, join_attr_data[tuple_id],
         &hash_table_payload, &hash_table_last_index,
         hash_table_use_last_index)) {
       hash_table_use_last_index = true;

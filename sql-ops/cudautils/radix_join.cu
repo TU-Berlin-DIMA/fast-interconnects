@@ -211,7 +211,7 @@ __device__ void gpu_radix_join_aggregate_smem_chaining(
   assert(ht_entries >= 1 &&
          "Number of hash table entries is too small; try reducing the number "
          "of hash table buckets");
-  const unsigned int buckets_mask = buckets - 1U;
+  const unsigned int log2_buckets = log2_floor_power_of_two(buckets);
 #ifdef DEBUG
   if (blockIdx.x == 0 && threadIdx.x == 0) {
     printf("Number of HT buckets: %u, number of entries: %u\n", buckets,
@@ -277,7 +277,7 @@ __device__ void gpu_radix_join_aggregate_smem_chaining(
       values[i] = tuple.value;
 
       auto ht_index = key_to_partition(tuple.key, mask, args.ignore_bits);
-      auto bucket = hash<K>(ht_index) & buckets_mask;
+      auto bucket = hash<K>(ht_index, log2_buckets);
       unsigned int next = atomicExch(&heads[bucket], i);
       links[i] = static_cast<unsigned short>(next);
     }
@@ -290,7 +290,7 @@ __device__ void gpu_radix_join_aggregate_smem_chaining(
       tuple.load(probe_rel[i]);
 
       auto ht_index = key_to_partition(tuple.key, mask, args.ignore_bits);
-      auto bucket = hash<K>(ht_index) & buckets_mask;
+      auto bucket = hash<K>(ht_index, log2_buckets);
 
       for (unsigned short i = static_cast<unsigned short>(heads[bucket]);
            i != tail; i = links[i]) {

@@ -212,6 +212,7 @@ fn main() {
 
     // CPP files
     let cpp_files = vec![
+        "cpputils/gpu_common.cpp",
         "cpputils/no_partitioning_join.cpp",
         "cpputils/radix_partition.cpp",
     ];

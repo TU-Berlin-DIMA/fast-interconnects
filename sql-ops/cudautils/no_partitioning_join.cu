@@ -33,14 +33,15 @@ typedef unsigned int uint32_t;
 typedef unsigned long long int uint64_t;
 
 __device__ void gpu_ht_insert_linearprobing_int32(
-    HtEntry<int, int> *const __restrict__ hash_table, uint64_t hash_table_mask,
-    int key, int payload) {
-  uint64_t index = hash<int>(key);
+    HtEntry<int, int> *const __restrict__ hash_table,
+    unsigned int log2_hash_table_entries, int key, int payload) {
+  uint64_t index = hash<int>(key, log2_hash_table_entries);
 
-  for (uint64_t i = 0; i < hash_table_mask + 1ULL; ++i, index += 1ULL) {
-    // Effectively index = index % ht_size
-    index &= hash_table_mask;
+  uint64_t hash_table_entries = 1ULL << log2_hash_table_entries;
+  uint64_t hash_table_mask = hash_table_entries - 1ULL;
 
+  for (uint64_t i = 0; i < hash_table_entries;
+       ++i, index = (index + 1ULL) & hash_table_mask) {
 #ifdef OPTIMIZE_INT32
     uint64_t null_key_64 = static_cast<uint64_t>(null_key<long long>());
     // Negative int32_t is promoted when cast to uint64_t,
@@ -49,7 +50,7 @@ __device__ void gpu_ht_insert_linearprobing_int32(
                      (static_cast<uint64_t>(payload) << 32);
     uint64_t old_entry = atomicCAS(
         reinterpret_cast<uint64_t *>(&hash_table[index]), null_key_64, entry);
-    if (old_entry == null_key<long long>()) {
+    if (old_entry == static_cast<uint64_t>(null_key<long long>())) {
       return;
     }
 #else
@@ -67,13 +68,15 @@ __device__ void gpu_ht_insert_linearprobing_int32(
 
 __device__ void gpu_ht_insert_linearprobing_int64(
     HtEntry<long long, long long> *const __restrict__ hash_table,
-    uint64_t hash_table_mask, long long key, long long payload) {
-  uint64_t index = static_cast<uint64_t>(hash<long long>(key));
+    unsigned int log2_hash_table_entries, long long key, long long payload) {
+  uint64_t index =
+      static_cast<uint64_t>(hash<long long>(key, log2_hash_table_entries));
 
-  for (uint64_t i = 0; i < hash_table_mask + 1ULL; ++i, index += 1ULL) {
-    // Effectively index = index % ht_size
-    index &= hash_table_mask;
+  uint64_t hash_table_entries = 1ULL << log2_hash_table_entries;
+  uint64_t hash_table_mask = hash_table_entries - 1ULL;
 
+  for (uint64_t i = 0; i < hash_table_entries;
+       ++i, index = (index + 1ULL) & hash_table_mask) {
     unsigned long long int null_key_u =
         static_cast<unsigned long long>(null_key<long long>());
     long long old = static_cast<long long>(atomicCAS(
@@ -94,10 +97,12 @@ extern "C" __global__ void gpu_ht_build_linearprobing_int32(
     uint64_t const data_length) {
   const uint32_t global_idx = blockIdx.x * blockDim.x + threadIdx.x;
   const uint32_t global_threads = blockDim.x * gridDim.x;
+  const unsigned int log2_hash_table_entries =
+      log2_floor_power_of_two(hash_table_entries);
 
   for (uint64_t tuple_id = global_idx; tuple_id < data_length;
        tuple_id += global_threads) {
-    gpu_ht_insert_linearprobing_int32(hash_table, hash_table_entries - 1ULL,
+    gpu_ht_insert_linearprobing_int32(hash_table, log2_hash_table_entries,
                                       join_attr_data[tuple_id],
                                       payload_attr_data[tuple_id]);
   }
@@ -111,10 +116,12 @@ extern "C" __global__ void gpu_ht_build_linearprobing_int64(
     uint64_t const data_length) {
   const uint32_t global_idx = blockIdx.x * blockDim.x + threadIdx.x;
   const uint32_t global_threads = blockDim.x * gridDim.x;
+  const unsigned int log2_hash_table_entries =
+      log2_floor_power_of_two(hash_table_entries);
 
   for (uint64_t tuple_id = global_idx; tuple_id < data_length;
        tuple_id += global_threads) {
-    gpu_ht_insert_linearprobing_int64(hash_table, hash_table_entries - 1ULL,
+    gpu_ht_insert_linearprobing_int64(hash_table, log2_hash_table_entries,
                                       join_attr_data[tuple_id],
                                       payload_attr_data[tuple_id]);
   }
@@ -122,19 +129,21 @@ extern "C" __global__ void gpu_ht_build_linearprobing_int64(
 
 __device__ bool gpu_ht_findkey_linearprobing_int32(
     const HtEntry<int, int> *const __restrict__ hash_table,
-    uint64_t hash_table_mask, int key, int *found_payload,
+    unsigned int log2_hash_table_entries, int key, int *found_payload,
     uint64_t *__restrict__ last_index, bool use_last_index) {
   uint64_t index = 0;
   if (use_last_index) {
     index = *last_index;
     index += 1ULL;
   } else {
-    index = hash<int>(key);
+    index = hash<int>(key, log2_hash_table_entries);
   }
 
-  for (uint64_t i = 0; i < hash_table_mask + 1ULL; ++i, index += 1ULL) {
-    index &= hash_table_mask;
+  uint64_t hash_table_entries = 1ULL << log2_hash_table_entries;
+  uint64_t hash_table_mask = hash_table_entries - 1ULL;
 
+  for (uint64_t i = 0; i < hash_table_mask + 1ULL;
+       ++i, index = (index + 1ULL) & hash_table_mask) {
     HtEntry<int, int> entry;
     entry.load(hash_table[index]);
 
@@ -152,19 +161,22 @@ __device__ bool gpu_ht_findkey_linearprobing_int32(
 
 __device__ bool gpu_ht_findkey_linearprobing_int64(
     const HtEntry<long long, long long> *const __restrict__ hash_table,
-    uint64_t hash_table_mask, long long key, long long *found_payload,
-    uint64_t *__restrict__ last_index, bool use_last_index) {
+    unsigned int log2_hash_table_entries, long long key,
+    long long *found_payload, uint64_t *__restrict__ last_index,
+    bool use_last_index) {
   uint64_t index = 0;
   if (use_last_index) {
     index = *last_index;
     index += 1ULL;
   } else {
-    index = hash<long long>(key);
+    index = hash<long long>(key, log2_hash_table_entries);
   }
 
-  for (uint64_t i = 0; i < hash_table_mask + 1ULL; ++i, index += 1ULL) {
-    index &= hash_table_mask;
+  uint64_t hash_table_entries = 1ULL << log2_hash_table_entries;
+  uint64_t hash_table_mask = hash_table_entries - 1ULL;
 
+  for (uint64_t i = 0; i < hash_table_mask + 1ULL;
+       ++i, index = (index + 1ULL) & hash_table_mask) {
     HtEntry<long long, long long> entry;
     entry.load(hash_table[index]);
 
@@ -188,6 +200,8 @@ extern "C" __global__ void gpu_ht_probe_aggregate_linearprobing_int32(
     uint64_t *__restrict__ aggregation_result) {
   const uint32_t global_idx = blockIdx.x * blockDim.x + threadIdx.x;
   const uint32_t global_threads = blockDim.x * gridDim.x;
+  const unsigned int log2_hash_table_entries =
+      log2_floor_power_of_two(hash_table_entries);
 
   for (uint64_t tuple_id = global_idx; tuple_id < data_length;
        tuple_id += global_threads) {
@@ -195,7 +209,7 @@ extern "C" __global__ void gpu_ht_probe_aggregate_linearprobing_int32(
     uint64_t hash_table_last_index = 0;
     bool hash_table_use_last_index = false;
     while (gpu_ht_findkey_linearprobing_int32(
-        hash_table, hash_table_entries - 1ULL, join_attr_data[tuple_id],
+        hash_table, log2_hash_table_entries, join_attr_data[tuple_id],
         &hash_table_payload, &hash_table_last_index,
         hash_table_use_last_index)) {
       hash_table_use_last_index = true;
@@ -212,6 +226,8 @@ extern "C" __global__ void gpu_ht_probe_aggregate_linearprobing_int64(
     uint64_t const data_length, uint64_t *__restrict__ aggregation_result) {
   const uint32_t global_idx = blockIdx.x * blockDim.x + threadIdx.x;
   const uint32_t global_threads = blockDim.x * gridDim.x;
+  const unsigned int log2_hash_table_entries =
+      log2_floor_power_of_two(hash_table_entries);
 
   for (uint64_t tuple_id = global_idx; tuple_id < data_length;
        tuple_id += global_threads) {
@@ -219,7 +235,7 @@ extern "C" __global__ void gpu_ht_probe_aggregate_linearprobing_int64(
     uint64_t hash_table_last_index = 0;
     bool hash_table_use_last_index = false;
     while (gpu_ht_findkey_linearprobing_int64(
-        hash_table, hash_table_entries - 1ULL, join_attr_data[tuple_id],
+        hash_table, log2_hash_table_entries, join_attr_data[tuple_id],
         &hash_table_payload, &hash_table_last_index,
         hash_table_use_last_index)) {
       hash_table_use_last_index = true;
