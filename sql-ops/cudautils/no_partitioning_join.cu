@@ -151,7 +151,7 @@ __device__ bool gpu_ht_findkey_linearprobing_int32(
       *found_payload = entry.value;
       *last_index = index;
       return true;
-    } else if (hash_table[index].key == null_key<int>()) {
+    } else if (entry.key == null_key<int>()) {
       return false;
     }
   }
@@ -184,7 +184,7 @@ __device__ bool gpu_ht_findkey_linearprobing_int64(
       *found_payload = entry.value;
       *last_index = index;
       return true;
-    } else if (hash_table[index].key == null_key<long long>()) {
+    } else if (entry.key == null_key<long long>()) {
       return false;
     }
   }
