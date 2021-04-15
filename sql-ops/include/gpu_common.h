@@ -209,7 +209,7 @@ CUDA_MODIFIER __forceinline__ long long murmur3_hash(
 
 // Alias defining the default hash function
 template <typename T>
-// constexpr auto hash = &mult_shift_hash<T>;
-constexpr auto hash = &murmur3_hash<T>;
+constexpr auto hash = &mult_shift_hash<T>;
+// constexpr auto hash = &murmur3_hash<T>;
 
 #endif /* GPU_COMMON_H */
