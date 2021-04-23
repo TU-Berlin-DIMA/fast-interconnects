@@ -22,7 +22,11 @@ fn main() {
 
     // Add CUDA utils
     let cuda_lib_file = format!("{}/cudautils.fatbin", out_dir);
-    let cuda_files = vec!["cudautils/tlb_latency.cu", "cudautils/cuda_clock.cu"];
+    let cuda_files = vec![
+        "cudautils/memory_bandwidth.cu",
+        "cudautils/tlb_latency.cu",
+        "cudautils/cuda_clock.cu",
+    ];
     let tlb_data_points_arg = format!("-DTLB_DATA_POINTS={}U", TLB_DATA_POINTS);
     let nvcc_build_args = vec![
         tlb_data_points_arg.as_str(),
@@ -126,7 +130,6 @@ fn main() {
         .flag("arch=compute_61,code=sm_61") // GTX 1080
         .flag("-gencode")
         .flag("arch=compute_70,code=sm_70") // Tesla V100
-        .file("cudautils/memory_bandwidth.cu")
         .file("cudautils/memory_latency.cu")
         .debug(false) // Debug enabled slows down mem latency by 10x
         .compile("libcudautils.a");

@@ -17,12 +17,11 @@ mod gpu_memory_bandwidth;
 use self::cpu_measurement::{CpuMeasurement, CpuNamedBandwidthFn};
 use self::cpu_memory_bandwidth::CpuMemoryBandwidth;
 use self::data_point::DataPoint;
-use self::gpu_measurement::{GpuMeasurement, GpuNamedBandwidthFn};
+use self::gpu_measurement::GpuMeasurement;
 use self::gpu_memory_bandwidth::GpuMemoryBandwidth;
 use crate::types::{
-    DeviceId, Ilp, MemTypeDescription, OversubRatio, ThreadCount, Warp, WarpMul, SM,
+    Cycles, DeviceId, Ilp, MemTypeDescription, OversubRatio, ThreadCount, Warp, WarpMul, SM,
 };
-use cuda_sys::cuda::CUstream;
 use numa_gpu::runtime::allocator::{Allocator, MemType};
 use numa_gpu::runtime::memory::DerefMem;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
@@ -44,15 +43,6 @@ extern "C" {
         tid: usize,
         num_threads: usize,
     );
-    fn gpu_bandwidth_seq(
-        op: MemoryOperation,
-        data: *mut u32,
-        size: usize,
-        cycles: *mut u64,
-        grid: u32,
-        block: u32,
-        stream: CUstream,
-    );
     fn cpu_bandwidth_lcg(
         op: MemoryOperation,
         data: *mut u32,
@@ -60,18 +50,8 @@ extern "C" {
         tid: usize,
         num_threads: usize,
     );
-    fn gpu_bandwidth_lcg(
-        op: MemoryOperation,
-        data: *mut u32,
-        size: usize,
-        cycles: *mut u64,
-        grid: u32,
-        block: u32,
-        stream: CUstream,
-    );
 }
 
-#[allow(dead_code)]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Serialize)]
 enum MemoryOperation {
@@ -80,17 +60,26 @@ enum MemoryOperation {
     CompareAndSwap,
 }
 
+// FIXME: use Benchmark for CPU measurment, too
+#[derive(Clone, Copy, Debug, Serialize)]
+enum Benchmark {
+    Sequential,
+    LinearCongruentialGenerator,
+}
+
 pub struct MemoryBandwidth;
 
 impl MemoryBandwidth {
     pub fn measure<W>(
         device_id: DeviceId,
         mem_type: MemType,
-        bytes: usize,
+        range_bytes: usize,
         threads: RangeInclusive<ThreadCount>,
         oversub_ratio: RangeInclusive<OversubRatio>,
         warp_mul: RangeInclusive<WarpMul>,
         ilp: RangeInclusive<Ilp>,
+        loop_length: u32,
+        target_cycles: Cycles,
         repeat: u32,
         writer: Option<&mut W>,
     ) where
@@ -119,8 +108,8 @@ impl MemoryBandwidth {
 
         numa::set_strict(true);
 
-        let element_bytes = size_of::<u32>();
-        let buffer_len = bytes / element_bytes;
+        let item_bytes = size_of::<u32>();
+        let buffer_len = range_bytes / item_bytes;
 
         let hostname = hostname::get()
             .expect("Couldn't get hostname")
@@ -144,7 +133,8 @@ impl MemoryBandwidth {
             memory_node: mem_type_description.location,
             memory_type: Some(mem_type_description.bare_mem_type),
             page_type: Some(mem_type_description.page_type),
-            bytes,
+            range_bytes,
+            item_bytes,
             ..Default::default()
         };
 
@@ -193,6 +183,8 @@ impl MemoryBandwidth {
                     warp_size,
                     sm_count,
                     ilp,
+                    loop_length,
+                    target_cycles,
                     template,
                 );
 
@@ -202,14 +194,8 @@ impl MemoryBandwidth {
                     ml,
                     GpuMemoryBandwidth::run,
                     vec![
-                        GpuNamedBandwidthFn {
-                            f: gpu_bandwidth_seq,
-                            name: "sequential",
-                        },
-                        GpuNamedBandwidthFn {
-                            f: gpu_bandwidth_lcg,
-                            name: "linear_congruential_generator",
-                        },
+                        Benchmark::Sequential,
+                        Benchmark::LinearCongruentialGenerator,
                     ],
                     vec![
                         MemoryOperation::Write,

@@ -221,7 +221,15 @@ struct CmdBandwidth {
     /// Instruction level parallelism (upper bound)
     ilp_upper: u32,
 
-    #[structopt(short = "r", long = "repeat", default_value = "100")]
+    #[structopt(long = "loop-length", default_value = "1000")]
+    /// Number of memory accesses in between cycle measurements
+    loop_length: u32,
+
+    #[structopt(long = "target-cycles", default_value = "100")]
+    /// Minimum number of clock cycles to measure before quitting (scaled by 10^6)
+    target_cycles: u64,
+
+    #[structopt(short = "r", long = "repeat", default_value = "5")]
     /// Number of times to repeat benchmark
     repeat: u32,
 }
@@ -416,6 +424,8 @@ fn main() -> Result<()> {
                 OversubRatio(bw.oversub_ratio_lower)..=OversubRatio(bw.oversub_ratio_upper),
                 WarpMul(bw.warp_mul_lower)..=WarpMul(bw.warp_mul_upper),
                 Ilp(bw.ilp_lower)..=Ilp(bw.ilp_upper),
+                bw.loop_length,
+                Cycles(bw.target_cycles * 10_u64.pow(6)),
                 bw.repeat,
                 csv_file.as_mut(),
             );

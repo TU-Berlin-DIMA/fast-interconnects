@@ -9,31 +9,22 @@
  */
 
 use super::gpu_measurement::GpuMeasurementParameters;
-use super::MemoryOperation;
-use cuda_sys::cuda::CUstream;
+use super::{Benchmark, MemoryOperation};
 use numa_gpu::runtime::memory::Mem;
-use numa_gpu::runtime::nvml::ThrottleReasons;
+use numa_gpu::runtime::nvml::{DeviceClocks, ThrottleReasons};
 use rustacuda::context::CurrentContext;
 use rustacuda::event::{Event, EventFlags};
+use rustacuda::launch;
 use rustacuda::memory::{CopyDestination, DeviceBox};
+use rustacuda::module::Module;
 use rustacuda::stream::{Stream, StreamFlags};
-use std::mem::transmute_copy;
+use std::ffi::CString;
 
 #[cfg(not(target_arch = "aarch64"))]
 use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
 
 #[cfg(target_arch = "aarch64")]
 use numa_gpu::runtime::hw_info::CudaDeviceInfo;
-
-pub(super) type GpuBandwidthFn = unsafe extern "C" fn(
-    op: MemoryOperation,
-    data: *mut u32,
-    size: usize,
-    cycles: *mut u64,
-    grid: u32,
-    block: u32,
-    stream: CUstream,
-);
 
 #[derive(Debug)]
 pub(super) struct GpuMemoryBandwidth {
@@ -67,16 +58,25 @@ impl GpuMemoryBandwidth {
     }
 
     pub(super) fn run(
-        f: GpuBandwidthFn,
+        bench: Benchmark,
         op: MemoryOperation,
         state: &mut Self,
         mem: &Mem<u32>,
         mp: &GpuMeasurementParameters,
-    ) -> (u32, Option<ThrottleReasons>, u64, u64) {
+    ) -> (u32, Option<ThrottleReasons>, u64, u64, u64) {
         assert!(
             mem.len().is_power_of_two(),
             "Data size must be a power of two!"
         );
+
+        // Set a stable GPU clock rate to make the measurements more accurate
+        #[cfg(not(target_arch = "aarch64"))]
+        state
+            .nvml
+            .device_by_index(state.device_id as u32)
+            .expect("Couldn't get NVML device")
+            .set_max_gpu_clocks()
+            .expect("Failed to set the maximum GPU clockrate");
 
         // Get GPU clock rate that applications run at
         #[cfg(not(target_arch = "aarch64"))]
@@ -93,7 +93,15 @@ impl GpuMemoryBandwidth {
             .clock_rate()
             .expect("Couldn't get clock rate");
 
-        let mut device_cycles = DeviceBox::new(&0_u64).expect("Couldn't allocate device memory");
+        // FIXME: load the module lazy globally
+        let module_path = CString::new(env!("CUDAUTILS_PATH"))
+            .expect("Failed to load CUDA module, check your CUDAUTILS_PATH");
+        let module = Module::load_from_file(&module_path).expect("Failed to load CUDA module");
+        let stream = &state.stream;
+
+        let mut memory_accesses_device =
+            DeviceBox::new(&0_u64).expect("Couldn't allocate device memory");
+        let mut measured_cycles = DeviceBox::new(&0_u64).expect("Couldn't allocate device memory");
 
         let timer_begin = Event::new(EventFlags::DEFAULT).expect("Couldn't create CUDA event");
         let timer_end = Event::new(EventFlags::DEFAULT).expect("Couldn't create CUDA event");
@@ -101,19 +109,41 @@ impl GpuMemoryBandwidth {
             .record(&state.stream)
             .expect("Couldn't record CUDA event");
 
-        unsafe {
-            // FIXME: Find a safer solution to replace transmute_copy!!!
-            let cu_stream = transmute_copy::<Stream, CUstream>(&state.stream);
-            f(
-                op,
-                mem.as_ptr() as *mut u32,
-                mem.len(),
-                device_cycles.as_device_ptr().as_raw_mut(),
-                mp.grid_size.0,
-                mp.block_size.0,
-                cu_stream,
-            )
+        let function_name = match (bench, op) {
+            (Benchmark::Sequential, MemoryOperation::Read) => "gpu_read_bandwidth_seq_kernel",
+            (Benchmark::Sequential, MemoryOperation::Write) => "gpu_write_bandwidth_seq_kernel",
+            (Benchmark::Sequential, MemoryOperation::CompareAndSwap) => {
+                "gpu_cas_bandwidth_seq_kernel"
+            }
+            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Read) => {
+                "gpu_read_bandwidth_lcg_kernel"
+            }
+            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Write) => {
+                "gpu_write_bandwidth_lcg_kernel"
+            }
+            (Benchmark::LinearCongruentialGenerator, MemoryOperation::CompareAndSwap) => {
+                "gpu_cas_bandwidth_lcg_kernel"
+            }
         };
+
+        let c_name =
+            CString::new(function_name).expect("Failed to convert Rust string into C string");
+        let function = module
+            .get_function(&c_name)
+            .expect(format!("Failed to load the GPU function: {}", function_name).as_str());
+        unsafe {
+            launch!(
+                function<<<mp.grid_size.0, mp.block_size.0, 0, stream>>>(
+            mem.as_launchable_ptr(),
+            mem.len(),
+            mp.loop_length,
+            mp.target_cycles.0,
+            memory_accesses_device.as_device_ptr(),
+            measured_cycles.as_device_ptr()
+            )
+                   )
+            .expect("Failed to run GPU kernel");
+        }
 
         timer_end
             .record(&state.stream)
@@ -141,11 +171,33 @@ impl GpuMemoryBandwidth {
             .expect("Couldn't get elapsed time");
         let ns = ms as f64 * 10.0_f64.powf(6.0);
 
+        let mut memory_accesses = 0;
+        memory_accesses_device
+            .copy_to(&mut memory_accesses)
+            .expect("Couldn't transfer result from device");
+
         let mut cycles = 0;
-        device_cycles
+        measured_cycles
             .copy_to(&mut cycles)
             .expect("Couldn't transfer result from device");
 
-        (clock_rate_mhz, throttle_reasons, cycles, ns as u64)
+        (
+            clock_rate_mhz,
+            throttle_reasons,
+            memory_accesses,
+            cycles,
+            ns as u64,
+        )
+    }
+}
+
+impl Drop for GpuMemoryBandwidth {
+    fn drop(&mut self) {
+        #[cfg(not(target_arch = "aarch64"))]
+        self.nvml
+            .device_by_index(self.device_id as u32)
+            .unwrap()
+            .set_default_gpu_clocks()
+            .expect("Failed to reset default GPU clock rates");
     }
 }

@@ -1,12 +1,19 @@
-#include <helper.h>
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public License,
+ * v. 2.0. If a copy of the MPL was not distributed with this file, You can
+ * obtain one at http://mozilla.org/MPL/2.0/.
+ *
+ *
+ * Copyright 2019-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
+ */
 
-#include <cuda.h>
+#include <cuda_clock.h>
+
 #include <cstdint>
 
 // X mod Y, assuming that Y is a power of 2
 #define FAST_MODULO(X, Y) (X & (Y - 1))
-
-enum MemoryOperation { Read, Write, CompareAndSwap };
 
 /*
  * Test sequential read bandwidth
@@ -14,31 +21,39 @@ enum MemoryOperation { Read, Write, CompareAndSwap };
  * Read #size elements from array.
  *
  * Preconditions:
- *  - None
+ *  - `memory_accesses` is 0
+ *  - `measured_cycles` is 0
  *
  * Postconditions:
- *  - Clock cycles are written to cycles
+ *  - Aggregate clock cycles are written to `measured_cycles`
+ *  - Aggregate number of memory accesses are written to `memory_accesses`
  */
-__global__ void gpu_read_bandwidth_seq_kernel(uint32_t *data, std::size_t size,
-                                              uint64_t *cycles) {
+extern "C" __global__ void gpu_read_bandwidth_seq_kernel(
+    uint32_t *const __restrict__ data, size_t const size,
+    uint32_t const /* loop_length */, uint64_t const /* target_cycles */,
+    unsigned long long *const memory_accesses,
+    unsigned long long *const measured_cycles) {
   uint32_t const global_size = gridDim.x * blockDim.x;
   uint32_t const gid = threadIdx.x + blockIdx.x * blockDim.x;
-  uint64_t sum = 0;
-  uint64_t start = 0;
-  uint64_t stop = 0;
+  unsigned long long sum = 0;
+  clock_type start = 0;
+  clock_type stop = 0;
 
-  start = clock64();
+  get_clock(start);
 
   uint32_t dummy = 0;
-  for (std::size_t i = gid; i < size; i += global_size) {
+  for (size_t i = gid; i < size; i += global_size) {
     dummy += data[i];
   }
 
-  stop = clock64();
+  get_clock(stop);
   sum = stop - start;
 
   // Write result
-  *cycles = sum;
+  atomicMax(measured_cycles, sum);
+  if (gid == 0) {
+    *memory_accesses = size;
+  }
 
   // Prevent compiler optimization
   if (sum == 0) {
@@ -52,35 +67,38 @@ __global__ void gpu_read_bandwidth_seq_kernel(uint32_t *data, std::size_t size,
  * Write #size elements to array.
  *
  * Preconditions:
- *  - None
+ *  - `memory_accesses` is 0
+ *  - `measured_cycles` is 0
  *
  * Postconditions:
- *  - Clock cycles are written to cycles
+ *  - Aggregate clock cycles are written to `measured_cycles`
+ *  - Aggregate number of memory accesses are written to `memory_accesses`
  *  - All array elements are filled with unspecified data
  */
-__global__ void gpu_write_bandwidth_seq_kernel(uint32_t *data, std::size_t size,
-                                               uint64_t *cycles) {
+extern "C" __global__ void gpu_write_bandwidth_seq_kernel(
+    uint32_t *const __restrict__ data, size_t const size,
+    uint32_t const /* loop_length */, uint64_t const /* target_cycles */,
+    unsigned long long *const memory_accesses,
+    unsigned long long *const measured_cycles) {
   uint32_t const global_size = gridDim.x * blockDim.x;
   uint32_t const gid = threadIdx.x + blockIdx.x * blockDim.x;
-  uint64_t sum = 0;
-  uint64_t start = 0;
-  uint64_t stop = 0;
+  unsigned long long sum = 0;
+  clock_type start = 0;
+  clock_type stop = 0;
 
-  start = clock64();
+  get_clock(start);
 
-  for (std::size_t i = gid; i < size; i += global_size) {
+  for (size_t i = gid; i < size; i += global_size) {
     data[i] = i;
   }
 
-  stop = clock64();
+  get_clock(stop);
   sum = stop - start;
 
   // Write result
-  *cycles = sum;
-
-  // Prevent compiler optimization
-  if (sum == 0) {
-    data[1] = sum;
+  atomicMax(measured_cycles, sum);
+  if (gid == 0) {
+    *memory_accesses = size;
   }
 }
 
@@ -90,57 +108,38 @@ __global__ void gpu_write_bandwidth_seq_kernel(uint32_t *data, std::size_t size,
  * Write #size elements to array.
  *
  * Preconditions:
- *  - None
+ *  - `memory_accesses` is 0
+ *  - `measured_cycles` is 0
  *
  * Postconditions:
- *  - Clock cycles are written to cycles
+ *  - Aggregate clock cycles are written to `measured_cycles`
+ *  - Aggregate number of memory accesses are written to `memory_accesses`
  *  - All array elements are filled with unspecified data
  */
-__global__ void gpu_cas_bandwidth_seq_kernel(uint32_t *data, std::size_t size,
-                                             uint64_t *cycles) {
+extern "C" __global__ void gpu_cas_bandwidth_seq_kernel(
+    uint32_t *const __restrict__ data, size_t const size,
+    uint32_t const /* loop_length */, uint64_t const /* target_cycles */,
+    unsigned long long *const memory_accesses,
+    unsigned long long *const measured_cycles) {
   uint32_t const global_size = gridDim.x * blockDim.x;
   uint32_t const gid = threadIdx.x + blockIdx.x * blockDim.x;
-  uint64_t sum = 0;
-  uint64_t start = 0;
-  uint64_t stop = 0;
+  unsigned long long sum = 0;
+  clock_type start = 0;
+  clock_type stop = 0;
 
-  start = clock64();
+  get_clock(start);
 
-  for (std::size_t i = gid; i < size; i += global_size) {
+  for (size_t i = gid; i < size; i += global_size) {
     atomicCAS(&data[i], i, i + 1);
   }
 
-  stop = clock64();
+  get_clock(stop);
   sum = stop - start;
 
   // Write result
-  *cycles = sum;
-}
-
-/*
- * Run a sequential bandwidth test
- *
- * See specific functions for pre- and postcondition details.
- */
-extern "C" void gpu_bandwidth_seq(MemoryOperation op, uint32_t *data,
-                                  std::size_t size, uint64_t *cycles,
-                                  uint32_t grid, uint32_t block,
-                                  CUstream stream) {
-  switch (op) {
-    case Read:
-      gpu_read_bandwidth_seq_kernel<<<grid, block, 0, stream>>>(data, size,
-                                                                cycles);
-      break;
-    case Write:
-      gpu_write_bandwidth_seq_kernel<<<grid, block, 0, stream>>>(data, size,
-                                                                 cycles);
-      break;
-    case CompareAndSwap:
-      gpu_cas_bandwidth_seq_kernel<<<grid, block, 0, stream>>>(data, size,
-                                                               cycles);
-      break;
-    default:
-      throw "Unimplemented operation!";
+  atomicMax(measured_cycles, sum);
+  if (gid == 0) {
+    *memory_accesses = size;
   }
 }
 
@@ -152,17 +151,25 @@ extern "C" void gpu_bandwidth_seq(MemoryOperation op, uint32_t *data,
  *
  * Preconditions:
  *  - size is a power of 2, i.e. 2^x
+ *  - `memory_accesses` is 0
+ *  - `measured_cycles` is 0
  *
  * Postconditions:
- *  - Clock cycles are written to cycles
+ *  - Aggregate clock cycles are written to `measured_cycles`
+ *  - Aggregate number of memory accesses are written to `memory_accesses`
  */
-__global__ void gpu_read_bandwidth_lcg_kernel(uint32_t *data, std::size_t size,
-                                              uint64_t *cycles) {
-  uint32_t global_size = gridDim.x * blockDim.x;
+extern "C" __global__ void gpu_read_bandwidth_lcg_kernel(
+    uint32_t *const __restrict__ data, size_t const size,
+    uint32_t const loop_length, uint64_t const target_cycles,
+    unsigned long long *const memory_accesses,
+    unsigned long long *const measured_cycles) {
   uint32_t gid = threadIdx.x + blockIdx.x * blockDim.x;
-  uint64_t sum = 0;
-  uint64_t start = 0;
-  uint64_t stop = 0;
+  unsigned long long sum = 0;
+  unsigned long long mem_accesses = 0;
+  uint32_t dummy = 0;
+  clock_type start = 0;
+  clock_type stop = 0;
+  clock_type target_cycles_i = static_cast<clock_type>(target_cycles);
 
   // Linear congruent generator
   // See: Knuth "The Art of Computer Programming - Volume 2"
@@ -171,25 +178,28 @@ __global__ void gpu_read_bandwidth_lcg_kernel(uint32_t *data, std::size_t size,
   uint64_t c = 1442695040888963407ULL;
   uint64_t x = 67890ULL + gid;
 
-  start = clock64();
+  get_clock(start);
 
   // Do measurement
-  uint32_t dummy = 0;
-  for (uint64_t i = gid; i < size; i += global_size) {
-    // Generate next random number with LCG
-    // Note: wrap modulo 2^64 is defined by C/C++ standard
-    x = a * x + c;
+  do {
+    for (uint32_t i = 0; i < loop_length; ++i) {
+      // Generate next random number with LCG
+      // Note: wrap modulo 2^64 is defined by C/C++ standard
+      x = a * x + c;
 
-    // Read from a random location within data range
-    uint64_t location = FAST_MODULO(x, size);
-    dummy += data[location];
-  }
+      // Read from a random location within data range
+      uint64_t location = FAST_MODULO(x, size);
+      dummy += data[location];
+    }
 
-  stop = clock64();
+    mem_accesses += loop_length;
+  } while ((get_clock(stop), stop) - start < target_cycles_i);
+
   sum = stop - start;
 
   // Write result
-  *cycles = sum;
+  atomicMax(measured_cycles, sum);
+  atomicAdd(memory_accesses, mem_accesses);
 
   // Prevent compiler optimization
   if (sum == 0) {
@@ -205,18 +215,25 @@ __global__ void gpu_read_bandwidth_lcg_kernel(uint32_t *data, std::size_t size,
  *
  * Preconditions:
  *  - size is a power of 2, i.e. 2^x
+ *  - `memory_accesses` is 0
+ *  - `measured_cycles` is 0
  *
  * Postconditions:
- *  - Clock cycles are written to data[0]
- *  - All other array elements are (probably) filled with random numbers
+ *  - Aggregate clock cycles are written to `measured_cycles`
+ *  - Aggregate number of memory accesses are written to `memory_accesses`
+ *  - All array elements are filled with unspecified data
  */
-__global__ void gpu_write_bandwidth_lcg_kernel(uint32_t *data, std::size_t size,
-                                               uint64_t *cycles) {
-  uint32_t global_size = gridDim.x * blockDim.x;
+extern "C" __global__ void gpu_write_bandwidth_lcg_kernel(
+    uint32_t *const __restrict__ data, size_t const size,
+    uint32_t const loop_length, uint64_t const target_cycles,
+    unsigned long long *const memory_accesses,
+    unsigned long long *const measured_cycles) {
   uint32_t gid = threadIdx.x + blockIdx.x * blockDim.x;
-  uint64_t sum = 0;
-  uint64_t start = 0;
-  uint64_t stop = 0;
+  unsigned long long sum = 0;
+  unsigned long long mem_accesses = 0;
+  clock_type start = 0;
+  clock_type stop = 0;
+  clock_type target_cycles_i = static_cast<clock_type>(target_cycles);
 
   // Linear congruent generator
   // See: Knuth "The Art of Computer Programming - Volume 2"
@@ -225,29 +242,28 @@ __global__ void gpu_write_bandwidth_lcg_kernel(uint32_t *data, std::size_t size,
   uint64_t c = 1442695040888963407ULL;
   uint64_t x = 67890ULL + gid;
 
-  start = clock64();
+  get_clock(start);
 
   // Do measurement
-  for (uint64_t i = gid; i < size; i += global_size) {
-    // Generate next random number with LCG
-    // Note: wrap modulo 2^64 is defined by C/C++ standard
-    x = a * x + c;
+  do {
+    for (uint32_t i = 0; i < loop_length; ++i) {
+      // Generate next random number with LCG
+      // Note: wrap modulo 2^64 is defined by C/C++ standard
+      x = a * x + c;
 
-    // Write to a random location within data range
-    uint64_t location = FAST_MODULO(x, size);
-    data[location] = x;
-  }
+      // Write to a random location within data range
+      uint64_t location = FAST_MODULO(x, size);
+      data[location] = x;
+    }
 
-  stop = clock64();
+    mem_accesses += loop_length;
+  } while ((get_clock(stop), stop) - start < target_cycles_i);
+
   sum = stop - start;
 
   // Write result
-  *cycles = sum;
-
-  // Prevent compiler optimization
-  if (sum == 0) {
-    data[1] = sum;
-  }
+  atomicMax(measured_cycles, sum);
+  atomicAdd(memory_accesses, mem_accesses);
 }
 
 /*
@@ -258,18 +274,25 @@ __global__ void gpu_write_bandwidth_lcg_kernel(uint32_t *data, std::size_t size,
  *
  * Preconditions:
  *  - size is a power of 2, i.e. 2^x
+ *  - `memory_accesses` is 0
+ *  - `measured_cycles` is 0
  *
  * Postconditions:
- *  - Clock cycles are written to data[0]
+ *  - Aggregate clock cycles are written to `measured_cycles`
+ *  - Aggregate number of memory accesses are written to `memory_accesses`
  *  - All array elements are filled with unspecified data
  */
-__global__ void gpu_cas_bandwidth_lcg_kernel(uint32_t *data, std::size_t size,
-                                             uint64_t *cycles) {
-  uint32_t global_size = gridDim.x * blockDim.x;
+extern "C" __global__ void gpu_cas_bandwidth_lcg_kernel(
+    uint32_t *const __restrict__ data, size_t const size,
+    uint32_t const loop_length, uint64_t const target_cycles,
+    unsigned long long *const memory_accesses,
+    unsigned long long *const measured_cycles) {
   uint32_t gid = threadIdx.x + blockIdx.x * blockDim.x;
-  uint64_t sum = 0;
-  uint64_t start = 0;
-  uint64_t stop = 0;
+  unsigned long long sum = 0;
+  unsigned long long mem_accesses = 0;
+  clock_type start = 0;
+  clock_type stop = 0;
+  clock_type target_cycles_i = static_cast<clock_type>(target_cycles);
 
   // Linear congruent generator
   // See: Knuth "The Art of Computer Programming - Volume 2"
@@ -278,49 +301,26 @@ __global__ void gpu_cas_bandwidth_lcg_kernel(uint32_t *data, std::size_t size,
   uint64_t c = 1442695040888963407ULL;
   uint64_t x = 67890ULL + gid;
 
-  start = clock64();
+  get_clock(start);
 
   // Do measurement
-  for (uint64_t i = gid; i < size; i += global_size) {
-    // Generate next random number with LCG
-    // Note: wrap modulo 2^64 is defined by C/C++ standard
-    x = a * x + c;
+  do {
+    for (uint32_t i = 0; i < loop_length; ++i) {
+      // Generate next random number with LCG
+      // Note: wrap modulo 2^64 is defined by C/C++ standard
+      x = a * x + c;
 
-    // Write to a random location within data range
-    uint64_t location = FAST_MODULO(x, size);
-    atomicCAS(&data[location], location, x);
-  }
+      // Write to a random location within data range
+      uint64_t location = FAST_MODULO(x, size);
+      atomicCAS(&data[location], location, x);
+    }
 
-  stop = clock64();
+    mem_accesses += loop_length;
+  } while ((get_clock(stop), stop) - start < target_cycles_i);
+
   sum = stop - start;
 
   // Write result
-  *cycles = sum;
-}
-
-/*
- * Run a random bandwidth test
- *
- * See specific functions for pre- and postcondition details.
- */
-extern "C" void gpu_bandwidth_lcg(MemoryOperation op, uint32_t *data,
-                                  std::size_t size, uint64_t *cycles,
-                                  uint32_t grid, uint32_t block,
-                                  CUstream stream) {
-  switch (op) {
-    case Read:
-      gpu_read_bandwidth_lcg_kernel<<<grid, block, 0, stream>>>(data, size,
-                                                                cycles);
-      break;
-    case Write:
-      gpu_write_bandwidth_lcg_kernel<<<grid, block, 0, stream>>>(data, size,
-                                                                 cycles);
-      break;
-    case CompareAndSwap:
-      gpu_cas_bandwidth_lcg_kernel<<<grid, block, 0, stream>>>(data, size,
-                                                               cycles);
-      break;
-    default:
-      throw "Unimplemented operation!";
-  }
+  atomicMax(measured_cycles, sum);
+  atomicAdd(memory_accesses, mem_accesses);
 }

@@ -9,25 +9,20 @@
  */
 
 use super::data_point::DataPoint;
-use super::gpu_memory_bandwidth::GpuBandwidthFn;
-use super::MemoryOperation;
-use crate::types::{Block, Grid, Ilp, OversubRatio, Warp, WarpMul, SM};
+use super::{Benchmark, MemoryOperation};
+use crate::types::{Block, Cycles, Grid, Ilp, OversubRatio, Warp, WarpMul, SM};
 use numa_gpu::runtime::memory::Mem;
 use numa_gpu::runtime::nvml::ThrottleReasons;
 use std::iter;
 use std::ops::RangeInclusive;
-
-#[derive(Clone, Debug)]
-pub(super) struct GpuNamedBandwidthFn<'n> {
-    pub(super) f: GpuBandwidthFn,
-    pub(super) name: &'n str,
-}
 
 #[allow(dead_code)]
 pub(super) struct GpuMeasurementParameters {
     pub(super) grid_size: Grid,
     pub(super) block_size: Block,
     pub(super) ilp: Ilp,
+    pub(super) loop_length: u32,
+    pub(super) target_cycles: Cycles,
 }
 
 #[allow(dead_code)]
@@ -37,6 +32,8 @@ pub(super) struct GpuMeasurement<'h, 'd, 'n> {
     warp_size: Warp,
     sm_count: SM,
     ilp: RangeInclusive<Ilp>,
+    loop_length: u32,
+    target_cycles: Cycles,
     template: DataPoint<'h, 'd, 'n>,
 }
 
@@ -47,6 +44,8 @@ impl<'h, 'd, 'n> GpuMeasurement<'h, 'd, 'n> {
         warp_size: Warp,
         sm_count: SM,
         ilp: RangeInclusive<Ilp>,
+        loop_length: u32,
+        target_cycles: Cycles,
         template: DataPoint<'h, 'd, 'n>,
     ) -> Self {
         Self {
@@ -55,6 +54,8 @@ impl<'h, 'd, 'n> GpuMeasurement<'h, 'd, 'n> {
             warp_size,
             sm_count,
             ilp,
+            loop_length,
+            target_cycles,
             template,
         }
     }
@@ -64,18 +65,18 @@ impl<'h, 'd, 'n> GpuMeasurement<'h, 'd, 'n> {
         mem: &Mem<u32>,
         mut state: S,
         run: R,
-        futs: Vec<GpuNamedBandwidthFn<'n>>,
+        benches: Vec<Benchmark>,
         ops: Vec<MemoryOperation>,
         repeat: u32,
     ) -> Vec<DataPoint<'h, 'd, 'n>>
     where
         R: Fn(
-            GpuBandwidthFn,
+            Benchmark,
             MemoryOperation,
             &mut S,
             &Mem<u32>,
             &GpuMeasurementParameters,
-        ) -> (u32, Option<ThrottleReasons>, u64, u64),
+        ) -> (u32, Option<ThrottleReasons>, u64, u64, u64),
     {
         // Convert newtypes to basic types while std::ops::Step is unstable
         // Step trait is required for std::ops::RangeInclusive Iterator trait
@@ -85,7 +86,7 @@ impl<'h, 'd, 'n> GpuMeasurement<'h, 'd, 'n> {
         let warp_size = self.warp_size.clone();
         let sm_count = self.sm_count.clone();
 
-        let data_points: Vec<_> = futs
+        let data_points: Vec<_> = benches
             .iter()
             .flat_map(|fut| {
                 iter::repeat(fut).zip(ops.iter().flat_map(|op| {
@@ -110,7 +111,7 @@ impl<'h, 'd, 'n> GpuMeasurement<'h, 'd, 'n> {
                 }))
             })
             .map(
-                |(named_fut, (op, (((warp_mul, oversub_ratio), warm_up), _run)))| {
+                |(bench, (op, (((warp_mul, oversub_ratio), warm_up), _run)))| {
                     let block_size = warp_mul * warp_size;
                     let grid_size = oversub_ratio * sm_count;
                     let ilp = Ilp::default(); // FIXME: insert and use a real parameter
@@ -118,14 +119,15 @@ impl<'h, 'd, 'n> GpuMeasurement<'h, 'd, 'n> {
                         grid_size,
                         block_size,
                         ilp,
+                        loop_length: self.loop_length,
+                        target_cycles: self.target_cycles,
                     };
-                    let GpuNamedBandwidthFn { f: fut, name } = named_fut;
 
-                    let (clock_rate_mhz, throttle_reasons, cycles, ns) =
-                        run(*fut, *op, &mut state, mem, &mp);
+                    let (clock_rate_mhz, throttle_reasons, memory_accesses, cycles, ns) =
+                        run(*bench, *op, &mut state, mem, &mp);
 
                     DataPoint {
-                        function_name: name,
+                        benchmark: Some(*bench),
                         memory_operation: Some(*op),
                         warm_up,
                         grid_size: Some(grid_size),
@@ -133,6 +135,7 @@ impl<'h, 'd, 'n> GpuMeasurement<'h, 'd, 'n> {
                         ilp: None,
                         throttle_reasons: throttle_reasons.map(|r| r.to_string()),
                         clock_rate_mhz: Some(clock_rate_mhz),
+                        memory_accesses,
                         cycles,
                         ns,
                         ..self.template.clone()

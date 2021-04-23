@@ -78,6 +78,10 @@ pub enum MemoryAllocationType {
     DynamicallyPinned,
 }
 
+/// Clock cycles
+#[derive(Debug, Copy, Clone, Default, Serialize, Eq, Ord, PartialEq, PartialOrd)]
+pub struct Cycles(pub u64);
+
 /// CUDA grid size
 #[derive(Debug, Copy, Clone, Default, Serialize, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Grid(pub u32);
