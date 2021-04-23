@@ -1,7 +1,7 @@
 #include <helper.h>
 
-#include <cstdint>
 #include <cuda.h>
+#include <cstdint>
 
 // X mod Y, assuming that Y is a power of 2
 #define FAST_MODULO(X, Y) (X & (Y - 1))
@@ -19,30 +19,31 @@ enum MemoryOperation { Read, Write, CompareAndSwap };
  * Postconditions:
  *  - Clock cycles are written to cycles
  */
-__global__ void gpu_read_bandwidth_seq_kernel(uint32_t *data, std::size_t size, uint64_t *cycles) {
-    uint32_t const global_size = gridDim.x * blockDim.x;
-    uint32_t const gid = threadIdx.x + blockIdx.x * blockDim.x;
-    uint64_t sum = 0;
-    uint64_t start = 0;
-    uint64_t stop = 0;
+__global__ void gpu_read_bandwidth_seq_kernel(uint32_t *data, std::size_t size,
+                                              uint64_t *cycles) {
+  uint32_t const global_size = gridDim.x * blockDim.x;
+  uint32_t const gid = threadIdx.x + blockIdx.x * blockDim.x;
+  uint64_t sum = 0;
+  uint64_t start = 0;
+  uint64_t stop = 0;
 
-    start = clock64();
+  start = clock64();
 
-    uint32_t dummy = 0;
-    for (std::size_t i = gid; i < size; i += global_size) {
-        dummy += data[i];
-    }
+  uint32_t dummy = 0;
+  for (std::size_t i = gid; i < size; i += global_size) {
+    dummy += data[i];
+  }
 
-    stop = clock64();
-    sum = stop - start;
+  stop = clock64();
+  sum = stop - start;
 
-    // Write result
-    *cycles = sum;
+  // Write result
+  *cycles = sum;
 
-    // Prevent compiler optimization
-    if (sum == 0) {
-        data[1] = dummy;
-    }
+  // Prevent compiler optimization
+  if (sum == 0) {
+    data[1] = dummy;
+  }
 }
 
 /*
@@ -57,29 +58,30 @@ __global__ void gpu_read_bandwidth_seq_kernel(uint32_t *data, std::size_t size, 
  *  - Clock cycles are written to cycles
  *  - All array elements are filled with unspecified data
  */
-__global__ void gpu_write_bandwidth_seq_kernel(uint32_t *data, std::size_t size, uint64_t *cycles) {
-    uint32_t const global_size = gridDim.x * blockDim.x;
-    uint32_t const gid = threadIdx.x + blockIdx.x * blockDim.x;
-    uint64_t sum = 0;
-    uint64_t start = 0;
-    uint64_t stop = 0;
+__global__ void gpu_write_bandwidth_seq_kernel(uint32_t *data, std::size_t size,
+                                               uint64_t *cycles) {
+  uint32_t const global_size = gridDim.x * blockDim.x;
+  uint32_t const gid = threadIdx.x + blockIdx.x * blockDim.x;
+  uint64_t sum = 0;
+  uint64_t start = 0;
+  uint64_t stop = 0;
 
-    start = clock64();
+  start = clock64();
 
-    for (std::size_t i = gid; i < size; i += global_size) {
-        data[i] = i;
-    }
+  for (std::size_t i = gid; i < size; i += global_size) {
+    data[i] = i;
+  }
 
-    stop = clock64();
-    sum = stop - start;
+  stop = clock64();
+  sum = stop - start;
 
-    // Write result
-    *cycles = sum;
+  // Write result
+  *cycles = sum;
 
-    // Prevent compiler optimization
-    if (sum == 0) {
-        data[1] = sum;
-    }
+  // Prevent compiler optimization
+  if (sum == 0) {
+    data[1] = sum;
+  }
 }
 
 /*
@@ -94,24 +96,25 @@ __global__ void gpu_write_bandwidth_seq_kernel(uint32_t *data, std::size_t size,
  *  - Clock cycles are written to cycles
  *  - All array elements are filled with unspecified data
  */
-__global__ void gpu_cas_bandwidth_seq_kernel(uint32_t *data, std::size_t size, uint64_t *cycles) {
-    uint32_t const global_size = gridDim.x * blockDim.x;
-    uint32_t const gid = threadIdx.x + blockIdx.x * blockDim.x;
-    uint64_t sum = 0;
-    uint64_t start = 0;
-    uint64_t stop = 0;
+__global__ void gpu_cas_bandwidth_seq_kernel(uint32_t *data, std::size_t size,
+                                             uint64_t *cycles) {
+  uint32_t const global_size = gridDim.x * blockDim.x;
+  uint32_t const gid = threadIdx.x + blockIdx.x * blockDim.x;
+  uint64_t sum = 0;
+  uint64_t start = 0;
+  uint64_t stop = 0;
 
-    start = clock64();
+  start = clock64();
 
-    for (std::size_t i = gid; i < size; i += global_size) {
-        atomicCAS(&data[i], i, i + 1);
-    }
+  for (std::size_t i = gid; i < size; i += global_size) {
+    atomicCAS(&data[i], i, i + 1);
+  }
 
-    stop = clock64();
-    sum = stop - start;
+  stop = clock64();
+  sum = stop - start;
 
-    // Write result
-    *cycles = sum;
+  // Write result
+  *cycles = sum;
 }
 
 /*
@@ -119,29 +122,26 @@ __global__ void gpu_cas_bandwidth_seq_kernel(uint32_t *data, std::size_t size, u
  *
  * See specific functions for pre- and postcondition details.
  */
-extern "C" void gpu_bandwidth_seq(
-        MemoryOperation op,
-        uint32_t *data,
-        std::size_t size,
-        uint64_t *cycles,
-        uint32_t grid,
-        uint32_t block,
-        CUstream stream
-        )
-{
-    switch (op) {
-        case Read:
-            gpu_read_bandwidth_seq_kernel<<<grid, block, 0, stream>>>(data, size, cycles);
-            break;
-        case Write:
-            gpu_write_bandwidth_seq_kernel<<<grid, block, 0, stream>>>(data, size, cycles);
-            break;
-        case CompareAndSwap:
-            gpu_cas_bandwidth_seq_kernel<<<grid, block, 0, stream>>>(data, size, cycles);
-            break;
-        default:
-            throw "Unimplemented operation!";
-    }
+extern "C" void gpu_bandwidth_seq(MemoryOperation op, uint32_t *data,
+                                  std::size_t size, uint64_t *cycles,
+                                  uint32_t grid, uint32_t block,
+                                  CUstream stream) {
+  switch (op) {
+    case Read:
+      gpu_read_bandwidth_seq_kernel<<<grid, block, 0, stream>>>(data, size,
+                                                                cycles);
+      break;
+    case Write:
+      gpu_write_bandwidth_seq_kernel<<<grid, block, 0, stream>>>(data, size,
+                                                                 cycles);
+      break;
+    case CompareAndSwap:
+      gpu_cas_bandwidth_seq_kernel<<<grid, block, 0, stream>>>(data, size,
+                                                               cycles);
+      break;
+    default:
+      throw "Unimplemented operation!";
+  }
 }
 
 /*
@@ -156,44 +156,45 @@ extern "C" void gpu_bandwidth_seq(
  * Postconditions:
  *  - Clock cycles are written to cycles
  */
-__global__ void gpu_read_bandwidth_lcg_kernel(uint32_t *data, std::size_t size, uint64_t *cycles) {
-    uint32_t global_size = gridDim.x * blockDim.x;
-    uint32_t gid = threadIdx.x + blockIdx.x * blockDim.x;
-    uint64_t sum = 0;
-    uint64_t start = 0;
-    uint64_t stop = 0;
+__global__ void gpu_read_bandwidth_lcg_kernel(uint32_t *data, std::size_t size,
+                                              uint64_t *cycles) {
+  uint32_t global_size = gridDim.x * blockDim.x;
+  uint32_t gid = threadIdx.x + blockIdx.x * blockDim.x;
+  uint64_t sum = 0;
+  uint64_t start = 0;
+  uint64_t stop = 0;
 
-    // Linear congruent generator
-    // See: Knuth "The Art of Computer Programming - Volume 2"
-    // and: https://en.wikipedia.org/wiki/Linear_congruential_generator
-    uint64_t a = 6364136223846793005ULL;
-    uint64_t c = 1442695040888963407ULL;
-    uint64_t x = 67890ULL + gid;
+  // Linear congruent generator
+  // See: Knuth "The Art of Computer Programming - Volume 2"
+  // and: https://en.wikipedia.org/wiki/Linear_congruential_generator
+  uint64_t a = 6364136223846793005ULL;
+  uint64_t c = 1442695040888963407ULL;
+  uint64_t x = 67890ULL + gid;
 
-    start = clock64();
+  start = clock64();
 
-    // Do measurement
-    uint32_t dummy = 0;
-    for (uint64_t i = gid; i < size; i += global_size) {
-        // Generate next random number with LCG
-        // Note: wrap modulo 2^64 is defined by C/C++ standard
-        x = a * x + c;
+  // Do measurement
+  uint32_t dummy = 0;
+  for (uint64_t i = gid; i < size; i += global_size) {
+    // Generate next random number with LCG
+    // Note: wrap modulo 2^64 is defined by C/C++ standard
+    x = a * x + c;
 
-        // Read from a random location within data range
-        uint64_t location = FAST_MODULO(x, size);
-        dummy += data[location];
-    }
+    // Read from a random location within data range
+    uint64_t location = FAST_MODULO(x, size);
+    dummy += data[location];
+  }
 
-    stop = clock64();
-    sum = stop - start;
+  stop = clock64();
+  sum = stop - start;
 
-    // Write result
-    *cycles = sum;
+  // Write result
+  *cycles = sum;
 
-    // Prevent compiler optimization
-    if (sum == 0) {
-        data[1] = dummy;
-    }
+  // Prevent compiler optimization
+  if (sum == 0) {
+    data[1] = dummy;
+  }
 }
 
 /*
@@ -209,43 +210,44 @@ __global__ void gpu_read_bandwidth_lcg_kernel(uint32_t *data, std::size_t size, 
  *  - Clock cycles are written to data[0]
  *  - All other array elements are (probably) filled with random numbers
  */
-__global__ void gpu_write_bandwidth_lcg_kernel(uint32_t *data, std::size_t size, uint64_t *cycles) {
-    uint32_t global_size = gridDim.x * blockDim.x;
-    uint32_t gid = threadIdx.x + blockIdx.x * blockDim.x;
-    uint64_t sum = 0;
-    uint64_t start = 0;
-    uint64_t stop = 0;
+__global__ void gpu_write_bandwidth_lcg_kernel(uint32_t *data, std::size_t size,
+                                               uint64_t *cycles) {
+  uint32_t global_size = gridDim.x * blockDim.x;
+  uint32_t gid = threadIdx.x + blockIdx.x * blockDim.x;
+  uint64_t sum = 0;
+  uint64_t start = 0;
+  uint64_t stop = 0;
 
-    // Linear congruent generator
-    // See: Knuth "The Art of Computer Programming - Volume 2"
-    // and: https://en.wikipedia.org/wiki/Linear_congruential_generator
-    uint64_t a = 6364136223846793005ULL;
-    uint64_t c = 1442695040888963407ULL;
-    uint64_t x = 67890ULL + gid;
+  // Linear congruent generator
+  // See: Knuth "The Art of Computer Programming - Volume 2"
+  // and: https://en.wikipedia.org/wiki/Linear_congruential_generator
+  uint64_t a = 6364136223846793005ULL;
+  uint64_t c = 1442695040888963407ULL;
+  uint64_t x = 67890ULL + gid;
 
-    start = clock64();
+  start = clock64();
 
-    // Do measurement
-    for (uint64_t i = gid; i < size; i += global_size) {
-        // Generate next random number with LCG
-        // Note: wrap modulo 2^64 is defined by C/C++ standard
-        x = a * x + c;
+  // Do measurement
+  for (uint64_t i = gid; i < size; i += global_size) {
+    // Generate next random number with LCG
+    // Note: wrap modulo 2^64 is defined by C/C++ standard
+    x = a * x + c;
 
-        // Write to a random location within data range
-        uint64_t location = FAST_MODULO(x, size);
-        data[location] = x;
-    }
+    // Write to a random location within data range
+    uint64_t location = FAST_MODULO(x, size);
+    data[location] = x;
+  }
 
-    stop = clock64();
-    sum = stop - start;
+  stop = clock64();
+  sum = stop - start;
 
-    // Write result
-    *cycles = sum;
+  // Write result
+  *cycles = sum;
 
-    // Prevent compiler optimization
-    if (sum == 0) {
-        data[1] = sum;
-    }
+  // Prevent compiler optimization
+  if (sum == 0) {
+    data[1] = sum;
+  }
 }
 
 /*
@@ -261,38 +263,39 @@ __global__ void gpu_write_bandwidth_lcg_kernel(uint32_t *data, std::size_t size,
  *  - Clock cycles are written to data[0]
  *  - All array elements are filled with unspecified data
  */
-__global__ void gpu_cas_bandwidth_lcg_kernel(uint32_t *data, std::size_t size, uint64_t *cycles) {
-    uint32_t global_size = gridDim.x * blockDim.x;
-    uint32_t gid = threadIdx.x + blockIdx.x * blockDim.x;
-    uint64_t sum = 0;
-    uint64_t start = 0;
-    uint64_t stop = 0;
+__global__ void gpu_cas_bandwidth_lcg_kernel(uint32_t *data, std::size_t size,
+                                             uint64_t *cycles) {
+  uint32_t global_size = gridDim.x * blockDim.x;
+  uint32_t gid = threadIdx.x + blockIdx.x * blockDim.x;
+  uint64_t sum = 0;
+  uint64_t start = 0;
+  uint64_t stop = 0;
 
-    // Linear congruent generator
-    // See: Knuth "The Art of Computer Programming - Volume 2"
-    // and: https://en.wikipedia.org/wiki/Linear_congruential_generator
-    uint64_t a = 6364136223846793005ULL;
-    uint64_t c = 1442695040888963407ULL;
-    uint64_t x = 67890ULL + gid;
+  // Linear congruent generator
+  // See: Knuth "The Art of Computer Programming - Volume 2"
+  // and: https://en.wikipedia.org/wiki/Linear_congruential_generator
+  uint64_t a = 6364136223846793005ULL;
+  uint64_t c = 1442695040888963407ULL;
+  uint64_t x = 67890ULL + gid;
 
-    start = clock64();
+  start = clock64();
 
-    // Do measurement
-    for (uint64_t i = gid; i < size; i += global_size) {
-        // Generate next random number with LCG
-        // Note: wrap modulo 2^64 is defined by C/C++ standard
-        x = a * x + c;
+  // Do measurement
+  for (uint64_t i = gid; i < size; i += global_size) {
+    // Generate next random number with LCG
+    // Note: wrap modulo 2^64 is defined by C/C++ standard
+    x = a * x + c;
 
-        // Write to a random location within data range
-        uint64_t location = FAST_MODULO(x, size);
-        atomicCAS(&data[location], location, x);
-    }
+    // Write to a random location within data range
+    uint64_t location = FAST_MODULO(x, size);
+    atomicCAS(&data[location], location, x);
+  }
 
-    stop = clock64();
-    sum = stop - start;
+  stop = clock64();
+  sum = stop - start;
 
-    // Write result
-    *cycles = sum;
+  // Write result
+  *cycles = sum;
 }
 
 /*
@@ -300,27 +303,24 @@ __global__ void gpu_cas_bandwidth_lcg_kernel(uint32_t *data, std::size_t size, u
  *
  * See specific functions for pre- and postcondition details.
  */
-extern "C" void gpu_bandwidth_lcg(
-        MemoryOperation op,
-        uint32_t *data,
-        std::size_t size,
-        uint64_t *cycles,
-        uint32_t grid,
-        uint32_t block,
-        CUstream stream
-        )
-{
-    switch (op) {
-        case Read:
-            gpu_read_bandwidth_lcg_kernel<<<grid, block, 0, stream>>>(data, size, cycles);
-            break;
-        case Write:
-            gpu_write_bandwidth_lcg_kernel<<<grid, block, 0, stream>>>(data, size, cycles);
-            break;
-        case CompareAndSwap:
-            gpu_cas_bandwidth_lcg_kernel<<<grid, block, 0, stream>>>(data, size, cycles);
-            break;
-        default:
-            throw "Unimplemented operation!";
-    }
+extern "C" void gpu_bandwidth_lcg(MemoryOperation op, uint32_t *data,
+                                  std::size_t size, uint64_t *cycles,
+                                  uint32_t grid, uint32_t block,
+                                  CUstream stream) {
+  switch (op) {
+    case Read:
+      gpu_read_bandwidth_lcg_kernel<<<grid, block, 0, stream>>>(data, size,
+                                                                cycles);
+      break;
+    case Write:
+      gpu_write_bandwidth_lcg_kernel<<<grid, block, 0, stream>>>(data, size,
+                                                                 cycles);
+      break;
+    case CompareAndSwap:
+      gpu_cas_bandwidth_lcg_kernel<<<grid, block, 0, stream>>>(data, size,
+                                                               cycles);
+      break;
+    default:
+      throw "Unimplemented operation!";
+  }
 }

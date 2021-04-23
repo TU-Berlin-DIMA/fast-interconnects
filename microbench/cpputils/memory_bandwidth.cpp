@@ -95,17 +95,17 @@ extern "C" void cpu_bandwidth_seq(MemoryOperation op, uint32_t *data,
                                   std::size_t size, std::size_t tid,
                                   std::size_t num_threads) {
   switch (op) {
-  case Read:
-    cpu_read_bandwidth_seq(data, size, tid, num_threads);
-    break;
-  case Write:
-    cpu_write_bandwidth_seq(data, size, tid, num_threads);
-    break;
-  case CompareAndSwap:
-    cpu_cas_bandwidth_seq(data, size, tid, num_threads);
-    break;
-  default:
-    throw "Unimplemented operation!";
+    case Read:
+      cpu_read_bandwidth_seq(data, size, tid, num_threads);
+      break;
+    case Write:
+      cpu_write_bandwidth_seq(data, size, tid, num_threads);
+      break;
+    case CompareAndSwap:
+      cpu_cas_bandwidth_seq(data, size, tid, num_threads);
+      break;
+    default:
+      throw "Unimplemented operation!";
   }
 }
 
@@ -229,16 +229,16 @@ extern "C" void cpu_bandwidth_lcg(MemoryOperation op, uint32_t *data,
                                   std::size_t size, std::size_t tid,
                                   std::size_t num_threads) {
   switch (op) {
-  case Read:
-    cpu_read_bandwidth_lcg(data, size, tid, num_threads);
-    break;
-  case Write:
-    cpu_write_bandwidth_lcg(data, size, tid, num_threads);
-    break;
-  case CompareAndSwap:
-    cpu_cas_bandwidth_lcg(data, size, tid, num_threads);
-    break;
-  default:
-    throw "Unimplemented operation!";
+    case Read:
+      cpu_read_bandwidth_lcg(data, size, tid, num_threads);
+      break;
+    case Write:
+      cpu_write_bandwidth_lcg(data, size, tid, num_threads);
+      break;
+    case CompareAndSwap:
+      cpu_cas_bandwidth_lcg(data, size, tid, num_threads);
+      break;
+    default:
+      throw "Unimplemented operation!";
   }
 }

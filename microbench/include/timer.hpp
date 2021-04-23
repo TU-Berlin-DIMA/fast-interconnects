@@ -2,16 +2,16 @@
  * This Source Code Form is subject to the terms of the Mozilla Public License,
  * v. 2.0. If a copy of the MPL was not distributed with this file, You can
  * obtain one at http://mozilla.org/MPL/2.0/.
- * 
- * 
+ *
+ *
  * Copyright (c) 2016, Lutz, Clemens <lutzcle@cml.li>
  */
 
 #ifndef TIMER_HPP_
 #define TIMER_HPP_
 
-#include <cstdint>
 #include <chrono>
+#include <cstdint>
 
 // Check if we are using the syscall, as it is slow
 // We want to use clock_gettime()
@@ -46,25 +46,23 @@ namespace Timer {
 // Header-only implementation for compiler inlining
 // Verified that G++ with -O2 optimization inlines these functions
 class Timer {
-public:
-    void start() {
-        start_epoch_ = std::chrono::steady_clock::now();
-    }
+ public:
+  void start() { start_epoch_ = std::chrono::steady_clock::now(); }
 
-    template <typename UnitT = std::chrono::nanoseconds>
-    uint64_t stop() {
-        std::chrono::steady_clock::time_point stop_epoch;
-        UnitT time_span;
+  template <typename UnitT = std::chrono::nanoseconds>
+  uint64_t stop() {
+    std::chrono::steady_clock::time_point stop_epoch;
+    UnitT time_span;
 
-        stop_epoch = std::chrono::steady_clock::now();
-        time_span = std::chrono::duration_cast<UnitT>(stop_epoch - start_epoch_);
-        return time_span.count();
-    }
+    stop_epoch = std::chrono::steady_clock::now();
+    time_span = std::chrono::duration_cast<UnitT>(stop_epoch - start_epoch_);
+    return time_span.count();
+  }
 
-private:
-    std::chrono::steady_clock::time_point start_epoch_;
+ private:
+  std::chrono::steady_clock::time_point start_epoch_;
 };
 
-}
+}  // namespace Timer
 
 #endif /* TIMER_HPP_ */
