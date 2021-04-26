@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018-2020 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2018-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 use std::env;
@@ -19,6 +19,15 @@ fn main() {
     let include_path = Path::new("include");
     let out_dir = env::var("OUT_DIR").unwrap();
     let cpp_compiler = env::var("CXX");
+
+    println!("cargo:rerun-if-env-changed=CXX");
+
+    // List of include files for Cargo build script to check if recompile is needed
+    let include_files = vec![
+        "include/cuda_clock.h",
+        "include/helper.h",
+        "include/timer.hpp",
+    ];
 
     // Add CUDA utils
     let cuda_lib_file = format!("{}/cudautils.fatbin", out_dir);
@@ -112,6 +121,8 @@ fn main() {
     println!("cargo:rustc-link-search=native=/usr/local/cuda/lib64");
     println!("cargo:rustc-link-lib=cudart");
 
+    let cuda_old_files = vec!["cudautils/memory_latency.cu"];
+
     // Add remaining CUDA utils with CUDA trampoline-style functions
     // FIXME: Transition to calling CUDA kernels directly from Rust
     cc::Build::new()
@@ -130,9 +141,14 @@ fn main() {
         .flag("arch=compute_61,code=sm_61") // GTX 1080
         .flag("-gencode")
         .flag("arch=compute_70,code=sm_70") // Tesla V100
-        .file("cudautils/memory_latency.cu")
+        .files(&cuda_old_files)
         .debug(false) // Debug enabled slows down mem latency by 10x
         .compile("libcudautils.a");
+
+    let cpp_files = vec![
+        "cpputils/memory_bandwidth.cpp",
+        "cpputils/memory_latency.cpp",
+    ];
 
     cc::Build::new()
         .include(include_path)
@@ -147,7 +163,14 @@ fn main() {
         // .flag("-lnuma")
         .pic(true)
         // .file("cpputils/numa_utils.cpp")
-        .file("cpputils/memory_bandwidth.cpp")
-        .file("cpputils/memory_latency.cpp")
+        .files(&cpp_files)
         .compile("libcpputils.a");
+
+    vec!["include/", "cpputils/", "cudautils/"]
+        .iter()
+        .chain(include_files.iter())
+        .chain(cuda_files.iter())
+        .chain(cuda_old_files.iter())
+        .chain(cpp_files.iter())
+        .for_each(|file| println!("cargo:rerun-if-changed={}", file));
 }
