@@ -1,10 +1,22 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public License,
+ * v. 2.0. If a copy of the MPL was not distributed with this file, You can
+ * obtain one at http://mozilla.org/MPL/2.0/.
+ *
+ *
+ * Copyright 2018-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
+ */
+
+#include <cpu_clock.h>
+
 #include <atomic>
 #include <cstdint>
 
 // X mod Y, assuming that Y is a power of 2
 #define FAST_MODULO(X, Y) (X & (Y - 1))
 
-enum MemoryOperation { Read, Write, CompareAndSwap };
+// FIXME: test POWER9 branch predictor optimization
 
 /*
  * Test sequential read bandwidth
@@ -15,20 +27,36 @@ enum MemoryOperation { Read, Write, CompareAndSwap };
  *  - None
  *
  * Postconditions:
- *  - None
+ *  - Clock cycles are written to `measured_cycles`
+ *  - Number of memory accesses are written to `memory_accesses`
  */
-extern "C" void cpu_read_bandwidth_seq(uint32_t *data, std::size_t size,
-                                       std::size_t tid,
-                                       std::size_t num_threads) {
+extern "C" void cpu_read_bandwidth_seq(
+    uint32_t *data, std::size_t size, uint32_t const /* loop_length */,
+    uint64_t const /* target_cycles */,
+    unsigned long long *const memory_accesses,
+    unsigned long long *const measured_cycles, std::size_t tid,
+    std::size_t num_threads) {
   std::size_t const chunk_size = (size + num_threads - 1) / num_threads;
   std::size_t const begin = tid * chunk_size;
   std::size_t const end =
       ((tid + 1) * chunk_size - 1 > size) ? size : (tid + 1) * chunk_size - 1;
+  uint64_t sum = 0;
+  clock_type start = 0;
+  clock_type stop = 0;
+
+  get_clock(start);
 
   uint32_t dummy = 0;
   for (std::size_t i = begin; i < end; ++i) {
     dummy += data[i];
   }
+
+  get_clock(stop);
+  sum = stop - start;
+
+  // Write result
+  *measured_cycles = sum;
+  *memory_accesses = end - begin;
 
   // Prevent compiler optimization
   if (dummy == 0) {
@@ -45,19 +73,36 @@ extern "C" void cpu_read_bandwidth_seq(uint32_t *data, std::size_t size,
  *  - None
  *
  * Postconditions:
+ *  - Clock cycles are written to `measured_cycles`
+ *  - Number of memory accesses are written to `memory_accesses`
  *  - All array elements are filled with unspecified data
  */
-extern "C" void cpu_write_bandwidth_seq(uint32_t *data, std::size_t size,
-                                        std::size_t tid,
-                                        std::size_t num_threads) {
+extern "C" void cpu_write_bandwidth_seq(
+    uint32_t *data, std::size_t size, uint32_t const /* loop_length */,
+    uint64_t const /* target_cycles */,
+    unsigned long long *const memory_accesses,
+    unsigned long long *const measured_cycles, std::size_t tid,
+    std::size_t num_threads) {
   std::size_t const chunk_size = (size + num_threads - 1) / num_threads;
   std::size_t const begin = tid * chunk_size;
   std::size_t const end =
       ((tid + 1) * chunk_size - 1 > size) ? size : (tid + 1) * chunk_size - 1;
+  uint64_t sum = 0;
+  clock_type start = 0;
+  clock_type stop = 0;
+
+  get_clock(start);
 
   for (std::size_t i = begin; i < end; ++i) {
     data[i] = i;
   }
+
+  get_clock(stop);
+  sum = stop - start;
+
+  // Write result
+  *measured_cycles = sum;
+  *memory_accesses = end - begin;
 }
 
 /*
@@ -69,44 +114,39 @@ extern "C" void cpu_write_bandwidth_seq(uint32_t *data, std::size_t size,
  *  - None
  *
  * Postconditions:
+ *  - Clock cycles are written to `measured_cycles`
+ *  - Number of memory accesses are written to `memory_accesses`
  *  - All array elements are filled with unspecified data
  */
 extern "C" void cpu_cas_bandwidth_seq(uint32_t *data, std::size_t size,
+                                      uint32_t const /* loop_length */,
+                                      uint64_t const /* target_cycles */,
+                                      unsigned long long *const memory_accesses,
+                                      unsigned long long *const measured_cycles,
                                       std::size_t tid,
                                       std::size_t num_threads) {
   std::size_t const chunk_size = (size + num_threads - 1) / num_threads;
   std::size_t const begin = tid * chunk_size;
   std::size_t const end =
       ((tid + 1) * chunk_size - 1 > size) ? size : (tid + 1) * chunk_size - 1;
+  uint64_t sum = 0;
+  clock_type start = 0;
+  clock_type stop = 0;
+
+  get_clock(start);
 
   for (std::size_t i = begin; i < end; ++i) {
     auto *item = reinterpret_cast<std::atomic<uint32_t> *>(&data[i]);
     uint32_t expected = (uint32_t)i;
     std::atomic_compare_exchange_strong(item, &expected, (uint32_t)i + 1);
   }
-}
 
-/*
- * Run a sequential bandwidth test
- *
- * See specific functions for pre- and postcondition details.
- */
-extern "C" void cpu_bandwidth_seq(MemoryOperation op, uint32_t *data,
-                                  std::size_t size, std::size_t tid,
-                                  std::size_t num_threads) {
-  switch (op) {
-    case Read:
-      cpu_read_bandwidth_seq(data, size, tid, num_threads);
-      break;
-    case Write:
-      cpu_write_bandwidth_seq(data, size, tid, num_threads);
-      break;
-    case CompareAndSwap:
-      cpu_cas_bandwidth_seq(data, size, tid, num_threads);
-      break;
-    default:
-      throw "Unimplemented operation!";
-  }
+  get_clock(stop);
+  sum = stop - start;
+
+  // Write result
+  *measured_cycles = sum;
+  *memory_accesses = end - begin;
 }
 
 /*
@@ -119,11 +159,23 @@ extern "C" void cpu_bandwidth_seq(MemoryOperation op, uint32_t *data,
  *  - size is a power of 2, i.e. 2^x
  *
  * Postconditions:
- *  - None
+ *  - Clock cycles are written to `measured_cycles`
+ *  - Number of memory accesses are written to `memory_accesses`
  */
 extern "C" void cpu_read_bandwidth_lcg(uint32_t *data, std::size_t size,
+                                       uint32_t const loop_length,
+                                       uint64_t const target_cycles,
+                                       uint64_t *const memory_accesses,
+                                       uint64_t *const measured_cycles,
                                        std::size_t tid,
-                                       std::size_t num_threads) {
+                                       std::size_t /* num_threads */) {
+  uint64_t sum = 0;
+  uint64_t mem_accesses = 0;
+  uint32_t dummy = 0;
+  clock_type start = 0;
+  clock_type stop = 0;
+  clock_type target_cycles_i = static_cast<clock_type>(target_cycles);
+
   // Linear congruent generator
   // See: Knuth "The Art of Computer Programming - Volume 2"
   // and: https://en.wikipedia.org/wiki/Linear_congruential_generator
@@ -131,17 +183,28 @@ extern "C" void cpu_read_bandwidth_lcg(uint32_t *data, std::size_t size,
   uint64_t c = 1442695040888963407ULL;
   uint64_t x = 67890ULL + tid;
 
-  // Do measurement
-  uint32_t dummy = 0;
-  for (std::size_t i = 0; i < size / num_threads; ++i) {
-    // Generate next random number with LCG
-    // Note: wrap modulo 2^64 is defined by C/C++ standard
-    x = a * x + c;
+  get_clock(start);
 
-    // Read from a random location within data range
-    uint64_t index = FAST_MODULO(x, size);
-    dummy += data[index];
-  }
+  // Do measurement
+  do {
+    for (uint32_t i = 0; i < loop_length; ++i) {
+      // Generate next random number with LCG
+      // Note: wrap modulo 2^64 is defined by C/C++ standard
+      x = a * x + c;
+
+      // Read from a random location within data range
+      uint64_t index = FAST_MODULO(x, size);
+      dummy += data[index];
+    }
+
+    mem_accesses += loop_length;
+  } while ((get_clock(stop), stop) - start < target_cycles_i);
+
+  sum = stop - start;
+
+  // Write result
+  *measured_cycles = sum;
+  *memory_accesses = mem_accesses;
 
   // Prevent compiler optimization
   if (dummy == 0) {
@@ -159,11 +222,23 @@ extern "C" void cpu_read_bandwidth_lcg(uint32_t *data, std::size_t size,
  *  - size is a power of 2, i.e. 2^x
  *
  * Postconditions:
- *  - All array elements are (probably) filled with random numbers
+ *  - Clock cycles are written to `measured_cycles`
+ *  - Number of memory accesses are written to `memory_accesses`
+ *  - All array elements are filled with unspecified data
  */
 extern "C" void cpu_write_bandwidth_lcg(uint32_t *data, std::size_t size,
+                                        uint32_t const loop_length,
+                                        uint64_t const target_cycles,
+                                        uint64_t *const memory_accesses,
+                                        uint64_t *const measured_cycles,
                                         std::size_t tid,
-                                        std::size_t num_threads) {
+                                        std::size_t /* num_threads */) {
+  uint64_t sum = 0;
+  uint64_t mem_accesses = 0;
+  clock_type start = 0;
+  clock_type stop = 0;
+  clock_type target_cycles_i = static_cast<clock_type>(target_cycles);
+
   // Linear congruent generator
   // See: Knuth "The Art of Computer Programming - Volume 2"
   // and: https://en.wikipedia.org/wiki/Linear_congruential_generator
@@ -171,16 +246,28 @@ extern "C" void cpu_write_bandwidth_lcg(uint32_t *data, std::size_t size,
   uint64_t c = 1442695040888963407ULL;
   uint64_t x = 67890ULL + tid;
 
-  // Do measurement
-  for (std::size_t i = 0; i < size / num_threads; ++i) {
-    // Generate next random number with LCG
-    // Note: wrap modulo 2^64 is defined by C/C++ standard
-    x = a * x + c;
+  get_clock(start);
 
-    // Write to a random location within data range
-    uint64_t index = FAST_MODULO(x, size);
-    data[index] = x;
-  }
+  // Do measurement
+  do {
+    for (uint32_t i = 0; i < loop_length; ++i) {
+      // Generate next random number with LCG
+      // Note: wrap modulo 2^64 is defined by C/C++ standard
+      x = a * x + c;
+
+      // Write to a random location within data range
+      uint64_t index = FAST_MODULO(x, size);
+      data[index] = x;
+    }
+
+    mem_accesses += loop_length;
+  } while ((get_clock(stop), stop) - start < target_cycles_i);
+
+  sum = stop - start;
+
+  // Write result
+  *measured_cycles = sum;
+  *memory_accesses = mem_accesses;
 }
 
 /*
@@ -193,11 +280,25 @@ extern "C" void cpu_write_bandwidth_lcg(uint32_t *data, std::size_t size,
  *  - size is a power of 2, i.e. 2^x
  *
  * Postconditions:
+ *  - Clock cycles are written to `measured_cycles`
+ *  - Number of memory accesses are written to `memory_accesses`
  *  - All array elements are filled with unspecified data
  */
 extern "C" void cpu_cas_bandwidth_lcg(uint32_t *data, std::size_t size,
+                                      uint32_t const loop_length,
+                                      uint64_t const target_cycles,
+                                      uint64_t *const memory_accesses,
+                                      uint64_t *const measured_cycles,
                                       std::size_t tid,
-                                      std::size_t num_threads) {
+                                      std::size_t /* num_threads */) {
+  uint64_t sum = 0;
+  uint64_t mem_accesses = 0;
+  clock_type start = 0;
+  clock_type stop = 0;
+  clock_type target_cycles_i = static_cast<clock_type>(target_cycles);
+
+  get_clock(start);
+
   // Linear congruent generator
   // See: Knuth "The Art of Computer Programming - Volume 2"
   // and: https://en.wikipedia.org/wiki/Linear_congruential_generator
@@ -206,39 +307,26 @@ extern "C" void cpu_cas_bandwidth_lcg(uint32_t *data, std::size_t size,
   uint64_t x = 67890ULL + tid;
 
   // Do measurement
-  for (std::size_t i = 0; i < size / num_threads; ++i) {
-    // Generate next random number with LCG
-    // Note: wrap modulo 2^64 is defined by C/C++ standard
-    x = a * x + c;
+  do {
+    for (uint32_t i = 0; i < loop_length; ++i) {
+      // Generate next random number with LCG
+      // Note: wrap modulo 2^64 is defined by C/C++ standard
+      x = a * x + c;
 
-    // Write to a random location within data range
-    uint64_t index = FAST_MODULO(x, size);
-    auto *item = reinterpret_cast<std::atomic<uint32_t> *>(&data[index]);
-    uint32_t expected = (uint32_t)index;
-    uint32_t new_val = (uint32_t)x;
-    std::atomic_compare_exchange_strong(item, &expected, new_val);
-  }
-}
+      // Write to a random location within data range
+      uint64_t index = FAST_MODULO(x, size);
+      auto *item = reinterpret_cast<std::atomic<uint32_t> *>(&data[index]);
+      uint32_t expected = (uint32_t)index;
+      uint32_t new_val = (uint32_t)x;
+      std::atomic_compare_exchange_strong(item, &expected, new_val);
+    }
 
-/*
- * Run a random bandwidth test
- *
- * See specific functions for pre- and postcondition details.
- */
-extern "C" void cpu_bandwidth_lcg(MemoryOperation op, uint32_t *data,
-                                  std::size_t size, std::size_t tid,
-                                  std::size_t num_threads) {
-  switch (op) {
-    case Read:
-      cpu_read_bandwidth_lcg(data, size, tid, num_threads);
-      break;
-    case Write:
-      cpu_write_bandwidth_lcg(data, size, tid, num_threads);
-      break;
-    case CompareAndSwap:
-      cpu_cas_bandwidth_lcg(data, size, tid, num_threads);
-      break;
-    default:
-      throw "Unimplemented operation!";
-  }
+    mem_accesses += loop_length;
+  } while ((get_clock(stop), stop) - start < target_cycles_i);
+
+  sum = stop - start;
+
+  // Write result
+  *measured_cycles = sum;
+  *memory_accesses = mem_accesses;
 }

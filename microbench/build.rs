@@ -24,6 +24,7 @@ fn main() {
 
     // List of include files for Cargo build script to check if recompile is needed
     let include_files = vec![
+        "include/cpu_clock.h",
         "include/cuda_clock.h",
         "include/helper.h",
         "include/timer.hpp",

@@ -26,7 +26,7 @@ pub(super) struct GpuMeasurementParameters {
 }
 
 #[allow(dead_code)]
-pub(super) struct GpuMeasurement<'h, 'd, 'n> {
+pub(super) struct GpuMeasurement {
     oversub_ratio: RangeInclusive<OversubRatio>,
     warp_mul: RangeInclusive<WarpMul>,
     warp_size: Warp,
@@ -34,10 +34,10 @@ pub(super) struct GpuMeasurement<'h, 'd, 'n> {
     ilp: RangeInclusive<Ilp>,
     loop_length: u32,
     target_cycles: Cycles,
-    template: DataPoint<'h, 'd, 'n>,
+    template: DataPoint,
 }
 
-impl<'h, 'd, 'n> GpuMeasurement<'h, 'd, 'n> {
+impl GpuMeasurement {
     pub(super) fn new(
         oversub_ratio: RangeInclusive<OversubRatio>,
         warp_mul: RangeInclusive<WarpMul>,
@@ -46,7 +46,7 @@ impl<'h, 'd, 'n> GpuMeasurement<'h, 'd, 'n> {
         ilp: RangeInclusive<Ilp>,
         loop_length: u32,
         target_cycles: Cycles,
-        template: DataPoint<'h, 'd, 'n>,
+        template: DataPoint,
     ) -> Self {
         Self {
             oversub_ratio,
@@ -68,7 +68,7 @@ impl<'h, 'd, 'n> GpuMeasurement<'h, 'd, 'n> {
         benches: Vec<Benchmark>,
         ops: Vec<MemoryOperation>,
         repeat: u32,
-    ) -> Vec<DataPoint<'h, 'd, 'n>>
+    ) -> Vec<DataPoint>
     where
         R: Fn(
             Benchmark,
@@ -76,7 +76,7 @@ impl<'h, 'd, 'n> GpuMeasurement<'h, 'd, 'n> {
             &mut S,
             &Mem<u32>,
             &GpuMeasurementParameters,
-        ) -> (u32, Option<ThrottleReasons>, u64, u64, u64),
+        ) -> (u32, Option<ThrottleReasons>, u64, Cycles, u64),
     {
         // Convert newtypes to basic types while std::ops::Step is unstable
         // Step trait is required for std::ops::RangeInclusive Iterator trait
@@ -88,8 +88,8 @@ impl<'h, 'd, 'n> GpuMeasurement<'h, 'd, 'n> {
 
         let data_points: Vec<_> = benches
             .iter()
-            .flat_map(|fut| {
-                iter::repeat(fut).zip(ops.iter().flat_map(|op| {
+            .flat_map(|bench| {
+                iter::repeat(bench).zip(ops.iter().flat_map(|op| {
                     let oversub_ratio_iter = osr_l..=osr_u;
                     iter::repeat(op).zip(
                         oversub_ratio_iter

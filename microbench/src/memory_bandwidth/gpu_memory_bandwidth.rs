@@ -10,6 +10,7 @@
 
 use super::gpu_measurement::GpuMeasurementParameters;
 use super::{Benchmark, MemoryOperation};
+use crate::types::Cycles;
 use numa_gpu::runtime::memory::Mem;
 use numa_gpu::runtime::nvml::{DeviceClocks, ThrottleReasons};
 use rustacuda::context::CurrentContext;
@@ -63,7 +64,7 @@ impl GpuMemoryBandwidth {
         state: &mut Self,
         mem: &Mem<u32>,
         mp: &GpuMeasurementParameters,
-    ) -> (u32, Option<ThrottleReasons>, u64, u64, u64) {
+    ) -> (u32, Option<ThrottleReasons>, u64, Cycles, u64) {
         assert!(
             mem.len().is_power_of_two(),
             "Data size must be a power of two!"
@@ -185,7 +186,7 @@ impl GpuMemoryBandwidth {
             clock_rate_mhz,
             throttle_reasons,
             memory_accesses,
-            cycles,
+            Cycles(cycles),
             ns as u64,
         )
     }

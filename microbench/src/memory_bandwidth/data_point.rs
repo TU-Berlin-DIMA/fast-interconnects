@@ -14,11 +14,10 @@ use crate::ArgPageType;
 use serde_derive::Serialize;
 
 #[derive(Clone, Debug, Default, Serialize)]
-pub(super) struct DataPoint<'h, 'd, 'n> {
-    pub hostname: &'h str,
-    pub device_type: &'d str,
+pub(super) struct DataPoint {
+    pub hostname: String,
+    pub device_type: String,
     pub device_codename: Option<String>,
-    pub function_name: &'n str, // FIXME: remove
     pub benchmark: Option<Benchmark>,
     pub memory_operation: Option<MemoryOperation>,
     pub cpu_node: Option<u16>,
@@ -35,6 +34,6 @@ pub(super) struct DataPoint<'h, 'd, 'n> {
     pub throttle_reasons: Option<String>,
     pub clock_rate_mhz: Option<u32>,
     pub memory_accesses: u64,
-    pub cycles: u64,
+    pub cycles: Cycles,
     pub ns: u64,
 }

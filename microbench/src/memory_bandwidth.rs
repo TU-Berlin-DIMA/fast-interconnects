@@ -14,7 +14,7 @@ mod data_point;
 mod gpu_measurement;
 mod gpu_memory_bandwidth;
 
-use self::cpu_measurement::{CpuMeasurement, CpuNamedBandwidthFn};
+use self::cpu_measurement::CpuMeasurement;
 use self::cpu_memory_bandwidth::CpuMemoryBandwidth;
 use self::data_point::DataPoint;
 use self::gpu_measurement::GpuMeasurement;
@@ -35,23 +35,6 @@ use std::convert::TryInto;
 use std::mem::size_of;
 use std::ops::RangeInclusive;
 
-extern "C" {
-    fn cpu_bandwidth_seq(
-        op: MemoryOperation,
-        data: *mut u32,
-        size: usize,
-        tid: usize,
-        num_threads: usize,
-    );
-    fn cpu_bandwidth_lcg(
-        op: MemoryOperation,
-        data: *mut u32,
-        size: usize,
-        tid: usize,
-        num_threads: usize,
-    );
-}
-
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Serialize)]
 enum MemoryOperation {
@@ -60,7 +43,6 @@ enum MemoryOperation {
     CompareAndSwap,
 }
 
-// FIXME: use Benchmark for CPU measurment, too
 #[derive(Clone, Copy, Debug, Serialize)]
 enum Benchmark {
     Sequential,
@@ -85,6 +67,16 @@ impl MemoryBandwidth {
     ) where
         W: std::io::Write,
     {
+        let benchmarks = vec![
+            Benchmark::Sequential,
+            Benchmark::LinearCongruentialGenerator,
+        ];
+        let operators = vec![
+            MemoryOperation::Read,
+            MemoryOperation::Write,
+            MemoryOperation::CompareAndSwap,
+        ];
+
         let gpu_id = match device_id {
             DeviceId::Gpu(id) => id,
             _ => 0,
@@ -116,8 +108,8 @@ impl MemoryBandwidth {
             .into_string()
             .expect("Couldn't convert hostname into UTF-8 string");
         let (device_type, cpu_node) = match device_id {
-            DeviceId::Cpu(id) => ("CPU", Some(id)),
-            DeviceId::Gpu(_) => ("GPU", None),
+            DeviceId::Cpu(id) => ("CPU".to_string(), Some(id)),
+            DeviceId::Gpu(_) => ("GPU".to_string(), None),
         };
         let device_codename = match device_id {
             DeviceId::Cpu(_) => Some(hw_info::cpu_codename().expect("Couldn't get CPU codename")),
@@ -126,7 +118,7 @@ impl MemoryBandwidth {
         let mem_type_description: MemTypeDescription = (&mem_type).into();
 
         let template = DataPoint {
-            hostname: hostname.as_str(),
+            hostname: hostname,
             device_type,
             device_codename,
             cpu_node,
@@ -147,23 +139,10 @@ impl MemoryBandwidth {
                 let demem: DerefMem<_> = mem.try_into().expect("Cannot run benchmark on CPU with the given type of memory. Did you specify GPU device memory?");
                 mnt.measure(
                     &demem,
-                    CpuMemoryBandwidth::new(cpu_node),
+                    CpuMemoryBandwidth::new(cpu_node, loop_length, target_cycles),
                     CpuMemoryBandwidth::run,
-                    vec![
-                        CpuNamedBandwidthFn {
-                            f: cpu_bandwidth_seq,
-                            name: "sequential",
-                        },
-                        CpuNamedBandwidthFn {
-                            f: cpu_bandwidth_lcg,
-                            name: "linear_congruential_generator",
-                        },
-                    ],
-                    vec![
-                        MemoryOperation::Read,
-                        MemoryOperation::Write,
-                        MemoryOperation::CompareAndSwap,
-                    ],
+                    benchmarks,
+                    operators,
                     repeat,
                 )
             }
@@ -193,15 +172,8 @@ impl MemoryBandwidth {
                     &mem,
                     ml,
                     GpuMemoryBandwidth::run,
-                    vec![
-                        Benchmark::Sequential,
-                        Benchmark::LinearCongruentialGenerator,
-                    ],
-                    vec![
-                        MemoryOperation::Write,
-                        MemoryOperation::Read,
-                        MemoryOperation::CompareAndSwap,
-                    ],
+                    benchmarks,
+                    operators,
                     repeat,
                 );
                 l

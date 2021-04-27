@@ -4,7 +4,7 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2019-2021 Clemens Lutz
+ * Copyright 2018-2021 Clemens Lutz
  * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
