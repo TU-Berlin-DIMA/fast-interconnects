@@ -13,6 +13,13 @@
 #include <atomic>
 #include <cstdint>
 
+#if defined(__powerpc64__)
+#include <ppc_intrinsics.h>
+#endif
+
+// Disable strided prefetch and set maximum prefetch depth
+#define PPC_TUNE_DSCR 7ULL
+
 // X mod Y, assuming that Y is a power of 2
 #define FAST_MODULO(X, Y) (X & (Y - 1))
 
@@ -36,6 +43,10 @@ extern "C" void cpu_read_bandwidth_seq(
     unsigned long long *const memory_accesses,
     unsigned long long *const measured_cycles, std::size_t tid,
     std::size_t num_threads) {
+#if defined(__powerpc64__)
+  __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
+#endif
+
   std::size_t const chunk_size = (size + num_threads - 1) / num_threads;
   std::size_t const begin = tid * chunk_size;
   std::size_t const end =
@@ -83,6 +94,10 @@ extern "C" void cpu_write_bandwidth_seq(
     unsigned long long *const memory_accesses,
     unsigned long long *const measured_cycles, std::size_t tid,
     std::size_t num_threads) {
+#if defined(__powerpc64__)
+  __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
+#endif
+
   std::size_t const chunk_size = (size + num_threads - 1) / num_threads;
   std::size_t const begin = tid * chunk_size;
   std::size_t const end =
@@ -125,6 +140,10 @@ extern "C" void cpu_cas_bandwidth_seq(uint32_t *data, std::size_t size,
                                       unsigned long long *const measured_cycles,
                                       std::size_t tid,
                                       std::size_t num_threads) {
+#if defined(__powerpc64__)
+  __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
+#endif
+
   std::size_t const chunk_size = (size + num_threads - 1) / num_threads;
   std::size_t const begin = tid * chunk_size;
   std::size_t const end =
@@ -169,6 +188,10 @@ extern "C" void cpu_read_bandwidth_lcg(uint32_t *data, std::size_t size,
                                        uint64_t *const measured_cycles,
                                        std::size_t tid,
                                        std::size_t /* num_threads */) {
+#if defined(__powerpc64__)
+  __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
+#endif
+
   uint64_t sum = 0;
   uint64_t mem_accesses = 0;
   uint32_t dummy = 0;
@@ -233,6 +256,10 @@ extern "C" void cpu_write_bandwidth_lcg(uint32_t *data, std::size_t size,
                                         uint64_t *const measured_cycles,
                                         std::size_t tid,
                                         std::size_t /* num_threads */) {
+#if defined(__powerpc64__)
+  __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
+#endif
+
   uint64_t sum = 0;
   uint64_t mem_accesses = 0;
   clock_type start = 0;
@@ -291,6 +318,10 @@ extern "C" void cpu_cas_bandwidth_lcg(uint32_t *data, std::size_t size,
                                       uint64_t *const measured_cycles,
                                       std::size_t tid,
                                       std::size_t /* num_threads */) {
+#if defined(__powerpc64__)
+  __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
+#endif
+
   uint64_t sum = 0;
   uint64_t mem_accesses = 0;
   clock_type start = 0;

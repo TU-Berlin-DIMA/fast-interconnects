@@ -8,7 +8,7 @@
  * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
-// NOTE: Keep this file in sync with microbench/include/ppc_intrinsics.h
+// NOTE: Keep this file in sync with sql-ops/include/ppc_intrinsics.h
 
 #ifndef PPC_INTRINSICS_H
 #define PPC_INTRINSICS_H
