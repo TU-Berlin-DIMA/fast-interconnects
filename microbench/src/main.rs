@@ -24,8 +24,10 @@ use crate::numa_memcopy::NumaMemcopy;
 use crate::tlb_latency::TlbLatency;
 use crate::types::*;
 use numa_gpu::runtime::allocator;
+use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::numa::PageType;
 use serde_derive::Serialize;
+use std::path::PathBuf;
 use structopt::clap::arg_enum;
 use structopt::StructOpt;
 
@@ -189,13 +191,13 @@ struct CmdBandwidth {
     )]
     page_type: ArgPageType,
 
-    #[structopt(long = "threads-lower", default_value = "1")]
-    /// Number of CPU threads (lower bound)
-    threads_lower: usize,
+    #[structopt(long = "threads", default_value = "1,2", require_delimiter = true)]
+    /// Number of CPU threads
+    threads: Vec<usize>,
 
-    #[structopt(long = "threads-upper", default_value = "4")]
-    /// Number of CPU threads (upper bound)
-    threads_upper: usize,
+    /// Path to CPU affinity map file for CPU workers
+    #[structopt(long = "cpu-affinity", parse(from_os_str))]
+    cpu_affinity: Option<PathBuf>,
 
     #[structopt(long = "oversub-lower", default_value = "1")]
     /// Work groups per SM (lower bound)
@@ -416,11 +418,21 @@ fn main() -> Result<()> {
                 page_type: bw.page_type,
             };
 
+            let cpu_affinity = if let Some(ref cpu_affinity_file) = bw.cpu_affinity {
+                CpuAffinity::from_file(cpu_affinity_file.as_path())?
+            } else {
+                CpuAffinity::default()
+            };
+
             MemoryBandwidth::measure(
                 device,
                 mem_type_helper.into(),
                 bw.size * mb,
-                ThreadCount(bw.threads_lower)..=ThreadCount(bw.threads_upper),
+                bw.threads
+                    .iter()
+                    .map(|&t| ThreadCount(t))
+                    .collect::<Vec<_>>(),
+                cpu_affinity,
                 OversubRatio(bw.oversub_ratio_lower)..=OversubRatio(bw.oversub_ratio_upper),
                 WarpMul(bw.warp_mul_lower)..=WarpMul(bw.warp_mul_upper),
                 Ilp(bw.ilp_lower)..=Ilp(bw.ilp_upper),

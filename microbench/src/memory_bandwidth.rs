@@ -23,6 +23,7 @@ use crate::types::{
     Cycles, DeviceId, Ilp, MemTypeDescription, OversubRatio, ThreadCount, Warp, WarpMul, SM,
 };
 use numa_gpu::runtime::allocator::{Allocator, MemType};
+use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::memory::DerefMem;
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 use numa_gpu::runtime::{hw_info, numa};
@@ -56,7 +57,8 @@ impl MemoryBandwidth {
         device_id: DeviceId,
         mem_type: MemType,
         range_bytes: usize,
-        threads: RangeInclusive<ThreadCount>,
+        threads: Vec<ThreadCount>,
+        cpu_affinity: CpuAffinity,
         oversub_ratio: RangeInclusive<OversubRatio>,
         warp_mul: RangeInclusive<WarpMul>,
         ilp: RangeInclusive<Ilp>,
@@ -135,7 +137,7 @@ impl MemoryBandwidth {
 
         let bandwidths = match device_id {
             DeviceId::Cpu(cpu_node) => {
-                let mnt = CpuMeasurement::new(threads, template);
+                let mnt = CpuMeasurement::new(threads, cpu_affinity, template);
                 let demem: DerefMem<_> = mem.try_into().expect("Cannot run benchmark on CPU with the given type of memory. Did you specify GPU device memory?");
                 mnt.measure(
                     &demem,

@@ -11,20 +11,31 @@
 use super::data_point::DataPoint;
 use super::{Benchmark, MemoryOperation};
 use crate::types::{Cycles, ThreadCount};
+use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::memory::DerefMem;
-use numa_gpu::runtime::numa;
 use std::iter;
-use std::ops::RangeInclusive;
 use std::rc::Rc;
+use std::sync::Arc;
 
 pub(super) struct CpuMeasurement {
-    threads: RangeInclusive<ThreadCount>,
+    threads: Vec<ThreadCount>,
+    cpu_affinity: Arc<CpuAffinity>,
     template: DataPoint,
 }
 
 impl CpuMeasurement {
-    pub(super) fn new(threads: RangeInclusive<ThreadCount>, template: DataPoint) -> Self {
-        Self { threads, template }
+    pub(super) fn new(
+        threads: Vec<ThreadCount>,
+        cpu_affinity: CpuAffinity,
+        template: DataPoint,
+    ) -> Self {
+        let cpu_affinity = Arc::new(cpu_affinity);
+
+        Self {
+            threads,
+            cpu_affinity,
+            template,
+        }
     }
 
     pub(super) fn measure<R, S>(
@@ -45,20 +56,22 @@ impl CpuMeasurement {
             Rc<rayon::ThreadPool>,
         ) -> (u32, u64, Cycles, u64),
     {
-        let (ThreadCount(threads_l), ThreadCount(threads_u)) = self.threads.clone().into_inner();
-        let cpu_node = 0;
+        let cpu_affinity = &self.cpu_affinity;
 
         let data_points: Vec<_> = benches
             .iter()
             .flat_map(|bench| {
                 iter::repeat(bench).zip(ops.iter().flat_map(|op| {
-                    let threads_iter = threads_l..=threads_u;
-                    iter::repeat(op).zip(threads_iter.flat_map(|t| {
+                    iter::repeat(op).zip(self.threads.iter().flat_map(|&ThreadCount(t)| {
+                        let cpu_affinity = cpu_affinity.clone();
                         let thread_pool = Rc::new(
                             rayon::ThreadPoolBuilder::new()
                                 .num_threads(t)
-                                .start_handler(move |_tid| {
-                                    numa::run_on_node(cpu_node).expect("Couldn't set NUMA node")
+                                .start_handler(move |tid| {
+                                    cpu_affinity
+                                        .clone()
+                                        .set_affinity(tid as u16)
+                                        .expect("Couldn't set CPU core affinity")
                                 })
                                 .build()
                                 .expect("Couldn't build Rayon thread pool"),
