@@ -9,7 +9,7 @@
  */
 
 use super::gpu_measurement::GpuMeasurementParameters;
-use super::{Benchmark, MemoryOperation};
+use super::{Benchmark, ItemBytes, MemoryOperation};
 use crate::types::Cycles;
 use numa_gpu::runtime::memory::Mem;
 use numa_gpu::runtime::nvml::{DeviceClocks, ThrottleReasons};
@@ -20,6 +20,7 @@ use rustacuda::memory::{CopyDestination, DeviceBox};
 use rustacuda::module::Module;
 use rustacuda::stream::{Stream, StreamFlags};
 use std::ffi::CString;
+use std::mem;
 
 #[cfg(not(target_arch = "aarch64"))]
 use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
@@ -30,6 +31,8 @@ use numa_gpu::runtime::hw_info::CudaDeviceInfo;
 #[derive(Debug)]
 pub(super) struct GpuMemoryBandwidth {
     device_id: u32,
+    loop_length: u32,
+    target_cycles: Cycles,
     stream: Stream,
 
     #[cfg(not(target_arch = "aarch64"))]
@@ -38,33 +41,41 @@ pub(super) struct GpuMemoryBandwidth {
 
 impl GpuMemoryBandwidth {
     #[cfg(not(target_arch = "aarch64"))]
-    pub(super) fn new(device_id: u32) -> Self {
+    pub(super) fn new(device_id: u32, loop_length: u32, target_cycles: Cycles) -> Self {
         let stream =
             Stream::new(StreamFlags::NON_BLOCKING, None).expect("Couldn't create CUDA stream");
         let nvml = NVML::init().expect("Couldn't initialize NVML");
 
         Self {
             device_id,
+            loop_length,
+            target_cycles,
             stream,
             nvml,
         }
     }
 
     #[cfg(target_arch = "aarch64")]
-    pub(super) fn new(device_id: u32) -> Self {
+    pub(super) fn new(device_id: u32, loop_length: u32, target_cycles: Cycles) -> Self {
         let stream =
             Stream::new(StreamFlags::NON_BLOCKING, None).expect("Couldn't create CUDA stream");
 
-        Self { device_id, stream }
+        Self {
+            device_id,
+            loop_length,
+            target_cycles,
+            stream,
+        }
     }
 
     pub(super) fn run(
         bench: Benchmark,
         op: MemoryOperation,
+        item_bytes: ItemBytes,
         state: &mut Self,
         mem: &Mem<u32>,
         mp: &GpuMeasurementParameters,
-    ) -> (u32, Option<ThrottleReasons>, u64, Cycles, u64) {
+    ) -> Option<(u32, Option<ThrottleReasons>, u64, Cycles, u64)> {
         assert!(
             mem.len().is_power_of_two(),
             "Data size must be a power of two!"
@@ -110,21 +121,74 @@ impl GpuMemoryBandwidth {
             .record(&state.stream)
             .expect("Couldn't record CUDA event");
 
-        let function_name = match (bench, op) {
-            (Benchmark::Sequential, MemoryOperation::Read) => "gpu_read_bandwidth_seq_kernel",
-            (Benchmark::Sequential, MemoryOperation::Write) => "gpu_write_bandwidth_seq_kernel",
-            (Benchmark::Sequential, MemoryOperation::CompareAndSwap) => {
-                "gpu_cas_bandwidth_seq_kernel"
+        // FIXME: refactor into a function
+        let function_name = match (bench, op, item_bytes) {
+            (Benchmark::Sequential, MemoryOperation::Read, ItemBytes::Bytes4) => {
+                Some("gpu_read_bandwidth_seq_4B")
             }
-            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Read) => {
-                "gpu_read_bandwidth_lcg_kernel"
+            (Benchmark::Sequential, MemoryOperation::Read, ItemBytes::Bytes8) => {
+                Some("gpu_read_bandwidth_seq_8B")
             }
-            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Write) => {
-                "gpu_write_bandwidth_lcg_kernel"
+            (Benchmark::Sequential, MemoryOperation::Read, ItemBytes::Bytes16) => {
+                Some("gpu_read_bandwidth_seq_16B")
             }
-            (Benchmark::LinearCongruentialGenerator, MemoryOperation::CompareAndSwap) => {
-                "gpu_cas_bandwidth_lcg_kernel"
+            (Benchmark::Sequential, MemoryOperation::Write, ItemBytes::Bytes4) => {
+                Some("gpu_write_bandwidth_seq_4B")
             }
+            (Benchmark::Sequential, MemoryOperation::Write, ItemBytes::Bytes8) => {
+                Some("gpu_write_bandwidth_seq_8B")
+            }
+            (Benchmark::Sequential, MemoryOperation::Write, ItemBytes::Bytes16) => {
+                Some("gpu_write_bandwidth_seq_16B")
+            }
+            (Benchmark::Sequential, MemoryOperation::CompareAndSwap, ItemBytes::Bytes4) => {
+                Some("gpu_cas_bandwidth_seq_4B")
+            }
+            (Benchmark::Sequential, MemoryOperation::CompareAndSwap, ItemBytes::Bytes8) => {
+                Some("gpu_cas_bandwidth_seq_8B")
+            }
+            (Benchmark::Sequential, MemoryOperation::CompareAndSwap, ItemBytes::Bytes16) => None,
+            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Read, ItemBytes::Bytes4) => {
+                Some("gpu_read_bandwidth_lcg_4B")
+            }
+            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Read, ItemBytes::Bytes8) => {
+                Some("gpu_read_bandwidth_lcg_8B")
+            }
+            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Read, ItemBytes::Bytes16) => {
+                Some("gpu_read_bandwidth_lcg_16B")
+            }
+            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Write, ItemBytes::Bytes4) => {
+                Some("gpu_write_bandwidth_lcg_4B")
+            }
+            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Write, ItemBytes::Bytes8) => {
+                Some("gpu_write_bandwidth_lcg_8B")
+            }
+            (
+                Benchmark::LinearCongruentialGenerator,
+                MemoryOperation::Write,
+                ItemBytes::Bytes16,
+            ) => Some("gpu_write_bandwidth_lcg_16B"),
+            (
+                Benchmark::LinearCongruentialGenerator,
+                MemoryOperation::CompareAndSwap,
+                ItemBytes::Bytes4,
+            ) => Some("gpu_cas_bandwidth_lcg_4B"),
+            (
+                Benchmark::LinearCongruentialGenerator,
+                MemoryOperation::CompareAndSwap,
+                ItemBytes::Bytes8,
+            ) => Some("gpu_cas_bandwidth_lcg_8B"),
+            (
+                Benchmark::LinearCongruentialGenerator,
+                MemoryOperation::CompareAndSwap,
+                ItemBytes::Bytes16,
+            ) => None,
+        };
+
+        let function_name = if let Some(n) = function_name {
+            n
+        } else {
+            return None;
         };
 
         let c_name =
@@ -136,9 +200,9 @@ impl GpuMemoryBandwidth {
             launch!(
                 function<<<mp.grid_size.0, mp.block_size.0, 0, stream>>>(
             mem.as_launchable_ptr(),
-            mem.len(),
-            mp.loop_length,
-            mp.target_cycles.0,
+            (mem.len() * mem::size_of::<i32>()) / item_bytes as usize,
+            state.loop_length,
+            state.target_cycles.0,
             memory_accesses_device.as_device_ptr(),
             measured_cycles.as_device_ptr()
             )
@@ -182,13 +246,13 @@ impl GpuMemoryBandwidth {
             .copy_to(&mut cycles)
             .expect("Couldn't transfer result from device");
 
-        (
+        Some((
             clock_rate_mhz,
             throttle_reasons,
             memory_accesses,
             Cycles(cycles),
             ns as u64,
-        )
+        ))
     }
 }
 

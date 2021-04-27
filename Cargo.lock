@@ -636,6 +636,7 @@ dependencies = [
  "csv",
  "cuda-sys",
  "hostname 0.3.1",
+ "itertools",
  "libc",
  "numa-gpu",
  "nvml-wrapper",
@@ -643,6 +644,7 @@ dependencies = [
  "rustacuda",
  "serde",
  "serde_derive",
+ "serde_repr",
  "structopt 0.3.20",
 ]
 

@@ -9,6 +9,7 @@
  */
 
 #include <cuda_clock.h>
+#include <cuda_vector.h>
 
 #include <cstdint>
 
@@ -28,8 +29,9 @@
  *  - Aggregate clock cycles are written to `measured_cycles`
  *  - Aggregate number of memory accesses are written to `memory_accesses`
  */
-extern "C" __global__ void gpu_read_bandwidth_seq_kernel(
-    uint32_t *const __restrict__ data, size_t const size,
+template <typename T>
+__device__ void gpu_read_bandwidth_seq_kernel(
+    T *const __restrict__ data, size_t const size,
     uint32_t const /* loop_length */, uint64_t const /* target_cycles */,
     unsigned long long *const memory_accesses,
     unsigned long long *const measured_cycles) {
@@ -41,7 +43,7 @@ extern "C" __global__ void gpu_read_bandwidth_seq_kernel(
 
   get_clock(start);
 
-  uint32_t dummy = 0;
+  T dummy = {0};
   for (size_t i = gid; i < size; i += global_size) {
     dummy += data[i];
   }
@@ -75,8 +77,9 @@ extern "C" __global__ void gpu_read_bandwidth_seq_kernel(
  *  - Aggregate number of memory accesses are written to `memory_accesses`
  *  - All array elements are filled with unspecified data
  */
-extern "C" __global__ void gpu_write_bandwidth_seq_kernel(
-    uint32_t *const __restrict__ data, size_t const size,
+template <typename T>
+__device__ void gpu_write_bandwidth_seq_kernel(
+    T *const __restrict__ data, size_t const size,
     uint32_t const /* loop_length */, uint64_t const /* target_cycles */,
     unsigned long long *const memory_accesses,
     unsigned long long *const measured_cycles) {
@@ -89,7 +92,7 @@ extern "C" __global__ void gpu_write_bandwidth_seq_kernel(
   get_clock(start);
 
   for (size_t i = gid; i < size; i += global_size) {
-    data[i] = i;
+    data[i] = make_type<T>(i);
   }
 
   get_clock(stop);
@@ -116,8 +119,9 @@ extern "C" __global__ void gpu_write_bandwidth_seq_kernel(
  *  - Aggregate number of memory accesses are written to `memory_accesses`
  *  - All array elements are filled with unspecified data
  */
-extern "C" __global__ void gpu_cas_bandwidth_seq_kernel(
-    uint32_t *const __restrict__ data, size_t const size,
+template <typename T>
+__device__ void gpu_cas_bandwidth_seq_kernel(
+    T *const __restrict__ data, size_t const size,
     uint32_t const /* loop_length */, uint64_t const /* target_cycles */,
     unsigned long long *const memory_accesses,
     unsigned long long *const measured_cycles) {
@@ -158,15 +162,15 @@ extern "C" __global__ void gpu_cas_bandwidth_seq_kernel(
  *  - Aggregate clock cycles are written to `measured_cycles`
  *  - Aggregate number of memory accesses are written to `memory_accesses`
  */
-extern "C" __global__ void gpu_read_bandwidth_lcg_kernel(
-    uint32_t *const __restrict__ data, size_t const size,
-    uint32_t const loop_length, uint64_t const target_cycles,
-    unsigned long long *const memory_accesses,
+template <typename T>
+__device__ void gpu_read_bandwidth_lcg_kernel(
+    T *const __restrict__ data, size_t const size, uint32_t const loop_length,
+    uint64_t const target_cycles, unsigned long long *const memory_accesses,
     unsigned long long *const measured_cycles) {
   uint32_t gid = threadIdx.x + blockIdx.x * blockDim.x;
   unsigned long long sum = 0;
   unsigned long long mem_accesses = 0;
-  uint32_t dummy = 0;
+  T dummy = {0};
   clock_type start = 0;
   clock_type stop = 0;
   clock_type target_cycles_i = static_cast<clock_type>(target_cycles);
@@ -223,10 +227,10 @@ extern "C" __global__ void gpu_read_bandwidth_lcg_kernel(
  *  - Aggregate number of memory accesses are written to `memory_accesses`
  *  - All array elements are filled with unspecified data
  */
-extern "C" __global__ void gpu_write_bandwidth_lcg_kernel(
-    uint32_t *const __restrict__ data, size_t const size,
-    uint32_t const loop_length, uint64_t const target_cycles,
-    unsigned long long *const memory_accesses,
+template <typename T>
+__device__ void gpu_write_bandwidth_lcg_kernel(
+    T *const __restrict__ data, size_t const size, uint32_t const loop_length,
+    uint64_t const target_cycles, unsigned long long *const memory_accesses,
     unsigned long long *const measured_cycles) {
   uint32_t gid = threadIdx.x + blockIdx.x * blockDim.x;
   unsigned long long sum = 0;
@@ -253,7 +257,7 @@ extern "C" __global__ void gpu_write_bandwidth_lcg_kernel(
 
       // Write to a random location within data range
       uint64_t location = FAST_MODULO(x, size);
-      data[location] = x;
+      data[location] = make_type<T>(x);
     }
 
     mem_accesses += loop_length;
@@ -282,10 +286,10 @@ extern "C" __global__ void gpu_write_bandwidth_lcg_kernel(
  *  - Aggregate number of memory accesses are written to `memory_accesses`
  *  - All array elements are filled with unspecified data
  */
-extern "C" __global__ void gpu_cas_bandwidth_lcg_kernel(
-    uint32_t *const __restrict__ data, size_t const size,
-    uint32_t const loop_length, uint64_t const target_cycles,
-    unsigned long long *const memory_accesses,
+template <typename T>
+__device__ void gpu_cas_bandwidth_lcg_kernel(
+    T *const __restrict__ data, size_t const size, uint32_t const loop_length,
+    uint64_t const target_cycles, unsigned long long *const memory_accesses,
     unsigned long long *const measured_cycles) {
   uint32_t gid = threadIdx.x + blockIdx.x * blockDim.x;
   unsigned long long sum = 0;
@@ -324,3 +328,37 @@ extern "C" __global__ void gpu_cas_bandwidth_lcg_kernel(
   atomicMax(measured_cycles, sum);
   atomicAdd(memory_accesses, mem_accesses);
 }
+
+// ============== Instantiate templates ==============
+
+#define MAKE_BENCHMARK(FUNCTION_NAME, SUFFIX, DATA_TYPE)                      \
+  extern "C" __global__ void FUNCTION_NAME##_##SUFFIX(                        \
+      DATA_TYPE *const __restrict__ data, size_t const size,                  \
+      uint32_t const loop_length, uint64_t const target_cycles,               \
+      unsigned long long *const memory_accesses,                              \
+      unsigned long long *const measured_cycles) {                            \
+    FUNCTION_NAME##_kernel<DATA_TYPE>(data, size, loop_length, target_cycles, \
+                                      memory_accesses, measured_cycles);      \
+  }
+
+MAKE_BENCHMARK(gpu_read_bandwidth_seq, 4B, uint32_t)
+MAKE_BENCHMARK(gpu_read_bandwidth_seq, 8B, uint64_t)
+MAKE_BENCHMARK(gpu_read_bandwidth_seq, 16B, ulonglong2)
+
+MAKE_BENCHMARK(gpu_write_bandwidth_seq, 4B, uint32_t)
+MAKE_BENCHMARK(gpu_write_bandwidth_seq, 8B, uint64_t)
+MAKE_BENCHMARK(gpu_write_bandwidth_seq, 16B, ulonglong2)
+
+MAKE_BENCHMARK(gpu_cas_bandwidth_seq, 4B, unsigned int)
+MAKE_BENCHMARK(gpu_cas_bandwidth_seq, 8B, unsigned long long)
+
+MAKE_BENCHMARK(gpu_read_bandwidth_lcg, 4B, uint32_t)
+MAKE_BENCHMARK(gpu_read_bandwidth_lcg, 8B, uint64_t)
+MAKE_BENCHMARK(gpu_read_bandwidth_lcg, 16B, ulonglong2)
+
+MAKE_BENCHMARK(gpu_write_bandwidth_lcg, 4B, uint32_t)
+MAKE_BENCHMARK(gpu_write_bandwidth_lcg, 8B, uint64_t)
+MAKE_BENCHMARK(gpu_write_bandwidth_lcg, 16B, ulonglong2)
+
+MAKE_BENCHMARK(gpu_cas_bandwidth_lcg, 4B, unsigned int)
+MAKE_BENCHMARK(gpu_cas_bandwidth_lcg, 8B, unsigned long long)

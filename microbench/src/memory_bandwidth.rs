@@ -32,6 +32,7 @@ use rustacuda::device::Device;
 use rustacuda::device::DeviceAttribute;
 use rustacuda::CudaFlags;
 use serde_derive::Serialize;
+use serde_repr::Serialize_repr;
 use std::convert::TryInto;
 use std::mem::size_of;
 use std::ops::RangeInclusive;
@@ -48,6 +49,14 @@ enum MemoryOperation {
 enum Benchmark {
     Sequential,
     LinearCongruentialGenerator,
+}
+
+#[derive(Clone, Copy, Debug, Serialize_repr)]
+#[repr(usize)]
+enum ItemBytes {
+    Bytes4 = 4,
+    Bytes8 = 8,
+    Bytes16 = 16,
 }
 
 pub struct MemoryBandwidth;
@@ -78,6 +87,7 @@ impl MemoryBandwidth {
             MemoryOperation::Write,
             MemoryOperation::CompareAndSwap,
         ];
+        let item_bytes = vec![ItemBytes::Bytes4, ItemBytes::Bytes8, ItemBytes::Bytes16];
 
         let gpu_id = match device_id {
             DeviceId::Gpu(id) => id,
@@ -102,8 +112,8 @@ impl MemoryBandwidth {
 
         numa::set_strict(true);
 
-        let item_bytes = size_of::<u32>();
-        let buffer_len = range_bytes / item_bytes;
+        let physical_item_bytes = size_of::<u32>();
+        let buffer_len = range_bytes / physical_item_bytes;
 
         let hostname = hostname::get()
             .expect("Couldn't get hostname")
@@ -128,7 +138,6 @@ impl MemoryBandwidth {
             memory_type: Some(mem_type_description.bare_mem_type),
             page_type: Some(mem_type_description.page_type),
             range_bytes,
-            item_bytes,
             ..Default::default()
         };
 
@@ -164,18 +173,17 @@ impl MemoryBandwidth {
                     warp_size,
                     sm_count,
                     ilp,
-                    loop_length,
-                    target_cycles,
                     template,
                 );
 
-                let ml = GpuMemoryBandwidth::new(did);
+                let ml = GpuMemoryBandwidth::new(did, loop_length, target_cycles);
                 let l = mnt.measure(
                     &mem,
                     ml,
                     GpuMemoryBandwidth::run,
                     benchmarks,
                     operators,
+                    item_bytes,
                     repeat,
                 );
                 l
