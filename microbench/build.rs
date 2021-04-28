@@ -167,6 +167,9 @@ fn main() {
         .files(&cpp_files)
         .compile("libcpputils.a");
 
+    // Link libatomic for 128-bit compare-and-exchange on x86_64
+    println!("cargo:rustc-link-lib=atomic");
+
     vec!["include/", "cpputils/", "cudautils/"]
         .iter()
         .chain(include_files.iter())
