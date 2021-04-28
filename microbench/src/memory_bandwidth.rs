@@ -154,6 +154,7 @@ impl MemoryBandwidth {
                     CpuMemoryBandwidth::run,
                     benchmarks,
                     operators,
+                    item_bytes,
                     repeat,
                 )
             }

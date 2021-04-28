@@ -126,8 +126,6 @@ fn main() {
 
     let cuda_old_files = vec!["cudautils/memory_latency.cu"];
 
-    // Add remaining CUDA utils with CUDA trampoline-style functions
-    // FIXME: Transition to calling CUDA kernels directly from Rust
     cc::Build::new()
         .include(include_path)
         .cuda(true)

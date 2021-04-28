@@ -10,7 +10,6 @@
 
 #include <cpu_clock.h>
 
-#include <atomic>
 #include <cstdint>
 
 #if defined(__powerpc64__)
@@ -23,7 +22,7 @@
 // X mod Y, assuming that Y is a power of 2
 #define FAST_MODULO(X, Y) (X & (Y - 1))
 
-// FIXME: test POWER9 branch predictor optimization
+// FIXME: add const restrict to all data pointers
 
 /*
  * Test sequential read bandwidth
@@ -37,12 +36,13 @@
  *  - Clock cycles are written to `measured_cycles`
  *  - Number of memory accesses are written to `memory_accesses`
  */
-extern "C" void cpu_read_bandwidth_seq(
-    uint32_t *data, std::size_t size, uint32_t const /* loop_length */,
-    uint64_t const /* target_cycles */,
-    unsigned long long *const memory_accesses,
-    unsigned long long *const measured_cycles, std::size_t tid,
-    std::size_t num_threads) {
+template <typename T>
+void cpu_read_bandwidth_seq_kernel(T *data, std::size_t size,
+                                   uint32_t const /* loop_length */,
+                                   uint64_t const /* target_cycles */,
+                                   uint64_t *const memory_accesses,
+                                   uint64_t *const measured_cycles,
+                                   std::size_t tid, std::size_t num_threads) {
 #if defined(__powerpc64__)
   __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
 #endif
@@ -57,7 +57,7 @@ extern "C" void cpu_read_bandwidth_seq(
 
   get_clock(start);
 
-  uint32_t dummy = 0;
+  T dummy = {0};
   for (std::size_t i = begin; i < end; ++i) {
     dummy += data[i];
   }
@@ -88,12 +88,13 @@ extern "C" void cpu_read_bandwidth_seq(
  *  - Number of memory accesses are written to `memory_accesses`
  *  - All array elements are filled with unspecified data
  */
-extern "C" void cpu_write_bandwidth_seq(
-    uint32_t *data, std::size_t size, uint32_t const /* loop_length */,
-    uint64_t const /* target_cycles */,
-    unsigned long long *const memory_accesses,
-    unsigned long long *const measured_cycles, std::size_t tid,
-    std::size_t num_threads) {
+template <typename T>
+void cpu_write_bandwidth_seq_kernel(T *data, std::size_t size,
+                                    uint32_t const /* loop_length */,
+                                    uint64_t const /* target_cycles */,
+                                    uint64_t *const memory_accesses,
+                                    uint64_t *const measured_cycles,
+                                    std::size_t tid, std::size_t num_threads) {
 #if defined(__powerpc64__)
   __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
 #endif
@@ -133,13 +134,13 @@ extern "C" void cpu_write_bandwidth_seq(
  *  - Number of memory accesses are written to `memory_accesses`
  *  - All array elements are filled with unspecified data
  */
-extern "C" void cpu_cas_bandwidth_seq(uint32_t *data, std::size_t size,
-                                      uint32_t const /* loop_length */,
-                                      uint64_t const /* target_cycles */,
-                                      unsigned long long *const memory_accesses,
-                                      unsigned long long *const measured_cycles,
-                                      std::size_t tid,
-                                      std::size_t num_threads) {
+template <typename T>
+void cpu_cas_bandwidth_seq_kernel(T *data, std::size_t size,
+                                  uint32_t const /* loop_length */,
+                                  uint64_t const /* target_cycles */,
+                                  uint64_t *const memory_accesses,
+                                  uint64_t *const measured_cycles,
+                                  std::size_t tid, std::size_t num_threads) {
 #if defined(__powerpc64__)
   __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
 #endif
@@ -155,9 +156,10 @@ extern "C" void cpu_cas_bandwidth_seq(uint32_t *data, std::size_t size,
   get_clock(start);
 
   for (std::size_t i = begin; i < end; ++i) {
-    auto *item = reinterpret_cast<std::atomic<uint32_t> *>(&data[i]);
-    uint32_t expected = (uint32_t)i;
-    std::atomic_compare_exchange_strong(item, &expected, (uint32_t)i + 1);
+    T expected = static_cast<T>(i);
+    T new_val = static_cast<T>(i + 1);
+    __atomic_compare_exchange_n(&data[i], &expected, new_val, false,
+                                __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
   }
 
   get_clock(stop);
@@ -181,20 +183,21 @@ extern "C" void cpu_cas_bandwidth_seq(uint32_t *data, std::size_t size,
  *  - Clock cycles are written to `measured_cycles`
  *  - Number of memory accesses are written to `memory_accesses`
  */
-extern "C" void cpu_read_bandwidth_lcg(uint32_t *data, std::size_t size,
-                                       uint32_t const loop_length,
-                                       uint64_t const target_cycles,
-                                       uint64_t *const memory_accesses,
-                                       uint64_t *const measured_cycles,
-                                       std::size_t tid,
-                                       std::size_t /* num_threads */) {
+template <typename T>
+void cpu_read_bandwidth_lcg_kernel(T *data, std::size_t size,
+                                   uint32_t const loop_length,
+                                   uint64_t const target_cycles,
+                                   uint64_t *const memory_accesses,
+                                   uint64_t *const measured_cycles,
+                                   std::size_t tid,
+                                   std::size_t /* num_threads */) {
 #if defined(__powerpc64__)
   __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
 #endif
 
   uint64_t sum = 0;
   uint64_t mem_accesses = 0;
-  uint32_t dummy = 0;
+  T dummy = {0};
   clock_type start = 0;
   clock_type stop = 0;
   clock_type target_cycles_i = static_cast<clock_type>(target_cycles);
@@ -230,7 +233,7 @@ extern "C" void cpu_read_bandwidth_lcg(uint32_t *data, std::size_t size,
   *memory_accesses = mem_accesses;
 
   // Prevent compiler optimization
-  if (dummy == 0) {
+  if (sum == 0) {
     data[0] = dummy;
   }
 }
@@ -249,13 +252,14 @@ extern "C" void cpu_read_bandwidth_lcg(uint32_t *data, std::size_t size,
  *  - Number of memory accesses are written to `memory_accesses`
  *  - All array elements are filled with unspecified data
  */
-extern "C" void cpu_write_bandwidth_lcg(uint32_t *data, std::size_t size,
-                                        uint32_t const loop_length,
-                                        uint64_t const target_cycles,
-                                        uint64_t *const memory_accesses,
-                                        uint64_t *const measured_cycles,
-                                        std::size_t tid,
-                                        std::size_t /* num_threads */) {
+template <typename T>
+void cpu_write_bandwidth_lcg_kernel(T *data, std::size_t size,
+                                    uint32_t const loop_length,
+                                    uint64_t const target_cycles,
+                                    uint64_t *const memory_accesses,
+                                    uint64_t *const measured_cycles,
+                                    std::size_t tid,
+                                    std::size_t /* num_threads */) {
 #if defined(__powerpc64__)
   __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
 #endif
@@ -311,13 +315,14 @@ extern "C" void cpu_write_bandwidth_lcg(uint32_t *data, std::size_t size,
  *  - Number of memory accesses are written to `memory_accesses`
  *  - All array elements are filled with unspecified data
  */
-extern "C" void cpu_cas_bandwidth_lcg(uint32_t *data, std::size_t size,
-                                      uint32_t const loop_length,
-                                      uint64_t const target_cycles,
-                                      uint64_t *const memory_accesses,
-                                      uint64_t *const measured_cycles,
-                                      std::size_t tid,
-                                      std::size_t /* num_threads */) {
+template <typename T>
+void cpu_cas_bandwidth_lcg_kernel(T *data, std::size_t size,
+                                  uint32_t const loop_length,
+                                  uint64_t const target_cycles,
+                                  uint64_t *const memory_accesses,
+                                  uint64_t *const measured_cycles,
+                                  std::size_t tid,
+                                  std::size_t /* num_threads */) {
 #if defined(__powerpc64__)
   __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
 #endif
@@ -346,10 +351,10 @@ extern "C" void cpu_cas_bandwidth_lcg(uint32_t *data, std::size_t size,
 
       // Write to a random location within data range
       uint64_t index = FAST_MODULO(x, size);
-      auto *item = reinterpret_cast<std::atomic<uint32_t> *>(&data[index]);
-      uint32_t expected = (uint32_t)index;
-      uint32_t new_val = (uint32_t)x;
-      std::atomic_compare_exchange_strong(item, &expected, new_val);
+      T expected = static_cast<T>(index);
+      T new_val = static_cast<T>(x);
+      __atomic_compare_exchange_n(&data[index], &expected, new_val, false,
+                                  __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
     }
 
     mem_accesses += loop_length;
@@ -361,3 +366,53 @@ extern "C" void cpu_cas_bandwidth_lcg(uint32_t *data, std::size_t size,
   *measured_cycles = sum;
   *memory_accesses = mem_accesses;
 }
+
+// ============== Instantiate templates ==============
+
+#define MAKE_BENCHMARK(FUNCTION_NAME, SUFFIX, DATA_TYPE)                  \
+  extern "C" void FUNCTION_NAME##_##SUFFIX(                               \
+      uint32_t *data, std::size_t size, uint32_t const loop_length,       \
+      uint64_t const target_cycles, uint64_t *const memory_accesses,      \
+      uint64_t *const measured_cycles, std::size_t tid,                   \
+      std::size_t num_threads) {                                          \
+    DATA_TYPE *typed_data = reinterpret_cast<DATA_TYPE *>(data);          \
+    FUNCTION_NAME##_kernel<DATA_TYPE>(typed_data, size, loop_length,      \
+                                      target_cycles, memory_accesses,     \
+                                      measured_cycles, tid, num_threads); \
+  }
+
+MAKE_BENCHMARK(cpu_read_bandwidth_seq, 4B, uint32_t)
+MAKE_BENCHMARK(cpu_read_bandwidth_seq, 8B, uint64_t)
+#if __SIZEOF_INT128__ == 16
+MAKE_BENCHMARK(cpu_read_bandwidth_seq, 16B, unsigned __int128)
+#endif
+
+MAKE_BENCHMARK(cpu_write_bandwidth_seq, 4B, uint32_t)
+MAKE_BENCHMARK(cpu_write_bandwidth_seq, 8B, uint64_t)
+#if __SIZEOF_INT128__ == 16
+MAKE_BENCHMARK(cpu_write_bandwidth_seq, 16B, unsigned __int128)
+#endif
+
+MAKE_BENCHMARK(cpu_cas_bandwidth_seq, 4B, uint32_t)
+MAKE_BENCHMARK(cpu_cas_bandwidth_seq, 8B, uint64_t)
+#if __SIZEOF_INT128__ == 16
+MAKE_BENCHMARK(cpu_cas_bandwidth_seq, 16B, unsigned __int128)
+#endif
+
+MAKE_BENCHMARK(cpu_read_bandwidth_lcg, 4B, uint32_t)
+MAKE_BENCHMARK(cpu_read_bandwidth_lcg, 8B, uint64_t)
+#if __SIZEOF_INT128__ == 16
+MAKE_BENCHMARK(cpu_read_bandwidth_lcg, 16B, unsigned __int128)
+#endif
+
+MAKE_BENCHMARK(cpu_write_bandwidth_lcg, 4B, uint32_t)
+MAKE_BENCHMARK(cpu_write_bandwidth_lcg, 8B, uint64_t)
+#if __SIZEOF_INT128__ == 16
+MAKE_BENCHMARK(cpu_write_bandwidth_lcg, 16B, unsigned __int128)
+#endif
+
+MAKE_BENCHMARK(cpu_cas_bandwidth_lcg, 4B, uint32_t)
+MAKE_BENCHMARK(cpu_cas_bandwidth_lcg, 8B, uint64_t)
+#if __SIZEOF_INT128__ == 16
+MAKE_BENCHMARK(cpu_cas_bandwidth_lcg, 16B, unsigned __int128)
+#endif

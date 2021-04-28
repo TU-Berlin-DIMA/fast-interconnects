@@ -8,12 +8,12 @@
  * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
-use super::{Benchmark, MemoryOperation};
+use super::{Benchmark, ItemBytes, MemoryOperation};
 use crate::types::Cycles;
 use numa_gpu::runtime::memory::DerefMem;
-use std::iter;
 use std::rc::Rc;
 use std::time::Instant;
+use std::{iter, mem};
 
 pub(super) type CpuBandwidthFn = unsafe extern "C" fn(
     data: *mut u32,
@@ -26,68 +26,46 @@ pub(super) type CpuBandwidthFn = unsafe extern "C" fn(
     num_threads: usize,
 );
 
-extern "C" {
-    fn cpu_read_bandwidth_seq(
-        data: *mut u32,
-        size: usize,
-        loop_length: u32,
-        target_cycles: u64,
-        memory_accesses: *mut u64,
-        measured_cycles: *mut u64,
-        tid: usize,
-        num_threads: usize,
-    );
-    fn cpu_write_bandwidth_seq(
-        data: *mut u32,
-        size: usize,
-        loop_length: u32,
-        target_cycles: u64,
-        memory_accesses: *mut u64,
-        measured_cycles: *mut u64,
-        tid: usize,
-        num_threads: usize,
-    );
-    fn cpu_cas_bandwidth_seq(
-        data: *mut u32,
-        size: usize,
-        loop_length: u32,
-        target_cycles: u64,
-        memory_accesses: *mut u64,
-        measured_cycles: *mut u64,
-        tid: usize,
-        num_threads: usize,
-    );
-    fn cpu_read_bandwidth_lcg(
-        data: *mut u32,
-        size: usize,
-        loop_length: u32,
-        target_cycles: u64,
-        memory_accesses: *mut u64,
-        measured_cycles: *mut u64,
-        tid: usize,
-        num_threads: usize,
-    );
-    fn cpu_write_bandwidth_lcg(
-        data: *mut u32,
-        size: usize,
-        loop_length: u32,
-        target_cycles: u64,
-        memory_accesses: *mut u64,
-        measured_cycles: *mut u64,
-        tid: usize,
-        num_threads: usize,
-    );
-    fn cpu_cas_bandwidth_lcg(
-        data: *mut u32,
-        size: usize,
-        loop_length: u32,
-        target_cycles: u64,
-        memory_accesses: *mut u64,
-        measured_cycles: *mut u64,
-        tid: usize,
-        num_threads: usize,
-    );
+macro_rules! make_benchmark {
+    ($function_name:ident) => {
+        extern "C" {
+            fn $function_name(
+                data: *mut u32,
+                size: usize,
+                loop_length: u32,
+                target_cycles: u64,
+                memory_accesses: *mut u64,
+                measured_cycles: *mut u64,
+                tid: usize,
+                num_threads: usize,
+            );
+        }
+    };
 }
+
+make_benchmark!(cpu_read_bandwidth_seq_4B);
+make_benchmark!(cpu_read_bandwidth_seq_8B);
+make_benchmark!(cpu_read_bandwidth_seq_16B);
+
+make_benchmark!(cpu_write_bandwidth_seq_4B);
+make_benchmark!(cpu_write_bandwidth_seq_8B);
+make_benchmark!(cpu_write_bandwidth_seq_16B);
+
+make_benchmark!(cpu_cas_bandwidth_seq_4B);
+make_benchmark!(cpu_cas_bandwidth_seq_8B);
+make_benchmark!(cpu_cas_bandwidth_seq_16B);
+
+make_benchmark!(cpu_read_bandwidth_lcg_4B);
+make_benchmark!(cpu_read_bandwidth_lcg_8B);
+make_benchmark!(cpu_read_bandwidth_lcg_16B);
+
+make_benchmark!(cpu_write_bandwidth_lcg_4B);
+make_benchmark!(cpu_write_bandwidth_lcg_8B);
+make_benchmark!(cpu_write_bandwidth_lcg_16B);
+
+make_benchmark!(cpu_cas_bandwidth_lcg_4B);
+make_benchmark!(cpu_cas_bandwidth_lcg_8B);
+make_benchmark!(cpu_cas_bandwidth_lcg_16B);
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -109,28 +87,79 @@ impl CpuMemoryBandwidth {
     pub(super) fn run(
         bench: Benchmark,
         op: MemoryOperation,
+        item_bytes: ItemBytes,
         state: &mut Self,
         mem: &DerefMem<u32>,
         thread_pool: Rc<rayon::ThreadPool>,
     ) -> (u32, u64, Cycles, u64) {
         let threads = thread_pool.current_num_threads();
-        let len = mem.len();
         let loop_length = state.loop_length;
         let target_cycles = state.target_cycles;
 
-        let f: CpuBandwidthFn = match (bench, op) {
-            (Benchmark::Sequential, MemoryOperation::Read) => cpu_read_bandwidth_seq,
-            (Benchmark::Sequential, MemoryOperation::Write) => cpu_write_bandwidth_seq,
-            (Benchmark::Sequential, MemoryOperation::CompareAndSwap) => cpu_cas_bandwidth_seq,
-            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Read) => {
-                cpu_read_bandwidth_lcg
+        // FIXME: refactor into a function
+        let f: CpuBandwidthFn = match (bench, op, item_bytes) {
+            (Benchmark::Sequential, MemoryOperation::Read, ItemBytes::Bytes4) => {
+                cpu_read_bandwidth_seq_4B
             }
-            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Write) => {
-                cpu_write_bandwidth_lcg
+            (Benchmark::Sequential, MemoryOperation::Read, ItemBytes::Bytes8) => {
+                cpu_read_bandwidth_seq_8B
             }
-            (Benchmark::LinearCongruentialGenerator, MemoryOperation::CompareAndSwap) => {
-                cpu_cas_bandwidth_lcg
+            (Benchmark::Sequential, MemoryOperation::Read, ItemBytes::Bytes16) => {
+                cpu_read_bandwidth_seq_16B
             }
+            (Benchmark::Sequential, MemoryOperation::Write, ItemBytes::Bytes4) => {
+                cpu_write_bandwidth_seq_4B
+            }
+            (Benchmark::Sequential, MemoryOperation::Write, ItemBytes::Bytes8) => {
+                cpu_write_bandwidth_seq_8B
+            }
+            (Benchmark::Sequential, MemoryOperation::Write, ItemBytes::Bytes16) => {
+                cpu_write_bandwidth_seq_16B
+            }
+            (Benchmark::Sequential, MemoryOperation::CompareAndSwap, ItemBytes::Bytes4) => {
+                cpu_cas_bandwidth_seq_4B
+            }
+            (Benchmark::Sequential, MemoryOperation::CompareAndSwap, ItemBytes::Bytes8) => {
+                cpu_cas_bandwidth_seq_8B
+            }
+            (Benchmark::Sequential, MemoryOperation::CompareAndSwap, ItemBytes::Bytes16) => {
+                cpu_cas_bandwidth_seq_16B
+            }
+            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Read, ItemBytes::Bytes4) => {
+                cpu_read_bandwidth_lcg_4B
+            }
+            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Read, ItemBytes::Bytes8) => {
+                cpu_read_bandwidth_lcg_8B
+            }
+            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Read, ItemBytes::Bytes16) => {
+                cpu_read_bandwidth_lcg_16B
+            }
+            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Write, ItemBytes::Bytes4) => {
+                cpu_write_bandwidth_lcg_4B
+            }
+            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Write, ItemBytes::Bytes8) => {
+                cpu_write_bandwidth_lcg_8B
+            }
+            (
+                Benchmark::LinearCongruentialGenerator,
+                MemoryOperation::Write,
+                ItemBytes::Bytes16,
+            ) => cpu_write_bandwidth_lcg_16B,
+            (
+                Benchmark::LinearCongruentialGenerator,
+                MemoryOperation::CompareAndSwap,
+                ItemBytes::Bytes4,
+            ) => cpu_cas_bandwidth_lcg_4B,
+            (
+                Benchmark::LinearCongruentialGenerator,
+                MemoryOperation::CompareAndSwap,
+                ItemBytes::Bytes8,
+            ) => cpu_cas_bandwidth_lcg_8B,
+            (
+                Benchmark::LinearCongruentialGenerator,
+                MemoryOperation::CompareAndSwap,
+                ItemBytes::Bytes16,
+            ) => cpu_cas_bandwidth_lcg_16B,
         };
 
         let mut memory_accesses = vec![0; threads];
@@ -150,7 +179,7 @@ impl CpuMemoryBandwidth {
                         unsafe {
                             f(
                                 ptr,
-                                len,
+                                (mem.len() * mem::size_of::<u32>()) / item_bytes as usize,
                                 loop_length,
                                 target_cycles.0,
                                 memory_accesses,
