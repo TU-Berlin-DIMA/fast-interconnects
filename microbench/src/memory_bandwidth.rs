@@ -24,8 +24,7 @@ use crate::types::{
 };
 use numa_gpu::runtime::allocator::{Allocator, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
-use numa_gpu::runtime::memory::DerefMem;
-use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
+use numa_gpu::runtime::memory::{DerefMem, MemLock};
 use numa_gpu::runtime::{hw_info, numa};
 use rustacuda::context::{Context, ContextFlags};
 use rustacuda::device::Device;
@@ -142,7 +141,7 @@ impl MemoryBandwidth {
         };
 
         let mut mem = Allocator::alloc_mem(mem_type, buffer_len);
-        mem.ensure_physically_backed();
+        mem.mlock().expect("Failed to mlock the memory");
 
         let bandwidths = match device_id {
             DeviceId::Cpu(cpu_node) => {
