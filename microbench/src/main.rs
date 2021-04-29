@@ -199,29 +199,13 @@ struct CmdBandwidth {
     #[structopt(long = "cpu-affinity", parse(from_os_str))]
     cpu_affinity: Option<PathBuf>,
 
-    #[structopt(long = "oversub-lower", default_value = "1")]
-    /// Work groups per SM (lower bound)
-    oversub_ratio_lower: u32,
+    #[structopt(long = "grid-sizes", require_delimiter = true)]
+    /// The CUDA grid sizes to evaluate
+    grid_sizes: Vec<u32>,
 
-    #[structopt(long = "oversub-upper", default_value = "4")]
-    /// Work groups per SM (upper bound)
-    oversub_ratio_upper: u32,
-
-    #[structopt(long = "warpmul-lower", default_value = "1")]
-    /// Warp multiplier (lower bound)
-    warp_mul_lower: u32,
-
-    #[structopt(long = "warpmul-upper", default_value = "4")]
-    /// Warp multiplier (upper bound)
-    warp_mul_upper: u32,
-
-    #[structopt(long = "ilp-lower", default_value = "1")]
-    /// Instruction level parallelism (lower bound)
-    ilp_lower: u32,
-
-    #[structopt(long = "ilp-upper", default_value = "4")]
-    /// Instruction level parallelism (upper bound)
-    ilp_upper: u32,
+    #[structopt(long = "block-sizes", require_delimiter = true)]
+    /// The CUDA block sizes to evaluate
+    block_sizes: Vec<u32>,
 
     #[structopt(long = "loop-length", default_value = "1000")]
     /// Number of memory accesses in between cycle measurements
@@ -433,9 +417,11 @@ fn main() -> Result<()> {
                     .map(|&t| ThreadCount(t))
                     .collect::<Vec<_>>(),
                 cpu_affinity,
-                OversubRatio(bw.oversub_ratio_lower)..=OversubRatio(bw.oversub_ratio_upper),
-                WarpMul(bw.warp_mul_lower)..=WarpMul(bw.warp_mul_upper),
-                Ilp(bw.ilp_lower)..=Ilp(bw.ilp_upper),
+                bw.grid_sizes.iter().map(|&gs| Grid(gs)).collect::<Vec<_>>(),
+                bw.block_sizes
+                    .iter()
+                    .map(|&bs| Block(bs))
+                    .collect::<Vec<_>>(),
                 bw.loop_length,
                 Cycles(bw.target_cycles * 10_u64.pow(6)),
                 bw.repeat,

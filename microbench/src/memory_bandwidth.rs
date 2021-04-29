@@ -19,9 +19,7 @@ use self::cpu_memory_bandwidth::CpuMemoryBandwidth;
 use self::data_point::DataPoint;
 use self::gpu_measurement::GpuMeasurement;
 use self::gpu_memory_bandwidth::GpuMemoryBandwidth;
-use crate::types::{
-    Cycles, DeviceId, Ilp, MemTypeDescription, OversubRatio, ThreadCount, Warp, WarpMul, SM,
-};
+use crate::types::{Block, Cycles, DeviceId, Grid, MemTypeDescription, ThreadCount};
 use numa_gpu::runtime::allocator::{Allocator, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::memory::{DerefMem, MemLock};
@@ -34,7 +32,6 @@ use serde_derive::Serialize;
 use serde_repr::Serialize_repr;
 use std::convert::TryInto;
 use std::mem::size_of;
-use std::ops::RangeInclusive;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -67,9 +64,8 @@ impl MemoryBandwidth {
         range_bytes: usize,
         threads: Vec<ThreadCount>,
         cpu_affinity: CpuAffinity,
-        oversub_ratio: RangeInclusive<OversubRatio>,
-        warp_mul: RangeInclusive<WarpMul>,
-        ilp: RangeInclusive<Ilp>,
+        grid_sizes: Vec<Grid>,
+        block_sizes: Vec<Block>,
         loop_length: u32,
         target_cycles: Cycles,
         repeat: u32,
@@ -159,22 +155,31 @@ impl MemoryBandwidth {
             }
             DeviceId::Gpu(did) => {
                 let device = device.expect("No device found");
-                let warp_size = Warp(
-                    device
-                        .get_attribute(DeviceAttribute::WarpSize)
-                        .expect("Couldn't get device warp size"),
-                );
-                let sm_count = SM(device
-                    .get_attribute(DeviceAttribute::MultiprocessorCount)
-                    .expect("Couldn't get device multiprocessor count"));
-                let mnt = GpuMeasurement::new(
-                    oversub_ratio,
-                    warp_mul,
-                    warp_size,
-                    sm_count,
-                    ilp,
-                    template,
-                );
+
+                let block_sizes = if block_sizes.is_empty() {
+                    let default_block_size = Block(
+                        device
+                            .get_attribute(DeviceAttribute::MaxThreadsPerBlock)
+                            .expect("Couldn't get device warp size") as u32,
+                    );
+                    vec![default_block_size]
+                } else {
+                    block_sizes
+                };
+
+                let grid_sizes = if grid_sizes.is_empty() {
+                    let default_grid_size = Grid(
+                        device
+                            .get_attribute(DeviceAttribute::MultiprocessorCount)
+                            .expect("Couldn't get device multiprocessor count")
+                            as u32,
+                    );
+                    vec![default_grid_size]
+                } else {
+                    grid_sizes
+                };
+
+                let mnt = GpuMeasurement::new(grid_sizes, block_sizes, template);
 
                 let ml = GpuMemoryBandwidth::new(did, loop_length, target_cycles);
                 let l = mnt.measure(
