@@ -9,6 +9,7 @@
  */
 
 #include <cpu_clock.h>
+#include <cpu_memory_instructions.h>
 
 #include <cstdint>
 
@@ -59,7 +60,7 @@ void cpu_read_bandwidth_seq_kernel(T *data, std::size_t size,
 
   T dummy = {0};
   for (std::size_t i = begin; i < end; ++i) {
-    dummy += data[i];
+    dummy += load(&data[i]);
   }
 
   get_clock(stop);
@@ -110,7 +111,7 @@ void cpu_write_bandwidth_seq_kernel(T *data, std::size_t size,
   get_clock(start);
 
   for (std::size_t i = begin; i < end; ++i) {
-    data[i] = i;
+    store(&data[i], static_cast<T>(i));
   }
 
   get_clock(stop);
@@ -220,7 +221,7 @@ void cpu_read_bandwidth_lcg_kernel(T *data, std::size_t size,
 
       // Read from a random location within data range
       uint64_t index = FAST_MODULO(x, size);
-      dummy += data[index];
+      dummy += load(&data[index]);
     }
 
     mem_accesses += loop_length;
@@ -288,7 +289,7 @@ void cpu_write_bandwidth_lcg_kernel(T *data, std::size_t size,
 
       // Write to a random location within data range
       uint64_t index = FAST_MODULO(x, size);
-      data[index] = x;
+      store(&data[index], static_cast<T>(x));
     }
 
     mem_accesses += loop_length;
