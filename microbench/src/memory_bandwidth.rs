@@ -77,9 +77,17 @@ impl MemoryBandwidth {
             Benchmark::Sequential,
             Benchmark::LinearCongruentialGenerator,
         ];
+
+        // IMPORTANT: The first operator must be a write! The warm-up pass for the write
+        // initializes the memory.
+        //
+        // Non-initialized memory results in lower bandwidth for the read operator.  On a Tesla
+        // V100 using mmap'ed memory, read bandwidth is 706 GiB/s for initialized GPU memory, but
+        // only 520 GiB/s for non-initialized GPU memory. Measured using 4 byte items and
+        // a sequential access pattern.
         let operators = vec![
-            MemoryOperation::Read,
             MemoryOperation::Write,
+            MemoryOperation::Read,
             MemoryOperation::CompareAndSwap,
         ];
         let item_bytes = vec![ItemBytes::Bytes4, ItemBytes::Bytes8, ItemBytes::Bytes16];
