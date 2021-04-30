@@ -9,7 +9,7 @@
  */
 
 use super::data_point::DataPoint;
-use super::{Benchmark, ItemBytes, MemoryOperation};
+use super::{Benchmark, ItemBytes, MemoryOperation, TileSize};
 use crate::types::{Block, Cycles, Grid};
 use itertools::{iproduct, izip};
 use numa_gpu::runtime::memory::Mem;
@@ -46,6 +46,7 @@ impl GpuMeasurement {
         benches: Vec<Benchmark>,
         ops: Vec<MemoryOperation>,
         item_bytes: Vec<ItemBytes>,
+        tile_sizes: Vec<TileSize>,
         repeat: u32,
     ) -> Vec<DataPoint>
     where
@@ -53,6 +54,7 @@ impl GpuMeasurement {
             Benchmark,
             MemoryOperation,
             ItemBytes,
+            TileSize,
             &mut S,
             &Mem<u32>,
             &GpuMeasurementParameters,
@@ -63,25 +65,27 @@ impl GpuMeasurement {
                 benches.iter(),
                 ops.iter(),
                 item_bytes.iter(),
+                tile_sizes.iter(),
                 self.grid_sizes.iter(),
                 self.block_sizes.iter()
             ),
             izip!(iter::once(true).chain(iter::repeat(false)), 0..repeat)
         )
         .filter_map(
-            |((&bench, &op, &item_bytes, &grid_size, &block_size), (warm_up, _run))| {
+            |((&bench, &op, &item_bytes, &tile_size, &grid_size, &block_size), (warm_up, _run))| {
                 let mp = GpuMeasurementParameters {
                     grid_size,
                     block_size,
                 };
 
                 if let Some((clock_rate_mhz, throttle_reasons, memory_accesses, cycles, ns)) =
-                    run(bench, op, item_bytes, &mut state, mem, &mp)
+                    run(bench, op, item_bytes, tile_size, &mut state, mem, &mp)
                 {
                     Some(DataPoint {
                         benchmark: Some(bench),
                         memory_operation: Some(op),
                         item_bytes: Some(item_bytes),
+                        tile_size: Some(tile_size),
                         warm_up,
                         grid_size: Some(grid_size),
                         block_size: Some(block_size),

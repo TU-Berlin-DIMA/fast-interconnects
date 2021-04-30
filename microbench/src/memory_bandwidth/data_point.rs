@@ -8,7 +8,7 @@
  * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
-use super::{Benchmark, ItemBytes, MemoryOperation};
+use super::{Benchmark, ItemBytes, MemoryOperation, TileSize};
 use crate::types::*;
 use crate::ArgPageType;
 use serde_derive::Serialize;
@@ -27,6 +27,7 @@ pub(super) struct DataPoint {
     pub warm_up: bool,
     pub range_bytes: usize,
     pub item_bytes: Option<ItemBytes>,
+    pub tile_size: Option<TileSize>,
     pub threads: Option<ThreadCount>,
     pub grid_size: Option<Grid>,
     pub block_size: Option<Block>,

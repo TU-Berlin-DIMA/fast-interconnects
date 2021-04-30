@@ -55,6 +55,17 @@ enum ItemBytes {
     Bytes16 = 16,
 }
 
+#[derive(Clone, Copy, Debug, Serialize_repr)]
+#[repr(usize)]
+enum TileSize {
+    Threads1 = 1,
+    Threads2 = 2,
+    Threads4 = 4,
+    Threads8 = 8,
+    Threads16 = 16,
+    Threads32 = 32,
+}
+
 pub struct MemoryBandwidth;
 
 impl MemoryBandwidth {
@@ -91,6 +102,14 @@ impl MemoryBandwidth {
             MemoryOperation::CompareAndSwap,
         ];
         let item_bytes = vec![ItemBytes::Bytes4, ItemBytes::Bytes8, ItemBytes::Bytes16];
+        let tile_size = vec![
+            TileSize::Threads1,
+            TileSize::Threads2,
+            TileSize::Threads4,
+            TileSize::Threads8,
+            TileSize::Threads16,
+            TileSize::Threads32,
+        ];
 
         let gpu_id = match device_id {
             DeviceId::Gpu(id) => id,
@@ -197,6 +216,7 @@ impl MemoryBandwidth {
                     benchmarks,
                     operators,
                     item_bytes,
+                    tile_size,
                     repeat,
                 );
                 l

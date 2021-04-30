@@ -9,7 +9,7 @@
  */
 
 use super::gpu_measurement::GpuMeasurementParameters;
-use super::{Benchmark, ItemBytes, MemoryOperation};
+use super::{Benchmark, ItemBytes, MemoryOperation, TileSize};
 use crate::types::Cycles;
 use numa_gpu::runtime::memory::Mem;
 use numa_gpu::runtime::nvml::{DeviceClocks, ThrottleReasons};
@@ -27,6 +27,58 @@ use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
 
 #[cfg(target_arch = "aarch64")]
 use numa_gpu::runtime::hw_info::CudaDeviceInfo;
+
+macro_rules! gen_cuda_functions {
+    (@as_bench_ident Seq) => {Benchmark::Sequential};
+    (@as_bench_ident Lcg) => {Benchmark::LinearCongruentialGenerator};
+
+    (@as_bench_str Seq) => {"seq_"};
+    (@as_bench_str Lcg) => {"lcg_"};
+
+    (@as_op_str Read) => {"read_"};
+    (@as_op_str Write) => {"write_"};
+    (@as_op_str CompareAndSwap) => {"cas_"};
+
+    (@as_bytes_str Bytes4) => {"4B"};
+    (@as_bytes_str Bytes8) => {"8B"};
+    (@as_bytes_str Bytes16) => {"16B"};
+
+    (@as_threads_str Threads1) => {""};
+    (@as_threads_str Threads2) => {"_2T"};
+    (@as_threads_str Threads4) => {"_4T"};
+    (@as_threads_str Threads8) => {"_8T"};
+    (@as_threads_str Threads16) => {"_16T"};
+    (@as_threads_str Threads32) => {"_32T"};
+
+    (@gen_pattern ($benchmark:ident, $operation:ident, $bytes:ident, $threads:ident)) => {
+        (
+            gen_cuda_functions!(@as_bench_ident $benchmark),
+            MemoryOperation::$operation,
+            ItemBytes::$bytes,
+            TileSize::$threads,
+        )
+    };
+
+    (@gen_function_str ($benchmark:ident, $operation:ident, $bytes:ident, $threads:ident)) => {
+            Some(concat!(
+                    "gpu_",
+                    gen_cuda_functions!(@as_op_str $operation),
+                    "bandwidth_",
+                    gen_cuda_functions!(@as_bench_str $benchmark),
+                    gen_cuda_functions!(@as_bytes_str $bytes),
+                    gen_cuda_functions!(@as_threads_str $threads)
+            ))
+    };
+
+    // FIXME: handle `None` cases explicitly instead of with catch-all
+    ($obj:expr, $(case($benchmark:ident, $operation:ident, $bytes:ident, $threads:ident)),*) => {
+        match $obj {
+            $(gen_cuda_functions!(@gen_pattern ($benchmark, $operation, $bytes, $threads)) =>
+              gen_cuda_functions!(@gen_function_str ($benchmark, $operation, $bytes, $threads))),*,
+            _ => None,
+        }
+    };
+}
 
 #[derive(Debug)]
 pub(super) struct GpuMemoryBandwidth {
@@ -72,6 +124,7 @@ impl GpuMemoryBandwidth {
         bench: Benchmark,
         op: MemoryOperation,
         item_bytes: ItemBytes,
+        tile_size: TileSize,
         state: &mut Self,
         mem: &Mem<u32>,
         mp: &GpuMeasurementParameters,
@@ -121,69 +174,65 @@ impl GpuMemoryBandwidth {
             .record(&state.stream)
             .expect("Couldn't record CUDA event");
 
-        // FIXME: refactor into a function
-        let function_name = match (bench, op, item_bytes) {
-            (Benchmark::Sequential, MemoryOperation::Read, ItemBytes::Bytes4) => {
-                Some("gpu_read_bandwidth_seq_4B")
-            }
-            (Benchmark::Sequential, MemoryOperation::Read, ItemBytes::Bytes8) => {
-                Some("gpu_read_bandwidth_seq_8B")
-            }
-            (Benchmark::Sequential, MemoryOperation::Read, ItemBytes::Bytes16) => {
-                Some("gpu_read_bandwidth_seq_16B")
-            }
-            (Benchmark::Sequential, MemoryOperation::Write, ItemBytes::Bytes4) => {
-                Some("gpu_write_bandwidth_seq_4B")
-            }
-            (Benchmark::Sequential, MemoryOperation::Write, ItemBytes::Bytes8) => {
-                Some("gpu_write_bandwidth_seq_8B")
-            }
-            (Benchmark::Sequential, MemoryOperation::Write, ItemBytes::Bytes16) => {
-                Some("gpu_write_bandwidth_seq_16B")
-            }
-            (Benchmark::Sequential, MemoryOperation::CompareAndSwap, ItemBytes::Bytes4) => {
-                Some("gpu_cas_bandwidth_seq_4B")
-            }
-            (Benchmark::Sequential, MemoryOperation::CompareAndSwap, ItemBytes::Bytes8) => {
-                Some("gpu_cas_bandwidth_seq_8B")
-            }
-            (Benchmark::Sequential, MemoryOperation::CompareAndSwap, ItemBytes::Bytes16) => None,
-            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Read, ItemBytes::Bytes4) => {
-                Some("gpu_read_bandwidth_lcg_4B")
-            }
-            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Read, ItemBytes::Bytes8) => {
-                Some("gpu_read_bandwidth_lcg_8B")
-            }
-            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Read, ItemBytes::Bytes16) => {
-                Some("gpu_read_bandwidth_lcg_16B")
-            }
-            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Write, ItemBytes::Bytes4) => {
-                Some("gpu_write_bandwidth_lcg_4B")
-            }
-            (Benchmark::LinearCongruentialGenerator, MemoryOperation::Write, ItemBytes::Bytes8) => {
-                Some("gpu_write_bandwidth_lcg_8B")
-            }
-            (
-                Benchmark::LinearCongruentialGenerator,
-                MemoryOperation::Write,
-                ItemBytes::Bytes16,
-            ) => Some("gpu_write_bandwidth_lcg_16B"),
-            (
-                Benchmark::LinearCongruentialGenerator,
-                MemoryOperation::CompareAndSwap,
-                ItemBytes::Bytes4,
-            ) => Some("gpu_cas_bandwidth_lcg_4B"),
-            (
-                Benchmark::LinearCongruentialGenerator,
-                MemoryOperation::CompareAndSwap,
-                ItemBytes::Bytes8,
-            ) => Some("gpu_cas_bandwidth_lcg_8B"),
-            (
-                Benchmark::LinearCongruentialGenerator,
-                MemoryOperation::CompareAndSwap,
-                ItemBytes::Bytes16,
-            ) => None,
-        };
+        let function_name = gen_cuda_functions!(
+            (bench, op, item_bytes, tile_size),
+            case(Seq, Read, Bytes4, Threads1),
+            case(Seq, Read, Bytes8, Threads1),
+            case(Seq, Read, Bytes16, Threads1),
+            case(Seq, Write, Bytes4, Threads1),
+            case(Seq, Write, Bytes8, Threads1),
+            case(Seq, Write, Bytes16, Threads1),
+            case(Seq, CompareAndSwap, Bytes4, Threads1),
+            case(Seq, CompareAndSwap, Bytes8, Threads1),
+            case(Lcg, Read, Bytes4, Threads1),
+            case(Lcg, Read, Bytes8, Threads1),
+            case(Lcg, Read, Bytes16, Threads1),
+            case(Lcg, Read, Bytes4, Threads2),
+            case(Lcg, Read, Bytes8, Threads2),
+            case(Lcg, Read, Bytes16, Threads2),
+            case(Lcg, Read, Bytes4, Threads4),
+            case(Lcg, Read, Bytes8, Threads4),
+            case(Lcg, Read, Bytes16, Threads4),
+            case(Lcg, Read, Bytes4, Threads8),
+            case(Lcg, Read, Bytes8, Threads8),
+            case(Lcg, Read, Bytes16, Threads8),
+            case(Lcg, Read, Bytes4, Threads16),
+            case(Lcg, Read, Bytes8, Threads16),
+            case(Lcg, Read, Bytes16, Threads16),
+            case(Lcg, Read, Bytes4, Threads32),
+            case(Lcg, Read, Bytes8, Threads32),
+            case(Lcg, Read, Bytes16, Threads32),
+            case(Lcg, Write, Bytes4, Threads1),
+            case(Lcg, Write, Bytes8, Threads1),
+            case(Lcg, Write, Bytes16, Threads1),
+            case(Lcg, Write, Bytes4, Threads2),
+            case(Lcg, Write, Bytes8, Threads2),
+            case(Lcg, Write, Bytes16, Threads2),
+            case(Lcg, Write, Bytes4, Threads4),
+            case(Lcg, Write, Bytes8, Threads4),
+            case(Lcg, Write, Bytes16, Threads4),
+            case(Lcg, Write, Bytes4, Threads8),
+            case(Lcg, Write, Bytes8, Threads8),
+            case(Lcg, Write, Bytes16, Threads8),
+            case(Lcg, Write, Bytes4, Threads16),
+            case(Lcg, Write, Bytes8, Threads16),
+            case(Lcg, Write, Bytes16, Threads16),
+            case(Lcg, Write, Bytes4, Threads32),
+            case(Lcg, Write, Bytes8, Threads32),
+            case(Lcg, Write, Bytes16, Threads32),
+            case(Lcg, CompareAndSwap, Bytes4, Threads1),
+            case(Lcg, CompareAndSwap, Bytes8, Threads1),
+            case(Lcg, CompareAndSwap, Bytes4, Threads2),
+            case(Lcg, CompareAndSwap, Bytes8, Threads2),
+            case(Lcg, CompareAndSwap, Bytes4, Threads4),
+            case(Lcg, CompareAndSwap, Bytes8, Threads4),
+            case(Lcg, CompareAndSwap, Bytes4, Threads8),
+            case(Lcg, CompareAndSwap, Bytes8, Threads8),
+            case(Lcg, CompareAndSwap, Bytes4, Threads16),
+            case(Lcg, CompareAndSwap, Bytes8, Threads16),
+            case(Lcg, CompareAndSwap, Bytes4, Threads32),
+            case(Lcg, CompareAndSwap, Bytes8, Threads32)
+        );
 
         let function_name = if let Some(n) = function_name {
             n
