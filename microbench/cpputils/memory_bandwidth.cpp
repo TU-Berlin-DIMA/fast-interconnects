@@ -23,6 +23,9 @@
 // X mod Y, assuming that Y is a power of 2
 #define FAST_MODULO(X, Y) (X & (Y - 1))
 
+// Alignment size for memory accesses
+#define ALIGN_BYTES 128UL
+
 // FIXME: add const restrict to all data pointers
 
 /*
@@ -48,7 +51,9 @@ void cpu_read_bandwidth_seq_kernel(T *data, std::size_t size,
   __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
 #endif
 
-  std::size_t const chunk_size = (size + num_threads - 1) / num_threads;
+  std::size_t constexpr align_mask = ~(ALIGN_BYTES / sizeof(T) - 1UL);
+  std::size_t const chunk_size =
+      ((size + num_threads - 1) / num_threads) & align_mask;
   std::size_t const begin = tid * chunk_size;
   std::size_t const end =
       ((tid + 1) * chunk_size - 1 > size) ? size : (tid + 1) * chunk_size - 1;
@@ -100,7 +105,9 @@ void cpu_write_bandwidth_seq_kernel(T *data, std::size_t size,
   __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
 #endif
 
-  std::size_t const chunk_size = (size + num_threads - 1) / num_threads;
+  std::size_t constexpr align_mask = ~(ALIGN_BYTES / sizeof(T) - 1UL);
+  std::size_t const chunk_size =
+      ((size + num_threads - 1) / num_threads) & align_mask;
   std::size_t const begin = tid * chunk_size;
   std::size_t const end =
       ((tid + 1) * chunk_size - 1 > size) ? size : (tid + 1) * chunk_size - 1;
@@ -146,7 +153,9 @@ void cpu_cas_bandwidth_seq_kernel(T *data, std::size_t size,
   __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
 #endif
 
-  std::size_t const chunk_size = (size + num_threads - 1) / num_threads;
+  std::size_t constexpr align_mask = ~(ALIGN_BYTES / sizeof(T) - 1UL);
+  std::size_t const chunk_size =
+      ((size + num_threads - 1) / num_threads) & align_mask;
   std::size_t const begin = tid * chunk_size;
   std::size_t const end =
       ((tid + 1) * chunk_size - 1 > size) ? size : (tid + 1) * chunk_size - 1;
