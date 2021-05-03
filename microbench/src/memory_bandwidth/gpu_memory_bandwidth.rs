@@ -28,6 +28,54 @@ use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
 #[cfg(target_arch = "aarch64")]
 use numa_gpu::runtime::hw_info::CudaDeviceInfo;
 
+/// Generate CUDA function bindings that are callable from Rust
+///
+/// The CUDA memory benchmark functions are named using the scheme:
+///
+/// - `gpu_{operator}_bandwidth_{benchmark}_{bytes}B`
+/// - `gpu_{operator}_bandwidth_{benchmark}_{bytes}B_{tile size}T`
+///
+/// CUDA provides `cuModuleGetFunction`, that returns a handle to a function within a module by
+/// searching for the function name. Thus, `gen_cuda_fucntions` constructs the function name as a
+/// string.
+///
+/// # Usage
+///
+/// The macro takes a tuple `(Benchmark, MemoryOperation, ItemBytes, TileSize)` and a list of cases
+/// and returns a `&'static str` string. Each case is encoded as `case(bench, op, bytes,
+/// tile_size)`.
+///
+/// Benchmarks:
+/// - Seq
+/// - Lcg
+///
+/// MemoryOperations:
+/// - Read
+/// - Write
+/// - CompareAndSwap
+///
+/// Bytes:
+/// - Bytes4
+/// - Bytes8
+/// - Bytes16
+///
+/// TileSize:
+/// - Threads1
+/// - Threads2
+/// - Threads4
+/// - Threads8
+/// - Threads16
+/// - Threads32
+///
+/// # Example
+///
+/// ```rust,no_run
+/// let cuda_function = gen_cuda_functions!(
+///   (bench, op, item_bytes, tile_size),
+///   case(Seq, Read, Bytes4, Threads1),
+///   case(Lcg, Write, Bytes16, Threads16)
+/// );
+/// ```
 macro_rules! gen_cuda_functions {
     (@as_bench_ident Seq) => {Benchmark::Sequential};
     (@as_bench_ident Lcg) => {Benchmark::LinearCongruentialGenerator};
