@@ -10,17 +10,14 @@
 
 use super::ArgPageType;
 use numa_gpu::runtime::allocator;
+use numa_gpu::utils::DeviceType;
 use serde_derive::Serialize;
 
 /// The device type and it's ID
 ///
 /// Used to specify where a task should be run.
 /// For example, CPU ID for numactl or GPU ID for CUDA
-#[derive(Debug, Clone, Serialize, Eq, PartialEq)]
-pub enum DeviceId {
-    Cpu(u16),
-    Gpu(u32),
-}
+pub type DeviceId = DeviceType<u16, u32>;
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
 pub enum BareMemType {

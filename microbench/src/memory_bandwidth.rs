@@ -33,6 +33,8 @@ use serde_repr::Serialize_repr;
 use std::convert::TryInto;
 use std::mem::size_of;
 
+const WARP_MISALIGNMENT: usize = 1;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Serialize)]
 enum MemoryOperation {
@@ -55,7 +57,7 @@ enum ItemBytes {
     Bytes16 = 16,
 }
 
-#[derive(Clone, Copy, Debug, Serialize_repr)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize_repr)]
 #[repr(usize)]
 enum TileSize {
     Threads1 = 1,
@@ -77,6 +79,7 @@ impl MemoryBandwidth {
         cpu_affinity: CpuAffinity,
         grid_sizes: Vec<Grid>,
         block_sizes: Vec<Block>,
+        warp_aligned: bool,
         loop_length: u32,
         target_cycles: Cycles,
         repeat: u32,
@@ -163,7 +166,12 @@ impl MemoryBandwidth {
             ..Default::default()
         };
 
-        let mut mem = Allocator::alloc_mem(mem_type, buffer_len);
+        let misalignment_padding = if warp_aligned || device_id.is_cpu() {
+            0
+        } else {
+            WARP_MISALIGNMENT
+        };
+        let mut mem = Allocator::alloc_mem(mem_type, buffer_len + misalignment_padding);
         mem.mlock().expect("Failed to mlock the memory");
 
         let bandwidths = match device_id {
@@ -208,7 +216,13 @@ impl MemoryBandwidth {
 
                 let mnt = GpuMeasurement::new(grid_sizes, block_sizes, template);
 
-                let ml = GpuMemoryBandwidth::new(did, loop_length, target_cycles);
+                let ml = GpuMemoryBandwidth::new(
+                    did,
+                    buffer_len,
+                    misalignment_padding,
+                    loop_length,
+                    target_cycles,
+                );
                 let l = mnt.measure(
                     &mem,
                     ml,
@@ -217,6 +231,7 @@ impl MemoryBandwidth {
                     operators,
                     item_bytes,
                     tile_size,
+                    warp_aligned,
                     repeat,
                 );
                 l

@@ -21,7 +21,7 @@
 #define PPC_TUNE_DSCR 7ULL
 
 // X mod Y, assuming that Y is a power of 2
-#define FAST_MODULO(X, Y) (X & (Y - 1))
+#define FAST_MODULO(X, Y) ((X) & ((Y) - 1U))
 
 // Alignment size for memory accesses
 #define ALIGN_BYTES 128UL

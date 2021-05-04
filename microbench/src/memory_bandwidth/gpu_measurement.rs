@@ -47,6 +47,7 @@ impl GpuMeasurement {
         ops: Vec<MemoryOperation>,
         item_bytes: Vec<ItemBytes>,
         tile_sizes: Vec<TileSize>,
+        warp_aligned: bool,
         repeat: u32,
     ) -> Vec<DataPoint>
     where
@@ -86,6 +87,7 @@ impl GpuMeasurement {
                         memory_operation: Some(op),
                         item_bytes: Some(item_bytes),
                         tile_size: Some(tile_size),
+                        warp_aligned: Some(warp_aligned || tile_size == TileSize::Threads1),
                         warm_up,
                         grid_size: Some(grid_size),
                         block_size: Some(block_size),

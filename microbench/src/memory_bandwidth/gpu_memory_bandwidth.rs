@@ -131,6 +131,8 @@ macro_rules! gen_cuda_functions {
 #[derive(Debug)]
 pub(super) struct GpuMemoryBandwidth {
     device_id: u32,
+    buffer_len: usize,
+    warp_misalignment: usize,
     loop_length: u32,
     target_cycles: Cycles,
     stream: Stream,
@@ -141,13 +143,21 @@ pub(super) struct GpuMemoryBandwidth {
 
 impl GpuMemoryBandwidth {
     #[cfg(not(target_arch = "aarch64"))]
-    pub(super) fn new(device_id: u32, loop_length: u32, target_cycles: Cycles) -> Self {
+    pub(super) fn new(
+        device_id: u32,
+        buffer_len: usize,
+        warp_misalignment: usize,
+        loop_length: u32,
+        target_cycles: Cycles,
+    ) -> Self {
         let stream =
             Stream::new(StreamFlags::NON_BLOCKING, None).expect("Couldn't create CUDA stream");
         let nvml = NVML::init().expect("Couldn't initialize NVML");
 
         Self {
             device_id,
+            buffer_len,
+            warp_misalignment,
             loop_length,
             target_cycles,
             stream,
@@ -156,12 +166,20 @@ impl GpuMemoryBandwidth {
     }
 
     #[cfg(target_arch = "aarch64")]
-    pub(super) fn new(device_id: u32, loop_length: u32, target_cycles: Cycles) -> Self {
+    pub(super) fn new(
+        device_id: u32,
+        buffer_len: usize,
+        warp_misalignment: usize,
+        loop_length: u32,
+        target_cycles: Cycles,
+    ) -> Self {
         let stream =
             Stream::new(StreamFlags::NON_BLOCKING, None).expect("Couldn't create CUDA stream");
 
         Self {
             device_id,
+            buffer_len,
+            warp_misalignment,
             loop_length,
             target_cycles,
             stream,
@@ -178,7 +196,7 @@ impl GpuMemoryBandwidth {
         mp: &GpuMeasurementParameters,
     ) -> Option<(u32, Option<ThrottleReasons>, u64, Cycles, u64)> {
         assert!(
-            mem.len().is_power_of_two(),
+            state.buffer_len.is_power_of_two(),
             "Data size must be a power of two!"
         );
 
@@ -297,7 +315,8 @@ impl GpuMemoryBandwidth {
             launch!(
                 function<<<mp.grid_size.0, mp.block_size.0, 0, stream>>>(
             mem.as_launchable_ptr(),
-            (mem.len() * mem::size_of::<i32>()) / item_bytes as usize,
+            (state.buffer_len * mem::size_of::<i32>()) / item_bytes as usize,
+            state.warp_misalignment as u32,
             state.loop_length,
             state.target_cycles.0,
             memory_accesses_device.as_device_ptr(),

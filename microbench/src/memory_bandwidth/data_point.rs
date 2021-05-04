@@ -31,6 +31,7 @@ pub(super) struct DataPoint {
     pub threads: Option<ThreadCount>,
     pub grid_size: Option<Grid>,
     pub block_size: Option<Block>,
+    pub warp_aligned: Option<bool>,
     pub throttle_reasons: Option<String>,
     pub clock_rate_mhz: Option<u32>,
     pub memory_accesses: u64,

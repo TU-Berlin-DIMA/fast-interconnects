@@ -15,7 +15,7 @@
 #include <cstdint>
 
 // X mod Y, assuming that Y is a power of 2
-#define FAST_MODULO(X, Y) (X & (Y - 1))
+#define FAST_MODULO(X, Y) ((X) & ((Y) - 1U))
 
 namespace cg = cooperative_groups;
 
@@ -234,8 +234,9 @@ __device__ void gpu_read_bandwidth_lcg_kernel(
  */
 template <typename T, unsigned int TileSize>
 __device__ void gpu_read_bandwidth_lcg_tiled_kernel(
-    T *const __restrict__ data, size_t const size, uint32_t const loop_length,
-    uint64_t const target_cycles, unsigned long long *const memory_accesses,
+    T *const __restrict__ data, size_t const size, uint32_t const misalignment,
+    uint32_t const loop_length, uint64_t const target_cycles,
+    unsigned long long *const memory_accesses,
     unsigned long long *const measured_cycles) {
   cg::thread_block block = cg::this_thread_block();
   cg::thread_block_tile<TileSize> tile = cg::tiled_partition<TileSize>(block);
@@ -244,6 +245,7 @@ __device__ void gpu_read_bandwidth_lcg_tiled_kernel(
   uint32_t const meta_group_rank = threadIdx.x / TileSize;
   uint32_t const tile_id = meta_group_rank + blockIdx.x * meta_group_size;
   size_t const tiled_size = size / tile.size();
+  uint32_t const thread_rank = tile.thread_rank() + misalignment;
 
   unsigned long long sum = 0;
   unsigned long long mem_accesses = 0;
@@ -270,7 +272,7 @@ __device__ void gpu_read_bandwidth_lcg_tiled_kernel(
 
       // Read from a random location within data range
       uint64_t location =
-          FAST_MODULO(x, tiled_size) * tile.size() + tile.thread_rank();
+          FAST_MODULO(x, tiled_size) * tile.size() + thread_rank;
       dummy += data[location];
     }
 
@@ -369,8 +371,9 @@ __device__ void gpu_write_bandwidth_lcg_kernel(
  */
 template <typename T, unsigned int TileSize>
 __device__ void gpu_write_bandwidth_lcg_tiled_kernel(
-    T *const __restrict__ data, size_t const size, uint32_t const loop_length,
-    uint64_t const target_cycles, unsigned long long *const memory_accesses,
+    T *const __restrict__ data, size_t const size, uint32_t const misalignment,
+    uint32_t const loop_length, uint64_t const target_cycles,
+    unsigned long long *const memory_accesses,
     unsigned long long *const measured_cycles) {
   cg::thread_block block = cg::this_thread_block();
   cg::thread_block_tile<TileSize> tile = cg::tiled_partition<TileSize>(block);
@@ -379,6 +382,7 @@ __device__ void gpu_write_bandwidth_lcg_tiled_kernel(
   uint32_t const meta_group_rank = threadIdx.x / TileSize;
   uint32_t const tile_id = meta_group_rank + blockIdx.x * meta_group_size;
   size_t const tiled_size = size / tile.size();
+  uint32_t const thread_rank = tile.thread_rank() + misalignment;
 
   unsigned long long sum = 0;
   unsigned long long mem_accesses = 0;
@@ -404,7 +408,7 @@ __device__ void gpu_write_bandwidth_lcg_tiled_kernel(
 
       // Write to a random location within data range
       uint64_t location =
-          FAST_MODULO(x, tiled_size) * tile.size() + tile.thread_rank();
+          FAST_MODULO(x, tiled_size) * tile.size() + thread_rank;
       data[location] = make_type<T>(x + tile.thread_rank());
     }
 
@@ -498,8 +502,9 @@ __device__ void gpu_cas_bandwidth_lcg_kernel(
  */
 template <typename T, unsigned int TileSize>
 __device__ void gpu_cas_bandwidth_lcg_tiled_kernel(
-    T *const __restrict__ data, size_t const size, uint32_t const loop_length,
-    uint64_t const target_cycles, unsigned long long *const memory_accesses,
+    T *const __restrict__ data, size_t const size, uint32_t const misalignment,
+    uint32_t const loop_length, uint64_t const target_cycles,
+    unsigned long long *const memory_accesses,
     unsigned long long *const measured_cycles) {
   cg::thread_block block = cg::this_thread_block();
   cg::thread_block_tile<TileSize> tile = cg::tiled_partition<TileSize>(block);
@@ -508,6 +513,7 @@ __device__ void gpu_cas_bandwidth_lcg_tiled_kernel(
   uint32_t const meta_group_rank = threadIdx.x / TileSize;
   uint32_t const tile_id = meta_group_rank + blockIdx.x * meta_group_size;
   size_t const tiled_size = size / tile.size();
+  uint32_t const thread_rank = tile.thread_rank() + misalignment;
 
   unsigned long long sum = 0;
   unsigned long long mem_accesses = 0;
@@ -533,8 +539,9 @@ __device__ void gpu_cas_bandwidth_lcg_tiled_kernel(
 
       // Write to a random location within data range
       uint64_t location =
-          FAST_MODULO(x, tiled_size) * tile.size() + tile.thread_rank();
-      atomicCAS(&data[location], static_cast<T>(location + tile.thread_rank()), static_cast<T>(x + tile.thread_rank()));
+          FAST_MODULO(x, tiled_size) * tile.size() + thread_rank;
+      atomicCAS(&data[location], static_cast<T>(location + thread_rank),
+                static_cast<T>(x + thread_rank));
     }
 
     mem_accesses += loop_length;
@@ -549,25 +556,25 @@ __device__ void gpu_cas_bandwidth_lcg_tiled_kernel(
 
 // ============== Instantiate templates ==============
 
-#define MAKE_BENCHMARK(FUNCTION_NAME, SUFFIX, DATA_TYPE)                      \
-  extern "C" __global__ void FUNCTION_NAME##_##SUFFIX(                        \
-      DATA_TYPE *const __restrict__ data, size_t const size,                  \
-      uint32_t const loop_length, uint64_t const target_cycles,               \
-      unsigned long long *const memory_accesses,                              \
-      unsigned long long *const measured_cycles) {                            \
-    FUNCTION_NAME##_kernel<DATA_TYPE>(data, size, loop_length, target_cycles, \
-                                      memory_accesses, measured_cycles);      \
+#define MAKE_BENCHMARK(FUNCTION_NAME, SUFFIX, DATA_TYPE)                       \
+  extern "C" __global__ void FUNCTION_NAME##_##SUFFIX(                         \
+      DATA_TYPE *const __restrict__ data, size_t const size,                   \
+      uint32_t const /* misalignment */, uint32_t const loop_length,           \
+      uint64_t const target_cycles, unsigned long long *const memory_accesses, \
+      unsigned long long *const measured_cycles) {                             \
+    FUNCTION_NAME##_kernel<DATA_TYPE>(data, size, loop_length, target_cycles,  \
+                                      memory_accesses, measured_cycles);       \
   }
 
-#define MAKE_BENCHMARK_TILED(FUNCTION_NAME, SUFFIX, DATA_TYPE, TILE_SIZE) \
-  extern "C" __global__ void FUNCTION_NAME##_##SUFFIX##_##TILE_SIZE##T(     \
-      DATA_TYPE *const __restrict__ data, size_t const size,              \
-      uint32_t const loop_length, uint64_t const target_cycles,           \
-      unsigned long long *const memory_accesses,                          \
-      unsigned long long *const measured_cycles) {                        \
-    FUNCTION_NAME##_tiled_kernel<DATA_TYPE, TILE_SIZE>(                   \
-        data, size, loop_length, target_cycles, memory_accesses,          \
-        measured_cycles);                                                 \
+#define MAKE_BENCHMARK_TILED(FUNCTION_NAME, SUFFIX, DATA_TYPE, TILE_SIZE)      \
+  extern "C" __global__ void FUNCTION_NAME##_##SUFFIX##_##TILE_SIZE##T(        \
+      DATA_TYPE *const __restrict__ data, size_t const size,                   \
+      uint32_t const misalignment, uint32_t const loop_length,                 \
+      uint64_t const target_cycles, unsigned long long *const memory_accesses, \
+      unsigned long long *const measured_cycles) {                             \
+    FUNCTION_NAME##_tiled_kernel<DATA_TYPE, TILE_SIZE>(                        \
+        data, size, misalignment, loop_length, target_cycles, memory_accesses, \
+        measured_cycles);                                                      \
   }
 
 MAKE_BENCHMARK(gpu_read_bandwidth_seq, 4B, uint32_t)

@@ -207,6 +207,14 @@ struct CmdBandwidth {
     /// The CUDA block sizes to evaluate
     block_sizes: Vec<u32>,
 
+    /// Don't align warp-cooperative accesses to the tile size
+    ///
+    /// By default, warp-cooperative accesses are aligned to the size of the
+    /// tile, e.g., a value between 2 and 32. `--misalign-warp` deliberately
+    /// misaligns such accesses by one array item.
+    #[structopt(long = "misalign-warp")]
+    misalign_warp: Option<bool>,
+
     #[structopt(long = "loop-length", default_value = "1000")]
     /// Number of memory accesses in between cycle measurements
     loop_length: u32,
@@ -422,6 +430,7 @@ fn main() -> Result<()> {
                     .iter()
                     .map(|&bs| Block(bs))
                     .collect::<Vec<_>>(),
+                !bw.misalign_warp.unwrap_or(false),
                 bw.loop_length,
                 Cycles(bw.target_cycles * 10_u64.pow(6)),
                 bw.repeat,
