@@ -214,10 +214,9 @@ impl MemoryBandwidth {
                     grid_sizes
                 };
 
-                let mnt = GpuMeasurement::new(grid_sizes, block_sizes, template);
+                let mnt = GpuMeasurement::new(did, grid_sizes, block_sizes, template);
 
                 let ml = GpuMemoryBandwidth::new(
-                    did,
                     buffer_len,
                     misalignment_padding,
                     loop_length,

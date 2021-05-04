@@ -13,7 +13,9 @@ use super::{Benchmark, ItemBytes, MemoryOperation, TileSize};
 use crate::types::{Block, Cycles, Grid};
 use itertools::{iproduct, izip};
 use numa_gpu::runtime::memory::Mem;
-use numa_gpu::runtime::nvml::ThrottleReasons;
+use numa_gpu::runtime::nvml::{DeviceClocks, ThrottleReasons};
+use nvml_wrapper::device::Device as NvmlDevice;
+use nvml_wrapper::NVML;
 use std::iter;
 
 #[allow(dead_code)]
@@ -24,17 +26,28 @@ pub(super) struct GpuMeasurementParameters {
 
 #[allow(dead_code)]
 pub(super) struct GpuMeasurement {
+    device_id: u32,
     grid_sizes: Vec<Grid>,
     block_sizes: Vec<Block>,
     template: DataPoint,
+    nvml: nvml_wrapper::NVML,
 }
 
 impl GpuMeasurement {
-    pub(super) fn new(grid_sizes: Vec<Grid>, block_sizes: Vec<Block>, template: DataPoint) -> Self {
+    pub(super) fn new(
+        device_id: u32,
+        grid_sizes: Vec<Grid>,
+        block_sizes: Vec<Block>,
+        template: DataPoint,
+    ) -> Self {
+        let nvml = NVML::init().expect("Couldn't initialize NVML");
+
         Self {
+            device_id,
             grid_sizes,
             block_sizes,
             template,
+            nvml,
         }
     }
 
@@ -59,8 +72,19 @@ impl GpuMeasurement {
             &mut S,
             &Mem<u32>,
             &GpuMeasurementParameters,
+            &NvmlDevice,
         ) -> Option<(u32, Option<ThrottleReasons>, u64, Cycles, u64)>,
     {
+        let mut nvml_device = self
+            .nvml
+            .device_by_index(self.device_id as u32)
+            .expect("Couldn't get NVML device");
+
+        // Set a stable GPU clock rate to make the measurements more accurate
+        if let Err(e) = nvml_device.set_max_gpu_clocks() {
+            eprintln!("Warning: Failed to set the maximum GPU clockrate [{}]", e);
+        }
+
         let data_points: Vec<_> = iproduct!(
             iproduct!(
                 benches.iter(),
@@ -79,9 +103,16 @@ impl GpuMeasurement {
                     block_size,
                 };
 
-                if let Some((clock_rate_mhz, throttle_reasons, memory_accesses, cycles, ns)) =
-                    run(bench, op, item_bytes, tile_size, &mut state, mem, &mp)
-                {
+                if let Some((clock_rate_mhz, throttle_reasons, memory_accesses, cycles, ns)) = run(
+                    bench,
+                    op,
+                    item_bytes,
+                    tile_size,
+                    &mut state,
+                    mem,
+                    &mp,
+                    &nvml_device,
+                ) {
                     Some(DataPoint {
                         benchmark: Some(bench),
                         memory_operation: Some(op),
@@ -105,5 +136,15 @@ impl GpuMeasurement {
         )
         .collect();
         data_points
+    }
+}
+
+impl Drop for GpuMeasurement {
+    fn drop(&mut self) {
+        self.nvml
+            .device_by_index(self.device_id as u32)
+            .unwrap()
+            .set_default_gpu_clocks()
+            .expect("Failed to reset default GPU clock rates");
     }
 }

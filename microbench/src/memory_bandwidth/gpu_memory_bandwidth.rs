@@ -12,7 +12,9 @@ use super::gpu_measurement::GpuMeasurementParameters;
 use super::{Benchmark, ItemBytes, MemoryOperation, TileSize};
 use crate::types::Cycles;
 use numa_gpu::runtime::memory::Mem;
-use numa_gpu::runtime::nvml::{DeviceClocks, ThrottleReasons};
+use numa_gpu::runtime::nvml::ThrottleReasons;
+use nvml_wrapper::device::Device as NvmlDevice;
+use nvml_wrapper::enum_wrappers::device::Clock;
 use rustacuda::context::CurrentContext;
 use rustacuda::event::{Event, EventFlags};
 use rustacuda::launch;
@@ -21,12 +23,6 @@ use rustacuda::module::Module;
 use rustacuda::stream::{Stream, StreamFlags};
 use std::ffi::CString;
 use std::mem;
-
-#[cfg(not(target_arch = "aarch64"))]
-use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
-
-#[cfg(target_arch = "aarch64")]
-use numa_gpu::runtime::hw_info::CudaDeviceInfo;
 
 /// Generate CUDA function bindings that are callable from Rust
 ///
@@ -130,44 +126,15 @@ macro_rules! gen_cuda_functions {
 
 #[derive(Debug)]
 pub(super) struct GpuMemoryBandwidth {
-    device_id: u32,
     buffer_len: usize,
     warp_misalignment: usize,
     loop_length: u32,
     target_cycles: Cycles,
     stream: Stream,
-
-    #[cfg(not(target_arch = "aarch64"))]
-    nvml: nvml_wrapper::NVML,
 }
 
 impl GpuMemoryBandwidth {
-    #[cfg(not(target_arch = "aarch64"))]
     pub(super) fn new(
-        device_id: u32,
-        buffer_len: usize,
-        warp_misalignment: usize,
-        loop_length: u32,
-        target_cycles: Cycles,
-    ) -> Self {
-        let stream =
-            Stream::new(StreamFlags::NON_BLOCKING, None).expect("Couldn't create CUDA stream");
-        let nvml = NVML::init().expect("Couldn't initialize NVML");
-
-        Self {
-            device_id,
-            buffer_len,
-            warp_misalignment,
-            loop_length,
-            target_cycles,
-            stream,
-            nvml,
-        }
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    pub(super) fn new(
-        device_id: u32,
         buffer_len: usize,
         warp_misalignment: usize,
         loop_length: u32,
@@ -177,7 +144,6 @@ impl GpuMemoryBandwidth {
             Stream::new(StreamFlags::NON_BLOCKING, None).expect("Couldn't create CUDA stream");
 
         Self {
-            device_id,
             buffer_len,
             warp_misalignment,
             loop_length,
@@ -194,30 +160,20 @@ impl GpuMemoryBandwidth {
         state: &mut Self,
         mem: &Mem<u32>,
         mp: &GpuMeasurementParameters,
+        nvml_device: &NvmlDevice,
     ) -> Option<(u32, Option<ThrottleReasons>, u64, Cycles, u64)> {
         assert!(
             state.buffer_len.is_power_of_two(),
             "Data size must be a power of two!"
         );
 
-        // Set a stable GPU clock rate to make the measurements more accurate
-        #[cfg(not(target_arch = "aarch64"))]
-        state
-            .nvml
-            .device_by_index(state.device_id as u32)
-            .expect("Couldn't get NVML device")
-            .set_max_gpu_clocks()
-            .expect("Failed to set the maximum GPU clockrate");
-
         // Get GPU clock rate that applications run at
         #[cfg(not(target_arch = "aarch64"))]
-        let clock_rate_mhz = state
-            .nvml
-            .device_by_index(state.device_id as u32)
-            .expect("Couldn't get NVML device")
+        let clock_rate_mhz = nvml_device
             .clock_info(Clock::SM)
             .expect("Couldn't get clock rate with NVML");
 
+        // FIXME: remove ARM-specific code paths and replace with portable code
         #[cfg(target_arch = "aarch64")]
         let clock_rate_mhz = CurrentContext::get_device()
             .expect("Couldn't get CUDA device")
@@ -335,10 +291,7 @@ impl GpuMemoryBandwidth {
         // Check if GPU is running in a throttled state
         #[cfg(not(target_arch = "aarch64"))]
         let throttle_reasons: Option<ThrottleReasons> = Some(
-            state
-                .nvml
-                .device_by_index(state.device_id as u32)
-                .expect("Couldn't get NVML device")
+            nvml_device
                 .current_throttle_reasons()
                 .expect("Couldn't get current throttle reasons with NVML")
                 .into(),
@@ -369,16 +322,5 @@ impl GpuMemoryBandwidth {
             Cycles(cycles),
             ns as u64,
         ))
-    }
-}
-
-impl Drop for GpuMemoryBandwidth {
-    fn drop(&mut self) {
-        #[cfg(not(target_arch = "aarch64"))]
-        self.nvml
-            .device_by_index(self.device_id as u32)
-            .unwrap()
-            .set_default_gpu_clocks()
-            .expect("Failed to reset default GPU clock rates");
     }
 }
