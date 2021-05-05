@@ -4,7 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2018, Lutz, Clemens <lutzcle@cml.li>
+ * Copyright 2018-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 #include <chrono>
@@ -12,7 +13,18 @@
 
 #include <timer.hpp>
 
+#if defined(__powerpc64__)
+#include <ppc_intrinsics.h>
+#endif
+
+// Disable prefeching
+#define PPC_TUNE_DSCR 1ULL
+
 extern "C" uint64_t cpu_stride(uint32_t *data, uint32_t iterations) {
+#if defined(__powerpc64__)
+  __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
+#endif
+
   uint32_t pos = 0;
 
   // Warm-up
