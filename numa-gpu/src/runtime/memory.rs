@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018-2021 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2018-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 use rustacuda::memory::{
@@ -19,6 +19,7 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::ptr;
 
+use super::linux_wrapper::{MemProtect, MemProtectFlags};
 use super::numa::{DistributedNumaMemory, NumaMemory};
 use crate::error::{Error, ErrorKind, Result};
 use crate::runtime::utils::EnsurePhysicallyBacked;
@@ -294,6 +295,17 @@ impl<T: DeviceCopy> MemLock for Mem<T> {
     }
 }
 
+impl<T: DeviceCopy> MemProtect for Mem<T> {
+    fn mprotect(&self, flags: MemProtectFlags) -> Result<()> {
+        let mem_slice: std::result::Result<&[T], _> = self.try_into();
+        if let Ok(m) = mem_slice {
+            m.mprotect(flags)?;
+        }
+
+        Ok(())
+    }
+}
+
 /// A CPU-dereferencable memory type
 ///
 /// These memory types can be directly accessed on the host.
@@ -458,6 +470,12 @@ impl<T: DeviceCopy> MemLock for DerefMem<T> {
             DerefMem::DistributedNumaMem(m) => m.munlock(),
             _ => Ok(()),
         }
+    }
+}
+
+impl<T: DeviceCopy> MemProtect for DerefMem<T> {
+    fn mprotect(&self, flags: MemProtectFlags) -> Result<()> {
+        self.as_slice().mprotect(flags)
     }
 }
 

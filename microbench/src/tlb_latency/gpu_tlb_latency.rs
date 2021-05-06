@@ -11,6 +11,7 @@
 use super::DataPoint;
 use crate::error::{ErrorKind, Result};
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
+use numa_gpu::runtime::linux_wrapper::{MemProtect, MemProtectFlags};
 use numa_gpu::runtime::memory::{DerefMem, Mem};
 use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 use rustacuda::context::{Context, ContextFlags, CurrentContext};
@@ -201,6 +202,16 @@ impl GpuTlbLatency {
                 }
             }
 
+            // Flush the TLB for the data range so that it's cold when starting
+            // the measurement.
+            //
+            // Note that we can only control the CPU's TLB, the GPU TLB is not
+            // flushed.
+            match (&data).try_into() {
+                Ok(slice) => Self::flush_cpu_tlb(slice)?,
+                Err(_) => {}
+            }
+
             // Get GPU clock rate that applications run at
             #[cfg(not(target_arch = "aarch64"))]
             let clock_rate_mhz = self
@@ -308,6 +319,22 @@ impl GpuTlbLatency {
             .count();
 
         number_written
+    }
+
+    /// Flushes the CPU's TLB
+    ///
+    /// The flush is atomic and system-wide. The flush also includes the IOTLB.
+    ///
+    /// For a high-level description, refer to the book Gorman "Understanding
+    /// the Linux Virtual Memory Manager" p. 44, Table 3.2"
+    ///
+    /// For the code, see the Linux kernel:
+    /// https://code.woboq.org/linux/linux/mm/hugetlb.c.html#hugetlb_change_protection
+    fn flush_cpu_tlb(data: &[Position]) -> Result<()> {
+        data.mprotect(MemProtectFlags::NONE)?;
+        data.mprotect(MemProtectFlags::READ | MemProtectFlags::WRITE)?;
+
+        Ok(())
     }
 }
 

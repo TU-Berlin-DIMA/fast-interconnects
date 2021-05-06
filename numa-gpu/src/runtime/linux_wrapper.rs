@@ -8,6 +8,7 @@
  * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
+use super::hw_info::ProcessorCache;
 use crate::error::{Error, ErrorKind, Result};
 use bitflags::bitflags;
 use std::collections::HashMap;
@@ -97,6 +98,17 @@ pub struct MemPolicyModes: c_int {
     ///
     /// Optional and cannot be combined with STATIC_NODES.
     const RELATIVE_NODES = (1 << 14);
+}
+}
+
+bitflags::bitflags! {
+pub struct MemProtectFlags: c_int {
+    const NONE = libc::PROT_NONE;
+    const READ = libc::PROT_READ;
+    const WRITE = libc::PROT_WRITE;
+    const EXEC = libc::PROT_EXEC;
+    const GROWSDOWN = libc::PROT_GROWSDOWN;
+    const GROWSUP = libc::PROT_GROWSUP;
 }
 }
 
@@ -255,6 +267,36 @@ pub fn mbind<T>(
         ) == -1
         {
             Err(ErrorKind::Io(IoError::last_os_error()))?;
+        }
+
+        Ok(())
+    }
+}
+
+/// Defines the `mprotect` system call for the type
+pub trait MemProtect {
+    /// Sets the protection flags of a memory region
+    ///
+    /// Refer to `man mprotect` for details.
+    fn mprotect(&self, flags: MemProtectFlags) -> Result<()>;
+}
+
+impl<T> MemProtect for [T] {
+    fn mprotect(&self, flags: MemProtectFlags) -> Result<()> {
+        let page_size = ProcessorCache::page_size();
+        let page_mask = !(page_size - 1);
+
+        // Round pointer down to page start, and round length up to page size
+        let std::ops::Range { start, end } = self.as_ptr_range();
+        let start_page = start as usize & page_mask;
+        let end_page = (end as usize + page_size - 1) & page_mask;
+
+        let bytes = end_page - start_page;
+
+        unsafe {
+            if libc::mprotect(start_page as *mut std::ffi::c_void, bytes, flags.bits()) == -1 {
+                Err(ErrorKind::Io(IoError::last_os_error()))?;
+            }
         }
 
         Ok(())
