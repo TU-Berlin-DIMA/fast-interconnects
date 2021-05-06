@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2020 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2020-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 use super::DataPoint;
@@ -40,6 +40,8 @@ const TLB_DATA_POINTS_STR: &str = env!("TLB_DATA_POINTS");
 // FIXME: init array on CPU to enable clean TLB miss counting by avoid NVLink traffic
 // FIXME: don't warm up, and instead measure cold TLB; mark as cold in CSV
 // FIXME: flush TLB after each measurement, e.g. with mprotect
+
+type Position = u64;
 
 #[derive(Debug)]
 pub(super) struct GpuTlbLatency {
@@ -121,8 +123,6 @@ impl GpuTlbLatency {
         ranges: RangeInclusive<usize>,
         strides: &[usize],
     ) -> Result<Vec<DataPoint>> {
-        type Position = u64;
-
         let tlb_data_points: usize = TLB_DATA_POINTS_STR
             .parse()
             .expect("Failed to parse \"TLB_DATA_POINTS\" string to an integer");
@@ -159,11 +159,21 @@ impl GpuTlbLatency {
 
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
 
-        let data_points: Vec<DataPoint> = strides.iter().cloned().flat_map(|s| ranges.clone().skip_while(move |r| r % s != 0).step_by(s).zip(iter::repeat(s))).map(|(range, stride)| {
+        let generate_range_iter = |stride| {
+            let current_range = ranges
+                .clone()
+                .skip_while(move |r| r % stride != 0)
+                .step_by(stride);
+            let old_range = iter::once(0).chain(current_range.clone());
+            current_range.zip(old_range).zip(iter::repeat(stride))
+        };
+
+        let data_points: Vec<DataPoint> = strides
+            .iter()
+            .cloned()
+            .flat_map(generate_range_iter).map(|((range, old_range), stride)| {
             let module = &self.module;
             let size: usize = range / position_bytes;
-            let start_offset: usize = 0;
-            let p_stride: usize = stride / position_bytes;
             let iterations: u32 = cmp::max(
                 tlb_data_points as u32,
                 range
@@ -172,15 +182,24 @@ impl GpuTlbLatency {
                     as u32,
             );
 
-            unsafe {
-                launch!(module.initialize_strides<<<grid_size.clone(), block_size.clone(), 0, stream>>>(
-                data.as_launchable_mut_ptr(),
-                size,
-                start_offset,
-                p_stride
-                ))?;
+            match (&mut data).try_into() {
+                Ok(slice) => {
+                    Self::write_strides(slice, stride, Some(old_range / position_bytes));
+                }
+                Err((_, dev_slice)) => {
+                    let start_offset: usize = 0;
+                    let p_stride: usize = stride / position_bytes;
+                    unsafe {
+                        launch!(module.initialize_strides<<<grid_size.clone(), block_size.clone(), 0, stream>>>(
+                                dev_slice.as_device_ptr(),
+                                size,
+                                start_offset,
+                                p_stride
+                                ))?;
+                    }
+                    stream.synchronize()?;
+                }
             }
-            stream.synchronize()?;
 
             // Get GPU clock rate that applications run at
             #[cfg(not(target_arch = "aarch64"))]
@@ -261,6 +280,34 @@ impl GpuTlbLatency {
         overhead.copy_to(&mut overhead_host)?;
 
         Ok(overhead_host)
+    }
+
+    /// Initializes a slice with strides
+    ///
+    /// After initialization, each element of the slice contains the position of
+    /// its successor. For example, element `4` points to element `8` if the
+    /// stride is `4` (as measured in `size_of::<Position>()`).
+    ///
+    /// If the slice is being resized without changing the stride, then
+    /// `old_len` may be set to specify the previous slice length to reduce
+    /// initialization time.
+    fn write_strides(data: &mut [Position], stride_bytes: usize, old_len: Option<usize>) -> usize {
+        let position_bytes = mem::size_of::<Position>();
+        let len = data.len() as Position;
+
+        let start_offset = match old_len {
+            None => 0,
+            Some(ol) => ol - stride_bytes / mem::size_of::<Position>(),
+        };
+
+        let number_written = data
+            .iter_mut()
+            .zip((stride_bytes / position_bytes) as Position..)
+            .skip(start_offset)
+            .map(|(it, next)| *it = next % len)
+            .count();
+
+        number_written
     }
 }
 
