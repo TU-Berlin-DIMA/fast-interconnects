@@ -16,7 +16,8 @@
 #define TLB_DATA_POINTS 256U
 #endif
 
-#define MIN_WARMUP_CYCLES 1000000U
+// #define MIN_WARMUP_CYCLES 1000000U
+#define MIN_WARMUP_CYCLES 0U
 
 // Initialize the data buffer with strides
 //

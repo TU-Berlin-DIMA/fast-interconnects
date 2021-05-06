@@ -37,6 +37,10 @@ use numa_gpu::runtime::hw_info::CudaDeviceInfo;
 
 const TLB_DATA_POINTS_STR: &str = env!("TLB_DATA_POINTS");
 
+// FIXME: init array on CPU to enable clean TLB miss counting by avoid NVLink traffic
+// FIXME: don't warm up, and instead measure cold TLB; mark as cold in CSV
+// FIXME: flush TLB after each measurement, e.g. with mprotect
+
 #[derive(Debug)]
 pub(super) struct GpuTlbLatency {
     // `module` must be dropped before `context`. Rust specifies the drop order as the field order
