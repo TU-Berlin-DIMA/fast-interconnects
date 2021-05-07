@@ -23,7 +23,7 @@ use rustacuda::stream::{Stream, StreamFlags};
 use rustacuda::{launch, CudaFlags};
 use std::cmp;
 use std::convert::TryInto;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::iter;
 use std::mem;
 use std::ops::RangeInclusive;
@@ -37,10 +37,6 @@ use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
 use numa_gpu::runtime::hw_info::CudaDeviceInfo;
 
 const TLB_DATA_POINTS_STR: &str = env!("TLB_DATA_POINTS");
-
-// FIXME: init array on CPU to enable clean TLB miss counting by avoid NVLink traffic
-// FIXME: don't warm up, and instead measure cold TLB; mark as cold in CSV
-// FIXME: flush TLB after each measurement, e.g. with mprotect
 
 type Position = u64;
 
@@ -175,9 +171,9 @@ impl GpuTlbLatency {
             .flat_map(generate_range_iter).map(|((range, old_range), stride)| {
             let module = &self.module;
             let size: usize = range / position_bytes;
-            let iterations: u32 = cmp::max(
+            let iterations: u32 = cmp::min(
                 tlb_data_points as u32,
-                range
+                2 * range
                     .checked_div(stride)
                     .ok_or_else(|| ErrorKind::InvalidArgument("Stride is zero".to_string()))?
                     as u32,
@@ -222,8 +218,11 @@ impl GpuTlbLatency {
             #[cfg(target_arch = "aarch64")]
             let clock_rate_mhz = CurrentContext::get_device()?.clock_rate()?;
 
+            let kernel_name = unsafe { CStr::from_bytes_with_nul_unchecked(b"tlb_stride_single_thread") };
+            let kernel = module.get_function(kernel_name)?;
+
             unsafe {
-                launch!(module.tlb_stride_single_thread<<<1, 1, 0, stream>>>(
+                launch!(kernel<<<1, 1, 0, stream>>>(
                 data.as_launchable_ptr(),
                 size,
                 iterations,
@@ -245,10 +244,38 @@ impl GpuTlbLatency {
             #[cfg(target_arch = "aarch64")]
             let throttle_reasons: Option<&str> = None;
 
+            // Indexes are written as the "next" index. To get the actual index,
+            // the stride must be subtracted.
+            //
+            // Index == -1 indicates an uninitialized measurement value, that
+            // should be filtered out.
+            let fixup_index = |&index| {
+                if index as i64 == -1 {
+                    -1
+                }
+                else {
+                    ((index * position_bytes as u64 - stride as u64) % range as u64) as i64
+                }
+            };
+
+            let warm_cold = |stride_id| {
+                if iterations <= tlb_data_points as u32 {
+                if stride_id < range / stride {
+                    Some("cold".to_string())
+                } else {
+                    Some("warm".to_string())
+                }
+                } else {
+                    None
+                }
+            };
+
             let dp: Vec<DataPoint> = cycles
                 .iter()
-                .zip(indices.iter())
-                .map(|(&cycles, &index)| DataPoint {
+                .take(iterations as usize)
+                .zip(indices.iter().map(fixup_index))
+                .enumerate()
+                .map(|(stride_id, (&cycles, index))| DataPoint {
                     grid_size: Some(1),
                     block_size: Some(1),
                     range_bytes: Some(range),
@@ -256,7 +283,9 @@ impl GpuTlbLatency {
                     throttle_reasons: throttle_reasons.as_ref().map(|r| r.to_string()),
                     clock_rate_mhz: Some(clock_rate_mhz),
                     cycle_counter_overhead_cycles: Some(cycle_counter_overhead),
-                    index_bytes: Some(index * position_bytes as u64),
+                    stride_id: Some(stride_id),
+                    iotlb_status: warm_cold(stride_id),
+                    index_bytes: Some(index),
                     cycles: Some(cycles),
                     ns: Some((1000 * cycles) / clock_rate_mhz),
                     ..self.template.clone()
@@ -307,7 +336,7 @@ impl GpuTlbLatency {
         let len = data.len() as Position;
 
         let start_offset = match old_len {
-            None => 0,
+            None | Some(0) => 0,
             Some(ol) => ol - stride_bytes / mem::size_of::<Position>(),
         };
 

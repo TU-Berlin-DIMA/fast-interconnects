@@ -29,7 +29,9 @@ pub struct DataPoint {
     pub throttle_reasons: Option<String>,
     pub clock_rate_mhz: Option<u32>,
     pub cycle_counter_overhead_cycles: Option<u32>,
-    pub index_bytes: Option<u64>,
+    pub stride_id: Option<usize>,
+    pub iotlb_status: Option<String>,
+    pub index_bytes: Option<i64>,
     pub cycles: Option<u32>,
     pub ns: Option<u32>,
 }

@@ -61,10 +61,17 @@ extern "C" __global__ void tlb_stride_single_thread(
   // Note: Don't reset `pos` after warm-up. This avoids cache hits at
   // beginning of loop.
 
-  // Do measurement
+  // Initialize shared memory
   __shared__ uint32_t s_cycles[TLB_DATA_POINTS];
   __shared__ uint64_t s_index[TLB_DATA_POINTS];
 
+  for (uint32_t i = threadIdx.x; i < TLB_DATA_POINTS; i += blockDim.x) {
+      s_index[i] = 0xFFFFFFFFFFFFFFFFULL;
+  }
+
+  __syncthreads();
+
+  // Do measurement
   clock_type start = 0;
   clock_type stop = 0;
 

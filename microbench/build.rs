@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
-    const TLB_DATA_POINTS: &str = "256";
+    const TLB_DATA_POINTS: &str = "4096";
 
     let include_path = Path::new("include");
     let out_dir = env::var("OUT_DIR").unwrap();
