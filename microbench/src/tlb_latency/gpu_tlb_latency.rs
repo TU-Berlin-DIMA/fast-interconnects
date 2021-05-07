@@ -146,9 +146,13 @@ impl GpuTlbLatency {
 
         // Set a stable GPU clock rate to make the measurements more accurate
         #[cfg(not(target_arch = "aarch64"))]
-        self.nvml
+        if let Err(e) = self
+            .nvml
             .device_by_index(self.device_id as u32)?
-            .set_max_gpu_clocks()?;
+            .set_max_gpu_clocks()
+        {
+            eprintln!("Warning: Failed to set the maximum GPU clockrate [{}]", e);
+        }
 
         let cycle_counter_overhead = self.cycle_counter_overhead()?;
 
