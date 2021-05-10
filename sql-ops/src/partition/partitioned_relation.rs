@@ -512,10 +512,10 @@ impl<T: DeviceCopy> Index<(u32, u32)> for PartitionedRelation<T> {
     fn index(&self, (chunk_id, partition_id): (u32, u32)) -> &Self::Output {
         let fanout = self.fanout();
         if partition_id >= fanout {
-            panic!("Invalid partition ID".to_string(),);
+            panic!("Invalid partition ID");
         }
         if chunk_id >= self.chunks {
-            panic!("Invalid chunk ID".to_string(),);
+            panic!("Invalid chunk ID");
         }
 
         let (offsets, relation): (&[u64], &[T]) =
