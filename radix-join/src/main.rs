@@ -324,6 +324,10 @@ struct CmdOpt {
     /// Path to CPU affinity map file for CPU workers
     #[structopt(long = "cpu-affinity", parse(from_os_str))]
     cpu_affinity: Option<PathBuf>,
+
+    #[structopt(long = "grid-size", require_delimiter = true)]
+    /// The CUDA grid size (default is number of SMs)
+    grid_size: Option<u32>,
 }
 
 impl CmdOpt {
@@ -426,11 +430,10 @@ where
     let multiprocessors = device.get_attribute(DeviceAttribute::MultiprocessorCount)? as u32;
     let warp_size = device.get_attribute(DeviceAttribute::WarpSize)? as u32;
     let warp_overcommit_factor = 32;
-    let grid_overcommit_factor = 1;
 
     let block_size = BlockSize::x(warp_size * warp_overcommit_factor);
-    let grid_size = GridSize::x(multiprocessors * grid_overcommit_factor);
-    let stream_grid_size = GridSize::x((multiprocessors / 2) * grid_overcommit_factor);
+    let grid_size = GridSize::x(cmd.grid_size.unwrap_or(multiprocessors));
+    let stream_grid_size = GridSize::x(grid_size.x / 2);
 
     let page_type = cmd.page_type;
 
