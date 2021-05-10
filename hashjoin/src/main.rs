@@ -48,7 +48,13 @@ fn main() -> Result<()> {
         Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
 
     let cache_node = device.numa_node().ok();
-    let overflow_node = device.numa_memory_affinity()?;
+    let overflow_node = match device.numa_memory_affinity() {
+        Ok(numa_node) => numa_node,
+        Err(e) => {
+            eprintln!("Warning: {}; Falling back to node = 0", e);
+            0
+        }
+    };
     cmd.set_spill_hash_table(cache_node, overflow_node)?;
 
     match cmd.tuple_bytes {
