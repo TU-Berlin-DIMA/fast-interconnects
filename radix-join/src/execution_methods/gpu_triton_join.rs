@@ -99,6 +99,7 @@ pub fn gpu_triton_join<T>(
     partition_algorithm_snd: GpuRadixPartitionAlgorithm,
     radix_bits: &RadixBits,
     dmem_buffer_bytes: usize,
+    max_partitions_cache_bytes: Option<usize>,
     threads: usize,
     cpu_affinity: CpuAffinity,
     partitions_mem_type: MemType,
@@ -383,7 +384,8 @@ where
 
     // Use one half of space for inner relation, and the other half for outer
     // relation
-    let cached_len = free / 2 / mem::size_of::<Tuple<T, T>>();
+    let cache_bytes = max_partitions_cache_bytes.unwrap_or(free);
+    let cached_len = cache_bytes / 2 / mem::size_of::<Tuple<T, T>>();
 
     let (inner_rel_alloc, cached_build_tuples) =
         Allocator::mem_spill_alloc_fn(CacheSpillType::CacheAndSpill {

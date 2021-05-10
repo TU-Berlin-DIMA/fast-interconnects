@@ -318,6 +318,10 @@ struct CmdOpt {
     #[structopt(long, default_value = "8", require_delimiter = true)]
     dmem_buffer_size: usize,
 
+    /// Device memory used to cache partitions in Triton join (upper limit, in MiB) [Default: All device memory]
+    #[structopt(long)]
+    max_partitions_cache_size: Option<usize>,
+
     #[structopt(short = "t", long = "threads", default_value = "1")]
     threads: usize,
 
@@ -326,7 +330,7 @@ struct CmdOpt {
     cpu_affinity: Option<PathBuf>,
 
     #[structopt(long = "grid-size", require_delimiter = true)]
-    /// The CUDA grid size (default is number of SMs)
+    /// The CUDA grid size [Default: all SMs]
     grid_size: Option<u32>,
 }
 
@@ -474,6 +478,7 @@ where
     ];
     let radix_bits = cmd.radix_bits;
     let dmem_buffer_bytes = cmd.dmem_buffer_size * 1024; // convert KiB to bytes
+    let max_partitions_cache_bytes = cmd.max_partitions_cache_size.map(|s| s * 1024 * 1024); // convert MiB to bytes
     let mem_type = cmd.partitions_mem_type;
     let threads = cmd.threads;
 
@@ -585,6 +590,7 @@ where
                 partition_algorithms[1],
                 &radix_bits,
                 dmem_buffer_bytes,
+                max_partitions_cache_bytes,
                 threads,
                 cpu_affinity.clone(),
                 partitions_mem_type.clone(),
