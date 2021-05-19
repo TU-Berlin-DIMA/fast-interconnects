@@ -14,8 +14,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
-    const TLB_DATA_POINTS: &str = "4096";
-
     let include_path = Path::new("include");
     let out_dir = env::var("OUT_DIR").unwrap();
     let cpp_compiler = env::var("CXX");
@@ -39,9 +37,7 @@ fn main() {
         "cudautils/tlb_latency.cu",
         "cudautils/cuda_clock.cu",
     ];
-    let tlb_data_points_arg = format!("-DTLB_DATA_POINTS={}U", TLB_DATA_POINTS);
     let nvcc_build_args = vec![
-        tlb_data_points_arg.as_str(),
         "-rdc=true",
         "--device-c",
         "-std=c++14",
@@ -115,7 +111,6 @@ fn main() {
         panic!();
     }
 
-    println!("cargo:rustc-env=TLB_DATA_POINTS={}", TLB_DATA_POINTS);
     println!(
         "cargo:rustc-env=CUDAUTILS_PATH={}/cudautils.fatbin",
         out_dir

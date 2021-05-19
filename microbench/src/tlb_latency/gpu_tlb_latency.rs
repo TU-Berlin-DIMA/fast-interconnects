@@ -36,8 +36,6 @@ use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
 #[cfg(target_arch = "aarch64")]
 use numa_gpu::runtime::hw_info::CudaDeviceInfo;
 
-const TLB_DATA_POINTS_STR: &str = env!("TLB_DATA_POINTS");
-
 type Position = u64;
 
 #[derive(Debug)]
@@ -120,14 +118,23 @@ impl GpuTlbLatency {
         ranges: RangeInclusive<usize>,
         strides: &[usize],
     ) -> Result<Vec<DataPoint>> {
-        let tlb_data_points: usize = TLB_DATA_POINTS_STR
-            .parse()
-            .expect("Failed to parse \"TLB_DATA_POINTS\" string to an integer");
         let device = CurrentContext::get_device()?;
         let grid_size =
             GridSize::from(device.get_attribute(DeviceAttribute::MultiprocessorCount)? as u32);
         let block_size =
             BlockSize::from(device.get_attribute(DeviceAttribute::MaxBlockDimX)? as u32);
+        let max_shared_mem_bytes =
+            device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
+
+        let mut tlb_data_points: usize =
+            max_shared_mem_bytes as usize / (mem::size_of::<u32>() + mem::size_of::<u64>());
+        if !tlb_data_points.is_power_of_two() {
+            // Set number of points to next-lower power of two
+            tlb_data_points = tlb_data_points.checked_next_power_of_two().ok_or_else(|| {
+                ErrorKind::IntegerOverflow("Overflow when computing shared memory size".to_string())
+            })? >> 1;
+        }
+        println!("tlb data points: {}", tlb_data_points);
 
         let position_bytes = mem::size_of::<Position>();
         let data_bytes = *ranges.end();
@@ -223,14 +230,16 @@ impl GpuTlbLatency {
             #[cfg(target_arch = "aarch64")]
             let clock_rate_mhz = CurrentContext::get_device()?.clock_rate()?;
 
-            let kernel = module.get_function(kernel_name)?;
             let kernel_name = unsafe { CStr::from_bytes_with_nul_unchecked(b"tlb_stride_single_thread\0") };
+            let mut kernel = module.get_function(kernel_name)?;
+            kernel.set_max_dynamic_shared_size_bytes(max_shared_mem_bytes)?;
 
             unsafe {
-                launch!(kernel<<<1, 1, 0, stream>>>(
+                launch!(kernel<<<1, 1, max_shared_mem_bytes, stream>>>(
                 data.as_launchable_ptr(),
                 size,
                 iterations,
+                tlb_data_points,
                 cycles.as_launchable_mut_ptr(),
                 indices.as_launchable_mut_ptr()
                 ))?;

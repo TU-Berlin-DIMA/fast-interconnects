@@ -12,12 +12,11 @@
 
 #include <cstdint>
 
-#ifndef TLB_DATA_POINTS
-#define TLB_DATA_POINTS 256U
-#endif
-
 // #define MIN_WARMUP_CYCLES 1000000U
 #define MIN_WARMUP_CYCLES 0U
+
+// X mod Y, assuming that Y is a power of 2
+#define FAST_MODULO(X, Y) ((X) & ((Y)-1U))
 
 // Initialize the data buffer with strides
 //
@@ -42,11 +41,13 @@ extern "C" __global__ void initialize_strides(uint64_t *const __restrict__ data,
 // Pre-conditions:
 //  - Launch kernel must have exactly one thread.
 //  - `iterations` must be a power of two, and greater or equal to
-//    TLB_DATA_POINTS.
+//    tlb_data_points.
 extern "C" __global__ void tlb_stride_single_thread(
     uint64_t const *const __restrict__ data, size_t const size,
-    uint32_t const iterations, uint32_t *const __restrict__ cycles,
-    uint64_t *const __restrict__ index) {
+    uint32_t const iterations, size_t const tlb_data_points,
+    uint32_t *const __restrict__ cycles, uint64_t *const __restrict__ index) {
+  extern __shared__ uint64_t shared_mem[];
+
   uint64_t pos = 0;
   uint64_t dependency = 0;  // Prevent compiler from optimizing away the loop
 
@@ -62,11 +63,13 @@ extern "C" __global__ void tlb_stride_single_thread(
   // beginning of loop.
 
   // Initialize shared memory
-  __shared__ uint32_t s_cycles[TLB_DATA_POINTS];
-  __shared__ uint64_t s_index[TLB_DATA_POINTS];
+  uint64_t *const __restrict__ s_index =
+      reinterpret_cast<uint64_t *>(shared_mem);
+  uint32_t *const __restrict__ s_cycles =
+      reinterpret_cast<uint32_t *>(&s_index[tlb_data_points]);
 
-  for (uint32_t i = threadIdx.x; i < TLB_DATA_POINTS; i += blockDim.x) {
-      s_index[i] = 0xFFFFFFFFFFFFFFFFULL;
+  for (uint32_t i = threadIdx.x; i < tlb_data_points; i += blockDim.x) {
+    s_index[i] = 0xFFFFFFFFFFFFFFFFULL;
   }
 
   __syncthreads();
@@ -87,14 +90,15 @@ extern "C" __global__ void tlb_stride_single_thread(
     // Execute the write dependency on `pos` before stopping the clock to
     // wait until the read instruction is completed. The write doesn't seem
     // to influence the timing when compared to (sum / iterations).
-    s_index[i % TLB_DATA_POINTS] = pos;
+    s_index[FAST_MODULO(i, tlb_data_points)] = pos;
     get_clock(stop);
 
-    s_cycles[i % TLB_DATA_POINTS] = static_cast<uint32_t>(stop - start);
+    s_cycles[FAST_MODULO(i, tlb_data_points)] =
+        static_cast<uint32_t>(stop - start);
   }
 
   // Write result
-  for (uint32_t i = 0; i < TLB_DATA_POINTS; ++i) {
+  for (uint32_t i = 0; i < tlb_data_points; ++i) {
     cycles[i] = s_cycles[i];
     index[i] = s_index[i];
   }
