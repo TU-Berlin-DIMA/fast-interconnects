@@ -223,8 +223,8 @@ impl GpuTlbLatency {
             #[cfg(target_arch = "aarch64")]
             let clock_rate_mhz = CurrentContext::get_device()?.clock_rate()?;
 
-            let kernel_name = unsafe { CStr::from_bytes_with_nul_unchecked(b"tlb_stride_single_thread") };
             let kernel = module.get_function(kernel_name)?;
+            let kernel_name = unsafe { CStr::from_bytes_with_nul_unchecked(b"tlb_stride_single_thread\0") };
 
             unsafe {
                 launch!(kernel<<<1, 1, 0, stream>>>(
