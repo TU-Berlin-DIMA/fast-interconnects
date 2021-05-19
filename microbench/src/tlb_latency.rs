@@ -25,6 +25,7 @@ impl TlbLatency {
         mem_type: MemType,
         ranges: RangeInclusive<usize>,
         strides: &[usize],
+        iotlb_flush: bool,
         template: DataPoint,
         writer: Option<&mut W>,
     ) -> Result<()>
@@ -32,7 +33,7 @@ impl TlbLatency {
         W: std::io::Write,
     {
         let gpu_tlb_latency = GpuTlbLatency::new(device_id.into(), template)?;
-        let data_points = gpu_tlb_latency.measure(mem_type, ranges, strides)?;
+        let data_points = gpu_tlb_latency.measure(mem_type, ranges, strides, iotlb_flush)?;
 
         if let Some(w) = writer {
             let mut csv = csv::Writer::from_writer(w);

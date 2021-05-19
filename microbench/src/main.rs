@@ -337,6 +337,10 @@ pub struct CmdTlbLatency {
         require_delimiter = true
     )]
     strides: Vec<usize>,
+
+    /// Flush the CPU TLB and IOTLB before each measurement series [default: enabled]
+    #[structopt(long)]
+    iotlb_flush: Option<bool>,
 }
 
 #[derive(StructOpt)]
@@ -472,6 +476,7 @@ fn main() -> Result<()> {
                 mem_type_helper.into(),
                 (tlb.range_lower * mb)..=(tlb.range_upper * mb),
                 &strides,
+                tlb.iotlb_flush.unwrap_or_else(|| true),
                 template,
                 csv_file.as_mut(),
             )?;

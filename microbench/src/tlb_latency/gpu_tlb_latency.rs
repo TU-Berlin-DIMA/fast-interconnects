@@ -117,6 +117,7 @@ impl GpuTlbLatency {
         mem_type: MemType,
         ranges: RangeInclusive<usize>,
         strides: &[usize],
+        do_iotlb_flush: bool,
     ) -> Result<Vec<DataPoint>> {
         let device = CurrentContext::get_device()?;
         let grid_size =
@@ -134,7 +135,6 @@ impl GpuTlbLatency {
                 ErrorKind::IntegerOverflow("Overflow when computing shared memory size".to_string())
             })? >> 1;
         }
-        println!("tlb data points: {}", tlb_data_points);
 
         let position_bytes = mem::size_of::<Position>();
         let data_bytes = *ranges.end();
@@ -215,9 +215,11 @@ impl GpuTlbLatency {
             //
             // Note that we can only control the CPU's TLB, the GPU TLB is not
             // flushed.
-            match (&data).try_into() {
-                Ok(slice) => Self::flush_cpu_tlb(slice)?,
-                Err(_) => {}
+            if do_iotlb_flush {
+                match (&data).try_into() {
+                    Ok(slice) => Self::flush_cpu_tlb(slice)?,
+                    Err(_) => {}
+                }
             }
 
             // Get GPU clock rate that applications run at
@@ -292,14 +294,15 @@ impl GpuTlbLatency {
                 .map(|(stride_id, (&cycles, index))| DataPoint {
                     grid_size: Some(1),
                     block_size: Some(1),
+                    iotlb_flush: Some(do_iotlb_flush),
                     range_bytes: Some(range),
                     stride_bytes: Some(stride),
                     throttle_reasons: throttle_reasons.as_ref().map(|r| r.to_string()),
                     clock_rate_mhz: Some(clock_rate_mhz),
                     cycle_counter_overhead_cycles: Some(cycle_counter_overhead),
                     stride_id: Some(stride_id),
-                    iotlb_status: warm_cold(stride_id),
                     index_bytes: Some(index),
+                    tlb_status: warm_cold(stride_id),
                     cycles: Some(cycles),
                     ns: Some((1000 * cycles) / clock_rate_mhz),
                     ..self.template.clone()
