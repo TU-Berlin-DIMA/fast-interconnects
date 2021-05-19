@@ -185,7 +185,8 @@ impl GpuTlbLatency {
 
             match (&mut data).try_into() {
                 Ok(slice) => {
-                    Self::write_strides(slice, stride, Some(old_range / position_bytes));
+                    let _: &mut [Position] = slice;
+                    Self::write_strides(&mut slice[0..size], stride, Some(old_range / position_bytes));
                 }
                 Err((_, dev_slice)) => {
                     let start_offset: usize = 0;
