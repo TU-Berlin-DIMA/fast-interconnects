@@ -12,8 +12,7 @@ use super::DataPoint;
 use crate::error::{ErrorKind, Result};
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::linux_wrapper::{MemProtect, MemProtectFlags};
-use numa_gpu::runtime::memory::{DerefMem, Mem};
-use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
+use numa_gpu::runtime::memory::{DerefMem, Mem, MemLock};
 use rustacuda::context::{Context, ContextFlags, CurrentContext};
 use rustacuda::device::{Device, DeviceAttribute};
 use rustacuda::function::{BlockSize, GridSize};
@@ -140,11 +139,7 @@ impl GpuTlbLatency {
         let data_bytes = *ranges.end();
         let data_len = data_bytes / position_bytes;
         let mut data: Mem<Position> = Allocator::alloc_mem(mem_type, data_len);
-
-        if let Ok(d) = (&mut data).try_into() {
-            let dslice: &mut [Position] = d;
-            dslice.ensure_physically_backed();
-        }
+        data.mlock()?;
 
         let mut cycles: DerefMem<u32> =
             Allocator::alloc_deref_mem(DerefMemType::CudaPinnedMem, tlb_data_points);
