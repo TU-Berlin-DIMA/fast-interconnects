@@ -81,10 +81,20 @@ pub enum PageType {
     /// Allocates 2 MiB huge pages using HugeTLB with `mmap`.
     Huge2MB,
 
+    /// 16 MiB huge pages
+    ///
+    /// Allocates 16 MiB huge pages using HugeTLB with `mmap`.
+    Huge16MB,
+
     /// 1 GiB huge pages
     ///
     /// Allocates 1 GiB huge pages using HugeTLB with `mmap`.
     Huge1GB,
+
+    /// 16 GiB huge pages
+    ///
+    /// Allocates 16 GiB huge pages using HugeTLB with `mmap`.
+    Huge16GB,
 }
 
 impl PageType {
@@ -96,7 +106,9 @@ impl PageType {
             // because alignment for mbind and munmap is on small page size.
             PageType::TransparentHuge => Ok(ProcessorCache::page_size()),
             PageType::Huge2MB => Ok(1 << 21),
+            PageType::Huge16MB => Ok(1 << 24),
             PageType::Huge1GB => Ok(1 << 30),
+            PageType::Huge16GB => Ok(1 << 34),
         }
     }
 }
@@ -151,7 +163,9 @@ impl<T> NumaMemory<T> {
 
         let hugetlb_flags = match page_type {
             PageType::Huge2MB => libc::MAP_HUGETLB | libc::MAP_HUGE_2MB,
+            PageType::Huge16MB => libc::MAP_HUGETLB | libc::MAP_HUGE_16MB,
             PageType::Huge1GB => libc::MAP_HUGETLB | libc::MAP_HUGE_1GB,
+            PageType::Huge16GB => libc::MAP_HUGETLB | libc::MAP_HUGE_16GB,
             PageType::Default | PageType::Small | PageType::TransparentHuge => 0,
         };
 
@@ -176,7 +190,11 @@ impl<T> NumaMemory<T> {
         let advice = match page_type {
             PageType::Small => Some(libc::MADV_NOHUGEPAGE),
             PageType::TransparentHuge => Some(libc::MADV_HUGEPAGE),
-            PageType::Default | PageType::Huge2MB | PageType::Huge1GB => None,
+            PageType::Default
+            | PageType::Huge2MB
+            | PageType::Huge16MB
+            | PageType::Huge1GB
+            | PageType::Huge16GB => None,
         };
 
         if let Some(advice_flag) = advice {
@@ -465,7 +483,9 @@ impl<T> DistributedNumaMemory<T> {
     fn new_with_pages(len: usize, node_pages: Box<[NodeLen]>, page_type: PageType) -> Self {
         let hugetlb_flags = match page_type {
             PageType::Huge2MB => libc::MAP_HUGETLB | libc::MAP_HUGE_2MB,
+            PageType::Huge16MB => libc::MAP_HUGETLB | libc::MAP_HUGE_16MB,
             PageType::Huge1GB => libc::MAP_HUGETLB | libc::MAP_HUGE_1GB,
+            PageType::Huge16GB => libc::MAP_HUGETLB | libc::MAP_HUGE_16GB,
             PageType::Default | PageType::Small | PageType::TransparentHuge => 0,
         };
 
@@ -490,7 +510,11 @@ impl<T> DistributedNumaMemory<T> {
         let advice = match page_type {
             PageType::Small => Some(libc::MADV_NOHUGEPAGE),
             PageType::TransparentHuge => Some(libc::MADV_HUGEPAGE),
-            PageType::Default | PageType::Huge2MB | PageType::Huge1GB => None,
+            PageType::Default
+            | PageType::Huge2MB
+            | PageType::Huge16MB
+            | PageType::Huge1GB
+            | PageType::Huge16GB => None,
         };
 
         if let Some(advice_flag) = advice {

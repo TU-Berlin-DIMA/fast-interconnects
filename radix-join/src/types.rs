@@ -65,7 +65,9 @@ arg_enum! {
         Small,
         TransparentHuge,
         Huge2MB,
+        Huge16MB,
         Huge1GB,
+        Huge16GB,
     }
 }
 
@@ -192,7 +194,9 @@ impl From<ArgPageType> for PageType {
             ArgPageType::Small => PageType::Small,
             ArgPageType::TransparentHuge => PageType::TransparentHuge,
             ArgPageType::Huge2MB => PageType::Huge2MB,
+            ArgPageType::Huge16MB => PageType::Huge16MB,
             ArgPageType::Huge1GB => PageType::Huge1GB,
+            ArgPageType::Huge16GB => PageType::Huge16GB,
         }
     }
 }
