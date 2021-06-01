@@ -141,6 +141,20 @@ impl GpuTlbLatency {
         let mut data: Mem<Position> = Allocator::alloc_mem(mem_type, data_len);
         data.mlock()?;
 
+        let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
+
+        // Touch the memory from the GPU to stabalize the measurements
+        unsafe {
+            let module = &self.module;
+            launch!(module.initialize_strides<<<grid_size.clone(), block_size.clone(), 0, stream>>>(
+            data.as_launchable_ptr(),
+            data.len(),
+            0,
+            1
+            ))?;
+        }
+        stream.synchronize()?;
+
         let mut cycles: DerefMem<u32> =
             Allocator::alloc_deref_mem(DerefMemType::CudaPinnedMem, tlb_data_points);
         let mut indices: DerefMem<Position> =
@@ -159,8 +173,6 @@ impl GpuTlbLatency {
         let cycle_counter_overhead = self.cycle_counter_overhead()?;
 
         // FIXME: factor into a closure, so that we can measure different GPU kernels
-
-        let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
 
         let generate_range_iter = |stride| {
             let current_range = ranges
