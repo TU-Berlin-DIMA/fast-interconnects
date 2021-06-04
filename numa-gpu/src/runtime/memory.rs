@@ -297,12 +297,18 @@ impl<T: DeviceCopy> MemLock for Mem<T> {
 
 impl<T: DeviceCopy> MemProtect for Mem<T> {
     fn mprotect(&self, flags: MemProtectFlags) -> Result<()> {
-        let mem_slice: std::result::Result<&[T], _> = self.try_into();
-        if let Ok(m) = mem_slice {
-            m.mprotect(flags)?;
+        match self {
+            Mem::NumaMem(ref numa_mem) => numa_mem.mprotect(flags),
+            Mem::DistributedNumaMem(ref dnuma_mem) => dnuma_mem.mprotect(flags),
+            mem @ _ => {
+                let mem_slice: std::result::Result<&[T], _> = mem.try_into();
+                if let Ok(m) = mem_slice {
+                    m.mprotect(flags)
+                } else {
+                    Ok(())
+                }
+            }
         }
-
-        Ok(())
     }
 }
 
@@ -475,7 +481,11 @@ impl<T: DeviceCopy> MemLock for DerefMem<T> {
 
 impl<T: DeviceCopy> MemProtect for DerefMem<T> {
     fn mprotect(&self, flags: MemProtectFlags) -> Result<()> {
-        self.as_slice().mprotect(flags)
+        match self {
+            DerefMem::NumaMem(ref numa_mem) => numa_mem.mprotect(flags),
+            DerefMem::DistributedNumaMem(ref dnuma_mem) => dnuma_mem.mprotect(flags),
+            mem @ _ => mem.as_slice().mprotect(flags),
+        }
     }
 }
 

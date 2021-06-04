@@ -283,24 +283,27 @@ pub trait MemProtect {
 
 impl<T> MemProtect for [T] {
     fn mprotect(&self, flags: MemProtectFlags) -> Result<()> {
-        let page_size = ProcessorCache::page_size();
-        let page_mask = !(page_size - 1);
-
-        // Round pointer down to page start, and round length up to page size
-        let std::ops::Range { start, end } = self.as_ptr_range();
-        let start_page = start as usize & page_mask;
-        let end_page = (end as usize + page_size - 1) & page_mask;
-
-        let bytes = end_page - start_page;
-
-        unsafe {
-            if libc::mprotect(start_page as *mut std::ffi::c_void, bytes, flags.bits()) == -1 {
-                Err(ErrorKind::Io(IoError::last_os_error()))?;
-            }
-        }
-
-        Ok(())
+        mprotect(self, ProcessorCache::page_size(), flags)
     }
+}
+
+pub(crate) fn mprotect<T>(data: &[T], page_size: usize, flags: MemProtectFlags) -> Result<()> {
+    let page_mask = !(page_size - 1);
+
+    // Round pointer down to page start, and round length up to page size
+    let std::ops::Range { start, end } = data.as_ptr_range();
+    let start_page = start as usize & page_mask;
+    let end_page = (end as usize + page_size - 1) & page_mask;
+
+    let bytes = end_page - start_page;
+
+    unsafe {
+        if libc::mprotect(start_page as *mut std::ffi::c_void, bytes, flags.bits()) == -1 {
+            Err(ErrorKind::Io(IoError::last_os_error()))?;
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

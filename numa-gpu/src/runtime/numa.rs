@@ -12,7 +12,9 @@
 
 use super::cuda_wrapper::{host_register, host_unregister};
 use super::hw_info::ProcessorCache;
-use super::linux_wrapper::{mbind, CpuSet, MemBindFlags, MemPolicyModes};
+use super::linux_wrapper::{
+    mbind, mprotect, CpuSet, MemBindFlags, MemPolicyModes, MemProtect, MemProtectFlags,
+};
 use super::memory::{MemLock, PageLock};
 use crate::error::{ErrorKind, Result, ResultExt};
 
@@ -297,6 +299,13 @@ impl<T> MemLock for NumaMemory<T> {
         }
 
         Ok(())
+    }
+}
+
+impl<T> MemProtect for NumaMemory<T> {
+    fn mprotect(&self, flags: MemProtectFlags) -> Result<()> {
+        let page_size = self.page_type.page_size()?;
+        mprotect(self, page_size, flags)
     }
 }
 
@@ -680,6 +689,13 @@ impl<T> MemLock for DistributedNumaMemory<T> {
         }
 
         Ok(())
+    }
+}
+
+impl<T> MemProtect for DistributedNumaMemory<T> {
+    fn mprotect(&self, flags: MemProtectFlags) -> Result<()> {
+        let page_size = self.page_type.page_size()?;
+        mprotect(self, page_size, flags)
     }
 }
 
