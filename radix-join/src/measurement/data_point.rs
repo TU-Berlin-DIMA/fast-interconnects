@@ -24,6 +24,7 @@ pub struct DataPoint {
     pub hostname: String,
     pub histogram_algorithm: Option<ArgHistogramAlgorithm>,
     pub partition_algorithm: Option<ArgRadixPartitionAlgorithm>,
+    pub partition_algorithm_2nd: Option<ArgRadixPartitionAlgorithm>,
     pub execution_method: Option<ArgExecutionMethod>,
     #[serde(serialize_with = "serialize_vec")]
     pub device_codename: Option<Vec<String>>,

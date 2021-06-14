@@ -739,6 +739,7 @@ impl CmdOptToDataPoint for DataPoint {
             data_set: Some(cmd.data_set.to_string()),
             histogram_algorithm: Some(cmd.histogram_algorithm),
             partition_algorithm: Some(cmd.partition_algorithm),
+            partition_algorithm_2nd: Some(cmd.partition_algorithm_2nd),
             execution_method: Some(cmd.execution_method),
             device_codename: Some(dev_codename_str),
             dmem_buffer_size: Some(cmd.dmem_buffer_size),
