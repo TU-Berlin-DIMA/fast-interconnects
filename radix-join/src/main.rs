@@ -547,7 +547,8 @@ where
     let dp = DataPoint::new()?
         .fill_from_cmd_options(cmd)?
         .fill_from_join_data(&join_data)
-        .set_init_time(malloc_time, data_gen_time);
+        .set_init_time(malloc_time, data_gen_time)
+        .set_gpu_threads(&grid_size, &block_size);
 
     let cpu_affinity = if let Some(ref cpu_affinity_file) = cmd.cpu_affinity {
         CpuAffinity::from_file(cpu_affinity_file.as_path())?
