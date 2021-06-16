@@ -384,7 +384,14 @@ where
 
     // Use one half of space for inner relation, and the other half for outer
     // relation
-    let cache_bytes = max_partitions_cache_bytes.unwrap_or(free);
+    let cache_bytes = max_partitions_cache_bytes.map_or(free, |bytes| {
+        if bytes > free {
+            eprintln!(
+                "Warning: Partitions cache size too large, reducing to maximum available memory"
+            );
+        }
+        cmp::min(bytes, free)
+    });
     let cached_len = cache_bytes / 2 / mem::size_of::<Tuple<T, T>>();
 
     let (inner_rel_alloc, cached_build_tuples) =
