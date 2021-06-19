@@ -884,6 +884,7 @@ dependencies = [
  "data-store",
  "datagen",
  "hostname 0.1.5",
+ "itertools",
  "num-rational",
  "num-traits",
  "numa-gpu",

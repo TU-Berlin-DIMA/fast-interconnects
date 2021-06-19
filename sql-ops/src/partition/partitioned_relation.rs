@@ -130,6 +130,12 @@ impl<T: DeviceCopy> PartitionOffsets<T> {
         })
     }
 
+    /// Returns the total number of bytes used to store the offsets.
+    pub fn bytes(&self) -> usize {
+        (self.offsets.len() + self.local_offsets.as_ref().map_or(0, |o| o.len()))
+            * mem::size_of::<u64>()
+    }
+
     /// Returs the number of chunks.
     pub fn num_chunks(&self) -> u32 {
         self.chunks
@@ -374,6 +380,11 @@ impl<T: DeviceCopy> PartitionedRelation<T> {
     pub fn padded_len(&self) -> usize {
         let num_partitions = fanout(self.radix_bits) as usize;
         self.len + num_partitions * self.num_chunks() as usize * self.padding_len() as usize
+    }
+
+    /// Returns the total number of bytes used to store the relation (including metadata).
+    pub fn bytes(&self) -> usize {
+        self.relation.len() * mem::size_of::<T>() + self.offsets.len() * mem::size_of::<u64>()
     }
 
     /// Returns the number of elements allocated in memory (excluding padding).

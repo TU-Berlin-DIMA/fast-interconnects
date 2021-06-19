@@ -13,12 +13,13 @@ use datagen::relation::KeyAttribute;
 use num_rational::Ratio;
 use numa_gpu::runtime::allocator::MemType;
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
-use numa_gpu::runtime::hw_info::NvidiaDriverInfo;
+use numa_gpu::runtime::hw_info::{cpu_codename, NvidiaDriverInfo};
 use numa_gpu::runtime::numa::NodeRatio;
 use numa_gpu::utils::DeviceType;
 use radix_join::error::{ErrorKind, Result};
 use radix_join::execution_methods::{
-    gpu_radix_join::gpu_radix_join, gpu_triton_join::gpu_triton_join,
+    cpu_partitioned_radix_join::cpu_partitioned_radix_join, gpu_radix_join::gpu_radix_join,
+    gpu_triton_join::gpu_triton_join,
 };
 use radix_join::measurement::data_point::DataPoint;
 use radix_join::measurement::harness::{self, RadixJoinPoint};
@@ -30,10 +31,8 @@ use rustacuda::memory::DeviceCopy;
 use rustacuda::prelude::*;
 use serde::de::DeserializeOwned;
 use sql_ops::join::{cuda_radix_join, no_partitioning_join, HashingScheme};
-use sql_ops::partition::cpu_radix_partition::CpuHistogramAlgorithm;
-use sql_ops::partition::cpu_radix_partition::CpuRadixPartitionable;
-use sql_ops::partition::gpu_radix_partition::GpuHistogramAlgorithm;
-use sql_ops::partition::gpu_radix_partition::GpuRadixPartitionable;
+use sql_ops::partition::cpu_radix_partition::{CpuHistogramAlgorithm, CpuRadixPartitionable};
+use sql_ops::partition::gpu_radix_partition::{GpuHistogramAlgorithm, GpuRadixPartitionable};
 use sql_ops::partition::{RadixBits, RadixPass};
 use std::convert::TryInto;
 use std::mem::size_of;
@@ -284,7 +283,7 @@ struct CmdOpt {
     /// Select the radix partition algorithm for 1st pass
     #[structopt(
         long,
-        default_value = "NC",
+        default_value = "GpuNC",
         possible_values = &ArgRadixPartitionAlgorithm::variants(),
         case_insensitive = true
     )]
@@ -293,7 +292,7 @@ struct CmdOpt {
     /// Select the radix partition algorithm for 2nd pass
     #[structopt(
         long,
-        default_value = "NC",
+        default_value = "GpuNC",
         possible_values = &ArgRadixPartitionAlgorithm::variants(),
         case_insensitive = true
     )]
@@ -478,10 +477,8 @@ where
         cmd.histogram_algorithm.into(),
         cmd.histogram_algorithm_2nd.into(),
     ];
-    let partition_algorithms = [
-        cmd.partition_algorithm.into(),
-        cmd.partition_algorithm_2nd.into(),
-    ];
+    let partition_algorithm: DeviceType<_, _> = cmd.partition_algorithm.into();
+    let partition_algorithm_2nd: DeviceType<_, _> = cmd.partition_algorithm_2nd.into();
     let radix_bits = cmd.radix_bits;
     let dmem_buffer_bytes = cmd.dmem_buffer_size * 1024; // convert KiB to bytes
     let max_partitions_cache_bytes = cmd.max_partitions_cache_size.map(|s| s * 1024 * 1024); // convert MiB to bytes
@@ -558,20 +555,39 @@ where
 
     // Create closure that wraps a hash join benchmark function
     let hjc: Box<dyn FnMut() -> Result<RadixJoinPoint>> = match exec_method {
+        ArgExecutionMethod::CpuPartitionedRadixJoinTwoPass => Box::new(move || {
+            let (_result, data_point) = cpu_partitioned_radix_join(
+                &mut join_data,
+                hashing_scheme,
+                histogram_algorithms[0],
+                histogram_algorithms[1],
+                partition_algorithm,
+                partition_algorithm_2nd,
+                &radix_bits,
+                dmem_buffer_bytes,
+                max_partitions_cache_bytes,
+                threads,
+                cpu_affinity.clone(),
+                partitions_mem_type.clone(),
+                state_mem_type.clone(),
+                page_type.into(),
+                (&grid_size, &block_size),
+                (&stream_grid_size, &block_size),
+            )?;
+
+            Ok(data_point)
+        }),
         ArgExecutionMethod::GpuRadixJoinTwoPass => Box::new(move || {
             let (_result, data_point) = gpu_radix_join(
                 &mut join_data,
                 hashing_scheme,
                 histogram_algorithms[0],
-                histogram_algorithms[1].gpu().ok_or_else(|| {
-                    ErrorKind::RuntimeError(
-                        "Expected a GPU histogram algorithm for 2nd pass!".to_string(),
-                    )
-                })?,
-                partition_algorithms[0],
-                partition_algorithms[1],
+                histogram_algorithms[1],
+                partition_algorithm,
+                partition_algorithm_2nd,
                 &radix_bits,
                 dmem_buffer_bytes,
+                None,
                 threads,
                 cpu_affinity.clone(),
                 partitions_mem_type.clone(),
@@ -588,13 +604,9 @@ where
                 &mut join_data,
                 hashing_scheme,
                 histogram_algorithms[0],
-                histogram_algorithms[1].gpu().ok_or_else(|| {
-                    ErrorKind::RuntimeError(
-                        "Expected a GPU histogram algorithm for 2nd pass!".to_string(),
-                    )
-                })?,
-                partition_algorithms[0],
-                partition_algorithms[1],
+                histogram_algorithms[1],
+                partition_algorithm,
+                partition_algorithm_2nd,
                 &radix_bits,
                 dmem_buffer_bytes,
                 max_partitions_cache_bytes,
@@ -734,6 +746,10 @@ impl CmdOptToDataPoint for DataPoint {
                 let device = Device::get_device(cmd.device_id.into())?;
                 vec![device.name()?]
             } // CPU execution methods should use: vec![numa_gpu::runtime::hw_info::cpu_codename()?]
+            ArgExecutionMethod::CpuPartitionedRadixJoinTwoPass => {
+                let device = Device::get_device(cmd.device_id.into())?;
+                vec![cpu_codename()?, device.name()?]
+            }
         };
 
         let dp = DataPoint {

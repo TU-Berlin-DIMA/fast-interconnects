@@ -8,5 +8,6 @@
  * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
+pub mod cpu_partitioned_radix_join;
 pub mod gpu_radix_join;
 pub mod gpu_triton_join;

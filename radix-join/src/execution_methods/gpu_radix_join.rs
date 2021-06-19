@@ -85,11 +85,12 @@ pub fn gpu_radix_join<T>(
     data: &mut JoinData<T>,
     hashing_scheme: HashingScheme,
     histogram_algorithm_fst: DeviceType<CpuHistogramAlgorithm, GpuHistogramAlgorithm>,
-    histogram_algorithm_snd: GpuHistogramAlgorithm,
-    partition_algorithm_fst: GpuRadixPartitionAlgorithm,
-    partition_algorithm_snd: GpuRadixPartitionAlgorithm,
+    histogram_algorithm_snd: DeviceType<CpuHistogramAlgorithm, GpuHistogramAlgorithm>,
+    partition_algorithm_fst: DeviceType<CpuRadixPartitionAlgorithm, GpuRadixPartitionAlgorithm>,
+    partition_algorithm_snd: DeviceType<CpuRadixPartitionAlgorithm, GpuRadixPartitionAlgorithm>,
     radix_bits: &RadixBits,
     dmem_buffer_bytes: usize,
+    _max_partitions_cache_bytes: Option<usize>,
     threads: usize,
     cpu_affinity: CpuAffinity,
     partitions_mem_type: MemType,
@@ -112,6 +113,17 @@ where
         + cuda_radix_join::CudaRadixJoinable,
 {
     const NUM_STREAMS: usize = 2;
+
+    // Precondition checks
+    let histogram_algorithm_snd = histogram_algorithm_snd.gpu().ok_or_else(|| {
+        ErrorKind::InvalidArgument("Only GPU prefix sum is supported in 2nd pass".to_string())
+    })?;
+    let partition_algorithm_fst = partition_algorithm_fst.gpu().ok_or_else(|| {
+        ErrorKind::InvalidArgument("Only GPU partitioning is supported in 1st pass".to_string())
+    })?;
+    let partition_algorithm_snd = partition_algorithm_snd.gpu().ok_or_else(|| {
+        ErrorKind::InvalidArgument("Only GPU partitioning is supported in 2nd pass".to_string())
+    })?;
 
     CurrentContext::set_cache_config(CacheConfig::PreferShared)?;
     CurrentContext::set_shared_memory_config(SharedMemoryConfig::FourByteBankSize)?;

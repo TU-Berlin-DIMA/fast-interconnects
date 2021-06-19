@@ -14,7 +14,7 @@ use numa_gpu::utils::DeviceType;
 use serde_derive::Serialize;
 use serde_repr::Serialize_repr;
 use sql_ops::join::HashingScheme;
-use sql_ops::partition::cpu_radix_partition::CpuHistogramAlgorithm;
+use sql_ops::partition::cpu_radix_partition::{CpuHistogramAlgorithm, CpuRadixPartitionAlgorithm};
 use sql_ops::partition::gpu_radix_partition::{GpuHistogramAlgorithm, GpuRadixPartitionAlgorithm};
 use structopt::clap::arg_enum;
 
@@ -84,21 +84,25 @@ arg_enum! {
 arg_enum! {
     #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
     pub enum ArgRadixPartitionAlgorithm {
-        NC,
-        LASWWC,
-        SSWWC,
-        SSWWCNT,
-        SSWWCv2,
-        HSSWWC,
-        HSSWWCv2,
-        HSSWWCv3,
-        HSSWWCv4,
+        CpuNC,
+        CpuSWWC,
+        CpuSWWCSIMD,
+        GpuNC,
+        GpuLASWWC,
+        GpuSSWWC,
+        GpuSSWWCNT,
+        GpuSSWWCv2,
+        GpuHSSWWC,
+        GpuHSSWWCv2,
+        GpuHSSWWCv3,
+        GpuHSSWWCv4,
     }
 }
 
 arg_enum! {
     #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
     pub enum ArgExecutionMethod {
+        CpuPartitionedRadixJoinTwoPass,
         GpuRadixJoinTwoPass,
         GpuTritonJoinTwoPass,
     }
@@ -201,18 +205,23 @@ impl From<ArgPageType> for PageType {
     }
 }
 
-impl Into<GpuRadixPartitionAlgorithm> for ArgRadixPartitionAlgorithm {
-    fn into(self) -> GpuRadixPartitionAlgorithm {
+impl Into<DeviceType<CpuRadixPartitionAlgorithm, GpuRadixPartitionAlgorithm>>
+    for ArgRadixPartitionAlgorithm
+{
+    fn into(self) -> DeviceType<CpuRadixPartitionAlgorithm, GpuRadixPartitionAlgorithm> {
         match self {
-            Self::NC => GpuRadixPartitionAlgorithm::NC,
-            Self::LASWWC => GpuRadixPartitionAlgorithm::LASWWC,
-            Self::SSWWC => GpuRadixPartitionAlgorithm::SSWWC,
-            Self::SSWWCNT => GpuRadixPartitionAlgorithm::SSWWCNT,
-            Self::SSWWCv2 => GpuRadixPartitionAlgorithm::SSWWCv2,
-            Self::HSSWWC => GpuRadixPartitionAlgorithm::HSSWWC,
-            Self::HSSWWCv2 => GpuRadixPartitionAlgorithm::HSSWWCv2,
-            Self::HSSWWCv3 => GpuRadixPartitionAlgorithm::HSSWWCv3,
-            Self::HSSWWCv4 => GpuRadixPartitionAlgorithm::HSSWWCv4,
+            Self::CpuNC => DeviceType::Cpu(CpuRadixPartitionAlgorithm::NC),
+            Self::CpuSWWC => DeviceType::Cpu(CpuRadixPartitionAlgorithm::Swwc),
+            Self::CpuSWWCSIMD => DeviceType::Cpu(CpuRadixPartitionAlgorithm::SwwcSimd),
+            Self::GpuNC => DeviceType::Gpu(GpuRadixPartitionAlgorithm::NC),
+            Self::GpuLASWWC => DeviceType::Gpu(GpuRadixPartitionAlgorithm::LASWWC),
+            Self::GpuSSWWC => DeviceType::Gpu(GpuRadixPartitionAlgorithm::SSWWC),
+            Self::GpuSSWWCNT => DeviceType::Gpu(GpuRadixPartitionAlgorithm::SSWWCNT),
+            Self::GpuSSWWCv2 => DeviceType::Gpu(GpuRadixPartitionAlgorithm::SSWWCv2),
+            Self::GpuHSSWWC => DeviceType::Gpu(GpuRadixPartitionAlgorithm::HSSWWC),
+            Self::GpuHSSWWCv2 => DeviceType::Gpu(GpuRadixPartitionAlgorithm::HSSWWCv2),
+            Self::GpuHSSWWCv3 => DeviceType::Gpu(GpuRadixPartitionAlgorithm::HSSWWCv3),
+            Self::GpuHSSWWCv4 => DeviceType::Gpu(GpuRadixPartitionAlgorithm::HSSWWCv4),
         }
     }
 }
