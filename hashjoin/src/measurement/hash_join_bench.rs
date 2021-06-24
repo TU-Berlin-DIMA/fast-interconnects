@@ -30,11 +30,11 @@ use rustacuda::stream::{Stream, StreamFlags};
 use sql_ops::join::{no_partitioning_join, HashingScheme, HtEntry};
 use std::cell::RefCell;
 use std::convert::TryInto;
-use std::mem;
 use std::os::raw::c_uint;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
+use std::{cmp, mem};
 
 /// GPU memory to leave free when allocating a hybrid hash table
 ///
@@ -140,6 +140,7 @@ where
         data: &mut JoinData<T>,
         hash_table_alloc: allocator::MemSpillAllocFn<HtEntry<T, T>>,
         cache_node: u16,
+        max_hash_table_cache_bytes: Option<usize>,
         cached_hash_table_tuples: Rc<RefCell<Option<usize>>>,
         build_dim: (GridSize, BlockSize),
         probe_dim: (GridSize, BlockSize),
@@ -156,7 +157,15 @@ where
 
         let linux_wrapper::NumaMemInfo { free, .. } = linux_wrapper::numa_mem_info(cache_node)?;
         let free = free - GPU_MEM_SLACK_BYTES;
-        let cache_max_len = free / mem::size_of::<HtEntry<T, T>>();
+        let cache_bytes = max_hash_table_cache_bytes.map_or(free, |bytes| {
+            if bytes > free {
+                eprintln!(
+                    "Warning: Hash table cache size too large, reducing to maximum available memory"
+                    );
+            }
+            cmp::min(bytes, free)
+        });
+        let cache_max_len = cache_bytes / mem::size_of::<HtEntry<T, T>>();
         let ht_alloc = hash_table_alloc(cache_max_len);
 
         let mut hash_table_mem = ht_alloc(self.hash_table_len);

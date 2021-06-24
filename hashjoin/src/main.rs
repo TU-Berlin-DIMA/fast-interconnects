@@ -131,6 +131,14 @@ struct CmdOpt {
     /// Proportions with with the hash table is allocate on multiple nodes in percent (e.g.: 20,60,20)
     hash_table_proportions: Vec<usize>,
 
+    /// Device memory used to cache hash table (upper limit, in MiB) [Default: All device memory]
+    #[structopt(
+        long,
+        conflicts_with = "hash-table-proportions",
+        requires = "spill-hash-table"
+    )]
+    max_hash_table_cache_size: Option<usize>,
+
     /// Cache the hash table in GPU memory and spill to the nearest CPU memory node
     ///
     /// This option only works with NVLink 2.0, and sets `--hash-table-mem-type DistributedNuma`
@@ -385,6 +393,7 @@ where
     let transfer_strategy = cmd.transfer_strategy.clone();
     let mem_type = cmd.hash_table_mem_type;
     let spill_hash_table = cmd.spill_hash_table;
+    let max_hash_table_cache_bytes = cmd.max_hash_table_cache_size.map(|s| s * 1024 * 1024); // convert MiB to bytes
     let threads = cmd.threads.clone();
     let device_id = cmd.device_id;
     let page_type = cmd.page_type;
@@ -516,6 +525,7 @@ where
                 &mut join_data,
                 ht_alloc_fn,
                 cache_node,
+                max_hash_table_cache_bytes,
                 cache_bytes_future,
                 (grid_size.clone(), block_size.clone()),
                 (grid_size.clone(), block_size.clone()),
