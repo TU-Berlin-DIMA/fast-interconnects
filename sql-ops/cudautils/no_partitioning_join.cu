@@ -8,7 +8,7 @@
  * Author: Clemens Lutz <lutzcle@cml.li>
  *
  * Note that parts of this code are based on the Hawk query compiler by
- * Sebastian Breß et al.
+ * Sebastian Bress et al.
  * See https://github.com/TU-Berlin-DIMA/Hawk-VLDBJ for details.
  */
 
