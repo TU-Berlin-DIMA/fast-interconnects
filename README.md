@@ -169,6 +169,29 @@ supports `--execution-method gpustream` to stream blocks of `system` and `numa`
 memory to the GPU. Alternatively, `--execution-method unified` can be used
 togther with `--rel-mem-type unified`.
 
+### numa-gpu fails with: SIGBUS (Misaligned address error)
+
+This is usually an out-of-memory condition. Try the following:
+
+ - If you're trying to use huge pages, double-check if you've configured huge
+   pages correctly. At least one of these command should show a non-zero value:
+
+   ```sh
+   cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+   cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_overcommit_hugepages
+   ```
+
+ - If you're trying to benchmark very large data (i.e., near the memory limit
+   of a NUMA node), then the OS might not have enough memory for you on the
+   requested NUMA node.
+
+   In this case, it helps to [reserve huge pages on early
+   boot](guides/huge_pages.md), and then the program with `--page-type
+   Huge2MB`.
+
+ - If none of the above apply, you may have found a bug! In this case, let us
+   know by opening an issue or pull request.
+
 ### numa-gpu fails with: CudaError(NoBinaryForGpu)
 
 Your device isn't set as a build target. First, find the correct gencode for your
