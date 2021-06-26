@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2018 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2018-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 pub mod allocator;
@@ -18,4 +18,3 @@ pub mod linux_wrapper;
 pub mod memory;
 pub mod numa;
 pub mod nvml;
-pub mod utils;

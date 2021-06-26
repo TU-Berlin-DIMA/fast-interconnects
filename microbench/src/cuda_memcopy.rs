@@ -17,7 +17,6 @@ use cuda_sys::cuda::{
 
 use numa_gpu::error::ToResult;
 use numa_gpu::runtime::numa::{NumaMemory, PageType};
-use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 
 use rustacuda::prelude::*;
 
@@ -233,7 +232,12 @@ impl<'h, 'c> Measurement<'h, 'c> {
             }
         };
 
-        unsafe { slice::from_raw_parts_mut(hmem.as_mut_ptr(), buf_len) }.ensure_physically_backed();
+        // Initialize the memory with some non-zero data
+        unsafe { slice::from_raw_parts_mut(hmem.as_mut_ptr(), buf_len) }
+            .iter_mut()
+            .by_ref()
+            .zip(0..)
+            .for_each(|(x, i)| *x = i);
 
         let mut dmem: *mut c_void = null_mut();
         unsafe { cuMemAlloc_v2(&mut dmem as *mut *mut c_void as *mut u64, buf_bytes) }

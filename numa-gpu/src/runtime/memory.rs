@@ -22,7 +22,6 @@ use std::ptr;
 use super::linux_wrapper::{MemProtect, MemProtectFlags};
 use super::numa::{DistributedNumaMemory, NumaMemory};
 use crate::error::{Error, ErrorKind, Result};
-use crate::runtime::utils::EnsurePhysicallyBacked;
 
 /// A trait for locking pages in memory
 ///
@@ -268,15 +267,6 @@ impl<T: DeviceCopy> From<DerefMem<T>> for Mem<T> {
     }
 }
 
-impl<T: DeviceCopy> EnsurePhysicallyBacked for Mem<T> {
-    fn ensure_physically_backed(&mut self) {
-        let mem_slice: std::result::Result<&mut [T], _> = self.try_into();
-        if let Ok(m) = mem_slice {
-            m.ensure_physically_backed();
-        }
-    }
-}
-
 impl<T: DeviceCopy> MemLock for Mem<T> {
     fn mlock(&mut self) -> Result<()> {
         match self {
@@ -452,12 +442,6 @@ impl<T: DeviceCopy> TryFrom<Mem<T>> for DerefMem<T> {
                 mem,
             )),
         }
-    }
-}
-
-impl<T: DeviceCopy> EnsurePhysicallyBacked for DerefMem<T> {
-    fn ensure_physically_backed(&mut self) {
-        self.as_mut_slice().ensure_physically_backed();
     }
 }
 

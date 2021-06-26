@@ -9,9 +9,8 @@
  */
 
 use numa_gpu::runtime::allocator::{Allocator, MemType};
-use numa_gpu::runtime::memory::Mem;
+use numa_gpu::runtime::memory::{Mem, MemLock};
 use numa_gpu::runtime::nvml::ThrottleReasons;
-use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 use numa_gpu::runtime::{cuda_wrapper, hw_info, numa};
 
 #[cfg(not(target_arch = "aarch64"))]
@@ -115,7 +114,13 @@ impl MemoryLatency {
         let mnt = Measurement::new(range, stride, template);
 
         let mut mem = Allocator::alloc_mem(mem_type, buffer_len);
-        mem.ensure_physically_backed();
+        mem.mlock().expect("Failed to mlock the memory");
+
+        // Initialize the memory with some non-zero data
+        if let Ok(slice) = (&mut mem).try_into() {
+            let _: &mut [_] = slice;
+            slice.iter_mut().by_ref().zip(0..).for_each(|(x, i)| *x = i);
+        }
 
         let latencies = match device_id {
             DeviceId::Cpu(did) => {

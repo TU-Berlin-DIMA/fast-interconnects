@@ -20,7 +20,6 @@ use crate::error::{ErrorKind, Result};
 use numa_gpu::error::Result as NumaGpuResult;
 use numa_gpu::runtime::allocator::MemAllocFn;
 use numa_gpu::runtime::memory::{LaunchableMem, LaunchableMutSlice, Mem, MemLock};
-use numa_gpu::runtime::utils::EnsurePhysicallyBacked;
 use rustacuda::memory::DeviceCopy;
 use std::convert::TryInto;
 use std::mem;
@@ -201,12 +200,6 @@ impl<T: DeviceCopy> PartitionOffsets<T> {
     /// Returns the number of padding elements per partition.
     pub(super) fn padding_len(&self) -> u32 {
         padding_len::<T>()
-    }
-}
-
-impl<T: DeviceCopy> EnsurePhysicallyBacked for PartitionOffsets<T> {
-    fn ensure_physically_backed(&mut self) {
-        self.offsets.ensure_physically_backed();
     }
 }
 
@@ -573,13 +566,6 @@ impl<T: DeviceCopy> IndexMut<(u32, u32)> for PartitionedRelation<T> {
         };
 
         &mut relation[begin..end]
-    }
-}
-
-impl<T: DeviceCopy> EnsurePhysicallyBacked for PartitionedRelation<T> {
-    fn ensure_physically_backed(&mut self) {
-        self.relation.ensure_physically_backed();
-        self.offsets.ensure_physically_backed();
     }
 }
 
