@@ -1,19 +1,45 @@
 <meta name="robots" content="noindex">
 
-numa-gpu
+NUMA-GPU
 ========
 
-## What is numa-gpu?
+## What is NUMA-GPU?
 
-numa-gpu is on-going research into using Nvidia's new NVLink 2.0 technology to
-accelerate in-memory data analytics. In contrast to PCI-e and NVLink 1.0,
-NVLink 2.0 provides hardware address translation services that, in effect, make
-the GPU a NUMA node (Non-Uniform Memory Access). This new feature will enable
-higher performance, but requires a re-design of the database.
+NUMA-GPU is an on-going research project investigating the use of a fast GPU
+interconnect to speed-up data processing on GPUs. Fast interconnects such as
+NVLink 2.0 provide GPUs with high-bandwidth, cache-coherenct access to main
+memory. Thus, our goal is to unlock higher DBMS query performance with this new
+class of hardware.
 
 In this project, we rethink database design to take full advantage of NVLink 2.0.
 Especially out-of-core queries, i.e., queries that use data sets larger than
 GPU memory, will see speed-ups compared to previous interconnect technologies.
+
+## Structure
+
+NUMA-GPU provides the following applications and libraries:
+
+ * `datagen` is a application and library to generate data with data
+   distributions. It is used as a library, e.g., by `hashjoin` and
+   `radix-join`.
+ * `hashjoin` is an application to execute and benchmark hash joins on CPUs and
+   GPUs.
+ * `microbench` is a collection of microbenchmarks for CPUs, GPUs, and GPU
+   interconnects.
+ * `numa-gpu` is a library with abstractions and tools to program GPUs with and
+   without NVLink.
+ * `radix-join` is an application to execute and benchmark radix joins on CPUs
+   and GPUs. The distinction from `hashjoin` enables a specialized API for
+   radix joins.
+ * `sql-ops` is a library that implements SQL operators. These are used by
+   `hashjoin` and `radix-join`.
+ * `tpch-bench` is an application to execute and benchmark TPC-H on CPUs and
+   GPUs. Currently, Query 6 is implemented.
+
+Detailed documentation is available by running:
+```sh
+cargo doc --document-private-items --no-deps --open
+```
 
 ## Platforms
 
@@ -23,7 +49,23 @@ The following platforms are currently tested:
  * `powerpc64le-unknown-linux-gnu`
  * `aarch64-unknown-linux-gnu`
 
-Note that NVLink is only available on IBM POWER platforms.
+### Interconnect Limitations
+
+NVLink between a CPU and a discrete GPU is currently only available on IBM
+POWER platforms. However, NUMA-GPU also runs on integrated GPUs and discrete
+GPUs connected by PCI-e.
+
+On these GPUs, NUMA-GPU does not support features that require cache-coherence.
+Notable examples are GPU access to pageable memory (i.e, non-pinned), CPU-GPU
+cooperative exectution, and memory allocations distributed over multiple NUMA
+nodes.
+
+### Hardware Monitoring Limitations
+
+The Nvidia Management Library (NVML) does not support ARM64 CPUs, and is
+automatically disabled by NUMA-GPU. Thus, reading out the dynamic GPU clock
+rate is not supported on ARM64. Instead, NUMA-GPU statically determines the GPU
+clock rate via CUDA.
 
 ## Installation
 
@@ -60,15 +102,24 @@ export CXX=/usr/bin/g++-8
 
 ### Rust
 
-Ensure that a recent version of Rust is installed on your system. You can install
-an up-to-date version of Rust using [rustup](https://rustup.rs):
+Ensure that a recent version of Rust (version 51.0 or newer) is installed on
+your system. You can install an up-to-date version of Rust using
+[rustup](https://rustup.rs):
 ```sh
 curl https://sh.rustup.rs -sSf | sh
 ```
 
+Note that the performance-critical components (i.e., relational operators) are
+written in C++ and CUDA. Rust is used to setup the benchmarks and call the
+C++/CUDA functions.
+
+The reason for our approach is that GCC and CUDA support more compiler
+intrinsics, inline assembly, and are generally more mature frameworks. In
+comparison, Rust is easier to refactor and test due to its strong type system.
+
 ### Linux settings
 
-numa-gpu locks memory with `mlock` to prevent swapping to disk. This requires
+NUMA-GPU locks memory with `mlock` to prevent swapping to disk. This requires
 permissions to be setup for the user:
 ```sh
 sudo cat << EOF >> /etc/security/limits.conf
@@ -79,30 +130,23 @@ EOF
 
 Now, log out and log in again.
 
-### numa-gpu
+### NUMA-GPU
 
-When all dependencies are installed, numa-gpu can be built using Cargo:
+When all dependencies are installed, NUMA-GPU can be built using Cargo:
 ```sh
 cargo build --release
 ```
 
-Note that on ARM64 CPUs, Nvidia Management Library (NVML) is not supported and
-is disabled automatically. Thus, reading out the dynamic GPU clock rate is not
-supported on ARM64, and the GPU clock rate is determined statically via CUDA
-instead.
+### Advanced Guides
+
+Detailed setup guides are provided for the following topics:
+
+ * [Huge Pages](./guides/huge_pages.md)
 
 ## Usage
 
-numa-gpu provides several applications and libraries:
- * `datagen` is a application and library to generate data with data
-   distributions.
- * `hashjoin` is an application to execute and benchmark hash joins on CPUs and
-   GPUs.
- * `microbench` is a collection of microbenchmarks for CPUs, GPUs, and GPU
-   interconnects.
- * `numa-gpu` is a library with abstractions and tools to program GPUs with and
-   without NVLink.
- * `sql-ops` is a library that implements SQL operators.
+The easiest way to launch NUMA-GPU commands is through `cargo run`. Some
+examples are listed here.
 
 ### microbench
 
@@ -120,46 +164,85 @@ The bandwidth benchmark can be executed as follows:
 cargo run --release --package microbench -- \
   --csv bandwidth.csv                       \
   bandwidth                                 \
-    --device-type gpu                       \
+    --device-type Gpu                       \
     --device-id 0                           \
-    --warpmul-lower 1                       \
-    --warpmul-upper 2                       \
-    --oversub-lower 4                       \
-    --oversub-upper 32                      \
-    --mem-type device                       \
-    --repeat 10                             \
-    --size 128
+    --grid-sizes 80,160                     \
+    --block-sizes 128,256,512,1024          \
+    --size 1024                             \
+    --mem-type Device                       \
+    --repeat 10
 ```
 
 ### hashjoin
 
-`hashjoin` currently implements a no-partitioning hash join. It supports perfect
-hashing and linear probing schemes. Linear probing uses a multiply-shift hash
-function.
+`hashjoin` implements a no-partitioning hash join. It supports perfect hashing
+and linear probing schemes. Linear probing hashes keys with a multiply-shift
+hash function.
 
-`hashjoin` supports different execution method, memory location and type,
-tuple size, and data set combinations. For example:
+`hashjoin` supports different execution method, memory location and type, tuple
+size, and data set combinations. For example:
 
 ```sh
 cargo run --release --package hashjoin --    \
-  --execution-method gpustream               \
+  --execution-method Gpu                     \
   --device-id 0                              \
-  --hash-table-mem-type device               \
-  --rel-mem-type numa                        \
+  --hash-table-mem-type Device               \
+  --rel-mem-type NumaLazyPinned              \
+  --page-type TransparentHuge                \
   --inner-rel-location 0                     \
   --outer-rel-location 0                     \
-  --tuple-bytes bytes16                      \
-  --hashing-scheme perfect                   \
+  --tuple-bytes Bytes16                      \
+  --hashing-scheme Perfect                   \
   --data-set Custom                          \
-  --inner-rel-tuples `bc <<< "10^6"`         \
-  --outer-rel-tuples `bc <<< "10^6"`         \
+  --inner-rel-tuples `bc <<< "128 * 10^6"`   \
+  --outer-rel-tuples `bc <<< "128 * 10^6"`   \
   --repeat 10                                \
   --csv hashjoin.csv
 ```
 
+### radix-join
+
+`radix-join` implements three types of radix join:
+ * a textbook GPU radix join,
+ * a heterogeneous CPU-GPU join that partitions data on the CPU,
+ * and a new out-of-core join for GPUs with fast interconnects, called the
+   "Triton join".
+
+```sh
+cargo run                                          \
+  --release                                        \
+  --package radix-join                             \
+  --                                               \
+  --execution-strategy GpuRadixJoinTwoPass         \
+  --hashing-scheme BucketChaining                  \
+  --histogram-algorithm CpuChunkedSimd             \
+  --partition-algorithm HSSWWCv4                   \
+  --partition-algorithm-2nd SSWWCv2                \
+  --radix-bits 7,9                                 \
+  --page-type TransparentHuge                      \
+  --dmem-buffer-size 8                             \
+  --threads 64                                     \
+  --rel-mem-type NumaLazyPinned                    \
+  --inner-rel-location 0                           \
+  --outer-rel-location 0                           \
+  --partitions-mem-type NumaLazyPinned             \
+  --partitions-location 0                          \
+  --data-set Custom                                \
+  --inner-rel-tuples `bc <<< "128 * 10^6"`         \
+  --outer-rel-tuples `bc <<< "128 * 10^6"`         \
+  --tuple-bytes Bytes16                            \
+  --repeat 10                                      \
+  --csv radix-join.csv
+```
+
+*Important:* `radix-join` is a hardware-conscious join, and thus high
+throughput requires "good" parameters. The above settings are intended for
+demonstration only and *should be tuned to your machine as well as the data
+size*!
+
 ## FAQ
 
-### numa-gpu fails with: SIGILL (Illegal instruction)
+### NUMA-GPU fails with: SIGILL (Illegal instruction)
 
 Most likely, you've attempted to run a GPU program with the wrong memory type
 (on a non-NVLink machine). Try using `--mem-type device`.
@@ -169,7 +252,7 @@ supports `--execution-method gpustream` to stream blocks of `system` and `numa`
 memory to the GPU. Alternatively, `--execution-method unified` can be used
 togther with `--rel-mem-type unified`.
 
-### numa-gpu fails with: SIGBUS (Misaligned address error)
+### NUMA-GPU fails with: SIGBUS (Misaligned address error)
 
 This is usually an out-of-memory condition. Try the following:
 
@@ -192,14 +275,14 @@ This is usually an out-of-memory condition. Try the following:
  - If none of the above apply, you may have found a bug! In this case, let us
    know by opening an issue or pull request.
 
-### numa-gpu fails with: CudaError(NoBinaryForGpu)
+### NUMA-GPU fails with: CudaError(NoBinaryForGpu)
 
 Your device isn't set as a build target. First, find the correct gencode for your
 device in [Arnon Shimoni's helpful blog post][gencodes].
 Then, add the gencode to the gencode lists in `sql-ops/build.rs` and
 `microbench/build.rs`.
 
-### numa-gpu fails with: mlock() failed with ENOMEM
+### NUMA-GPU fails with: mlock() failed with ENOMEM
 
 You don't have permission to lock memory with `mlock`. Setup permissions for your
 user with:
@@ -212,7 +295,7 @@ EOF
 
 Now, log out and log in again.
 
-### numa-gpu fails with: Error: Device memory not supported in this context!
+### NUMA-GPU fails with: Error: Device memory not supported in this context!
 
 You've attempted to run a CPU program with device memory. Try using
 `--mem-type system` or `--mem-type numa`.
