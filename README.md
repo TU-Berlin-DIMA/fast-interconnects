@@ -20,8 +20,9 @@ GPU memory, will see speed-ups compared to previous interconnect technologies.
 NUMA-GPU provides the following applications and libraries:
 
  * `datagen` is a application and library to generate data with data
-   distributions. It is used as a library, e.g., by `hashjoin` and
-   `radix-join`.
+   distributions. It is used as a library by `data-store` and `tpch-bench`.
+ * `data-store` is a library for generating relational data sets. It is used by
+   `hashjoin` and `radix-join`.
  * `hashjoin` is an application to execute and benchmark hash joins on CPUs and
    GPUs.
  * `microbench` is a collection of microbenchmarks for CPUs, GPUs, and GPU
