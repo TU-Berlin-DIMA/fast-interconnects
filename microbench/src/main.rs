@@ -85,6 +85,7 @@ arg_enum! {
     pub enum ArgMemType {
         System,
         Numa,
+        NumaPinned,
         Pinned,
         Unified,
         Device,
@@ -109,6 +110,10 @@ impl From<ArgMemTypeHelper> for allocator::MemType {
         match mem_type {
             ArgMemType::System => allocator::MemType::SysMem,
             ArgMemType::Numa => allocator::MemType::NumaMem {
+                node,
+                page_type: page_type.into(),
+            },
+            ArgMemType::NumaPinned => allocator::MemType::NumaPinnedMem {
                 node,
                 page_type: page_type.into(),
             },
