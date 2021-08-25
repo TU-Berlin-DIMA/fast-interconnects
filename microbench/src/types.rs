@@ -62,19 +62,6 @@ impl From<&allocator::MemType> for MemTypeDescription {
     }
 }
 
-/// The memory allocation method
-///
-/// Used to specify how the memory is allocated. Pageable memory can be
-/// allocated with the system memory allocator. In contrast, pinned memory must
-/// either be allocated using the cudaHostAlloc function, or dynamically pinned
-/// after allocation with the cudaHostRegister function.
-#[derive(Debug, Clone, Serialize, Eq, PartialEq)]
-pub enum MemoryAllocationType {
-    Pageable,
-    Pinned,
-    DynamicallyPinned,
-}
-
 /// Clock cycles
 #[derive(Debug, Copy, Clone, Default, Serialize, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Cycles(pub u64);

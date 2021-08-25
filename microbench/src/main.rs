@@ -39,6 +39,16 @@ arg_enum! {
     }
 }
 
+// FIXME: rename to CopyDirection
+arg_enum! {
+    #[derive(Debug, Clone, Copy, Serialize, Eq, PartialEq)]
+    pub enum CopyMethod {
+        HostToDevice,
+        DeviceToHost,
+        Bidirectional,
+    }
+}
+
 arg_enum! {
     #[derive(Copy, Clone, Debug, PartialEq, Serialize)]
     pub enum ArgPageType {
@@ -388,16 +398,53 @@ struct CmdNumaCopy {
 
 #[derive(StructOpt)]
 struct CmdCudaCopy {
-    #[structopt(short = "i", long = "device-id", default_value = "0")]
+    /// Direction in which to execute the copy
+    #[structopt(
+        short = "c",
+        long = "copy-direction",
+        default_value = "HostToDevice,DeviceToHost,Bidirectional",
+        require_delimiter = true
+    )]
+    copy_direction: Vec<CopyMethod>,
+
+    /// Size of buffer to copy (MB)
+    #[structopt(
+        short = "s",
+        long = "copy-size",
+        default_value = "1024",
+        require_delimiter = true
+    )]
+    size: Vec<usize>,
+
     /// Execute on GPU (See CUDA device list)
+    #[structopt(short = "i", long = "device-id", default_value = "0")]
     device_id: u16,
 
-    #[structopt(long = "mem-location", default_value = "0")]
+    /// Memory type with which to allocate data
+    #[structopt(
+        short = "m",
+        long = "mem-type",
+        default_value = "NumaPinned",
+        possible_values = &ArgMemType::variants(),
+        case_insensitive = true
+    )]
+    mem_type: ArgMemType,
+
     /// Allocate memory on NUMA node (See numactl -H)
+    #[structopt(long = "mem-location", default_value = "0")]
     mem_location: u16,
 
-    #[structopt(short = "r", long = "repeat", default_value = "100")]
+    /// Page type with with to allocate memory
+    #[structopt(
+        long = "page-type",
+        default_value = "Default",
+        possible_values = &ArgPageType::variants(),
+        case_insensitive = true
+    )]
+    page_type: ArgPageType,
+
     /// Number of times to repeat benchmark
+    #[structopt(short = "r", long = "repeat", default_value = "100")]
     repeat: u32,
 }
 
@@ -506,9 +553,21 @@ fn main() -> Result<()> {
             numa_memcopy.measure(parallel, csv_file.as_mut());
         }
         Command::CudaCopy(ref ccpy) => {
+            let mem_type_helper = ArgMemTypeHelper {
+                mem_type: ccpy.mem_type,
+                node: ccpy.mem_location,
+                page_type: ccpy.page_type,
+            };
+
             CudaMemcopy::measure(
                 ccpy.device_id.into(),
-                ccpy.mem_location,
+                mem_type_helper.into(),
+                &ccpy.copy_direction,
+                &ccpy
+                    .size
+                    .iter()
+                    .map(|&bytes| bytes * mb)
+                    .collect::<Vec<_>>(),
                 ccpy.repeat,
                 csv_file.as_mut(),
             );
