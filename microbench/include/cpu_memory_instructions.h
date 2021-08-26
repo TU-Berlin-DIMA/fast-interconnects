@@ -11,6 +11,43 @@
 #ifndef CPU_MEMORY_INSTRUCTIONS_H
 #define CPU_MEMORY_INSTRUCTIONS_H
 
+#include <cstddef>
+
+#if defined(__x86_64__)
+#include <immintrin.h>
+#endif /* defined(__x86_64__) */
+
+/*
+ * Returns the type as a scalar value
+ */
+template <typename T>
+inline unsigned long long scalar(T const value) {
+  return static_cast<unsigned long long>(value);
+}
+
+#if defined(__SSE2__)
+template <>
+inline unsigned long long scalar(__m128i const value) {
+  // Copy the lower 64-bit integer
+  return _mm_cvtsi128_si64(value);
+}
+#endif /* defined(__SSE2__) */
+
+/*
+ * Assigns a scalar value
+ */
+template <typename T>
+inline T assign(std::size_t const value) {
+  return static_cast<T>(value);
+}
+
+#if defined(__SSE2__)
+template <>
+inline __m128i assign<__m128i>(std::size_t const value) {
+  return _mm_set_epi64x(value, value);
+}
+#endif /* defined(__SSE2__) */
+
 /*
  * Load the value at the given address
  */
@@ -44,6 +81,17 @@ inline T load(T const *const addr) {
 template <>
 inline unsigned __int128 load(unsigned __int128 const *const addr) {
   return __atomic_load_n(addr, __ATOMIC_RELAXED);
+}
+
+#elif defined(__SSE4_1__)
+/*
+ * Load a 16-byte aligned address without polluting caches
+ *
+ * https://software.intel.com/sites/landingpage/IntrinsicsGuide/#!=undefined&expand=6894,4257,4257,6884&cats=Load&techs=SSE4_1
+ */
+template <>
+inline __m128i load(__m128i const *const addr) {
+  return _mm_stream_load_si128(const_cast<__m128i *const>(addr));
 }
 #endif /* defined(__powerpc64__) */
 
@@ -81,6 +129,18 @@ template <>
 inline void store(unsigned __int128 *const addr,
                   unsigned __int128 const value) {
   __atomic_store_n(addr, value, __ATOMIC_RELAXED);
+}
+
+#elif defined(__SSE2__)
+/*
+ * Store a 16-byte aligned address without polluting caches
+ *
+ * https://software.intel.com/sites/landingpage/IntrinsicsGuide/#!=undefined&expand=4257,4257,6894,6894&cats=Store&techs=SSE2
+ *
+ */
+template <>
+inline void store(__m128i *const addr, __m128i const value) {
+  _mm_stream_si128(addr, value);
 }
 #endif /* defined(__powerpc64__) */
 

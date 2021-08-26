@@ -156,7 +156,7 @@ fn main() {
         .flag_if_supported("-mcpu=native")
         .flag_if_supported("-march=native")
         .flag("-mtune=native")
-        // .flag("-lnuma")
+        // .flag("-msse4.1") // Note: GCC sometimes detects incorrect microarch
         .pic(true)
         // .file("cpputils/numa_utils.cpp")
         .files(&cpp_files)

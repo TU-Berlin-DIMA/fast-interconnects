@@ -15,13 +15,15 @@
 
 #if defined(__powerpc64__)
 #include <ppc_intrinsics.h>
+#elif defined(__x86_64__)
+#include <immintrin.h>
 #endif
 
 // Disable strided prefetch and set maximum prefetch depth
 #define PPC_TUNE_DSCR 7ULL
 
 // X mod Y, assuming that Y is a power of 2
-#define FAST_MODULO(X, Y) ((X) & ((Y) - 1U))
+#define FAST_MODULO(X, Y) ((X) & ((Y)-1U))
 
 // Alignment size for memory accesses
 #define ALIGN_BYTES 128UL
@@ -76,7 +78,7 @@ void cpu_read_bandwidth_seq_kernel(T *data, std::size_t size,
   *memory_accesses = end - begin;
 
   // Prevent compiler optimization
-  if (dummy == 0) {
+  if (scalar(dummy) == 0) {
     data[0] = dummy;
   }
 }
@@ -118,7 +120,7 @@ void cpu_write_bandwidth_seq_kernel(T *data, std::size_t size,
   get_clock(start);
 
   for (std::size_t i = begin; i < end; ++i) {
-    store(&data[i], static_cast<T>(i));
+    store(&data[i], assign<T>(i));
   }
 
   get_clock(stop);
@@ -298,7 +300,7 @@ void cpu_write_bandwidth_lcg_kernel(T *data, std::size_t size,
 
       // Write to a random location within data range
       uint64_t index = FAST_MODULO(x, size);
-      store(&data[index], static_cast<T>(x));
+      store(&data[index], assign<T>(x));
     }
 
     mem_accesses += loop_length;
@@ -393,13 +395,17 @@ void cpu_cas_bandwidth_lcg_kernel(T *data, std::size_t size,
 
 MAKE_BENCHMARK(cpu_read_bandwidth_seq, 4B, uint32_t)
 MAKE_BENCHMARK(cpu_read_bandwidth_seq, 8B, uint64_t)
-#if __SIZEOF_INT128__ == 16
+#if defined(__SSE2__)
+MAKE_BENCHMARK(cpu_read_bandwidth_seq, 16B, __m128i)
+#elif __SIZEOF_INT128__ == 16
 MAKE_BENCHMARK(cpu_read_bandwidth_seq, 16B, unsigned __int128)
 #endif
 
 MAKE_BENCHMARK(cpu_write_bandwidth_seq, 4B, uint32_t)
 MAKE_BENCHMARK(cpu_write_bandwidth_seq, 8B, uint64_t)
-#if __SIZEOF_INT128__ == 16
+#if defined(__SSE2__)
+MAKE_BENCHMARK(cpu_write_bandwidth_seq, 16B, __m128i)
+#elif __SIZEOF_INT128__ == 16
 MAKE_BENCHMARK(cpu_write_bandwidth_seq, 16B, unsigned __int128)
 #endif
 
@@ -411,13 +417,17 @@ MAKE_BENCHMARK(cpu_cas_bandwidth_seq, 16B, unsigned __int128)
 
 MAKE_BENCHMARK(cpu_read_bandwidth_lcg, 4B, uint32_t)
 MAKE_BENCHMARK(cpu_read_bandwidth_lcg, 8B, uint64_t)
-#if __SIZEOF_INT128__ == 16
+#if defined(__SSE2__)
+MAKE_BENCHMARK(cpu_read_bandwidth_lcg, 16B, __m128i)
+#elif __SIZEOF_INT128__ == 16
 MAKE_BENCHMARK(cpu_read_bandwidth_lcg, 16B, unsigned __int128)
 #endif
 
 MAKE_BENCHMARK(cpu_write_bandwidth_lcg, 4B, uint32_t)
 MAKE_BENCHMARK(cpu_write_bandwidth_lcg, 8B, uint64_t)
-#if __SIZEOF_INT128__ == 16
+#if defined(__SSE2__)
+MAKE_BENCHMARK(cpu_write_bandwidth_lcg, 16B, __m128i)
+#elif __SIZEOF_INT128__ == 16
 MAKE_BENCHMARK(cpu_write_bandwidth_lcg, 16B, unsigned __int128)
 #endif
 
