@@ -378,6 +378,10 @@ struct CmdNumaCopy {
     /// CPU NUMA node ID
     cpu_node: u16,
 
+    /// Path to CPU affinity map file for CPU workers
+    #[structopt(long = "cpu-affinity", conflicts_with = "cpu-node", parse(from_os_str))]
+    cpu_affinity: Option<PathBuf>,
+
     #[structopt(long = "src-node", default_value = "0")]
     /// Source NUMA node ID
     src_node: u16,
@@ -540,13 +544,20 @@ fn main() -> Result<()> {
             )?;
         }
         Command::NumaCopy(ref ncpy) => {
+            let cpu_affinity = ncpy
+                .cpu_affinity
+                .as_ref()
+                .map(|cpu_affinity_file| CpuAffinity::from_file(cpu_affinity_file.as_path()))
+                .transpose()?;
+
             let mut numa_memcopy = NumaMemcopy::new(
                 ncpy.size * mb,
-                ncpy.cpu_node,
                 ncpy.src_node,
                 ncpy.dst_node,
                 ncpy.page_type.into(),
                 ncpy.threads,
+                ncpy.cpu_node,
+                cpu_affinity,
             );
 
             let parallel = ncpy.threads != 1;

@@ -10,6 +10,7 @@
 
 use crate::ArgPageType;
 use average::{concatenate, impl_from_iterator, Estimate, Max, Min, Quantile, Variance};
+use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::numa::{self, NumaMemory};
 use serde_derive::Serialize;
 use std::io;
@@ -41,11 +42,12 @@ pub struct NumaMemcopy {
 impl NumaMemcopy {
     pub fn new(
         size: usize,
-        cpu_node: u16,
         src_node: u16,
         dst_node: u16,
         page_type: ArgPageType,
         num_threads: usize,
+        cpu_node: u16,
+        cpu_affinity: Option<CpuAffinity>,
     ) -> Self {
         // Allocate NUMA memory
         let mut src = NumaMemory::new(size, src_node, page_type.into());
@@ -59,10 +61,25 @@ impl NumaMemcopy {
             *x = ((i + 1) % u8::MAX as usize) as u8;
         }
 
+        // Get CPU node of first thread if cpu_affinity specified, otherwise
+        // just use cpu_node
+        let inferred_cpu_node = cpu_affinity
+            .as_ref()
+            .and_then(|ca| ca.thread_to_cpu(0))
+            .map(|cpu_id| numa::node_of_cpu(cpu_id).expect("Failed to get NUMA node of CPU"))
+            .unwrap_or(cpu_node);
+
         // Build thread pool
         let thread_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(num_threads)
-            .start_handler(move |_tid| numa::run_on_node(cpu_node).expect("Couldn't set NUMA node"))
+            .start_handler(move |tid| {
+                if let Some(ca) = cpu_affinity.clone() {
+                    ca.set_affinity(tid as u16)
+                        .expect("Couldn't set CPU core affinity");
+                } else {
+                    numa::run_on_node(cpu_node).expect("Couldn't set NUMA node");
+                }
+            })
             .build()
             .expect("Couldn't build Rayon thread pool");
 
@@ -70,7 +87,7 @@ impl NumaMemcopy {
             src,
             dst,
             page_type,
-            cpu_node,
+            cpu_node: inferred_cpu_node,
             thread_pool,
         }
     }
@@ -90,8 +107,6 @@ impl NumaMemcopy {
     }
 
     fn run_rayon(&mut self) -> Duration {
-        numa::run_on_node(self.cpu_node).expect("Couldn't set NUMA node");
-
         let threads = self.thread_pool.current_num_threads();
         let chunk_size = (self.src.len() + threads - 1) / threads;
 
