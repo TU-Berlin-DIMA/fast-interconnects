@@ -136,8 +136,7 @@ impl NumaMemcopy {
         timer.elapsed()
     }
 
-    pub fn measure<W: io::Write>(&mut self, parallel: bool, writer: Option<&mut W>) {
-        let repeat = 100;
+    pub fn measure<W: io::Write>(&mut self, parallel: bool, repeat: u32, writer: Option<&mut W>) {
         let hostname = hostname::get()
             .expect("Couldn't get hostname")
             .into_string()

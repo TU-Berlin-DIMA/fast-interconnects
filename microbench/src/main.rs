@@ -398,6 +398,10 @@ struct CmdNumaCopy {
         case_insensitive = true
     )]
     page_type: ArgPageType,
+
+    /// Number of times to repeat benchmark
+    #[structopt(short = "r", long = "repeat", default_value = "100")]
+    repeat: u32,
 }
 
 #[derive(StructOpt)]
@@ -561,7 +565,7 @@ fn main() -> Result<()> {
             );
 
             let parallel = ncpy.threads != 1;
-            numa_memcopy.measure(parallel, csv_file.as_mut());
+            numa_memcopy.measure(parallel, ncpy.repeat, csv_file.as_mut());
         }
         Command::CudaCopy(ref ccpy) => {
             let mem_type_helper = ArgMemTypeHelper {
