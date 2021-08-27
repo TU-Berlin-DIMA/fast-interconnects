@@ -104,7 +104,7 @@ fn main() -> Result<()> {
 
             harness::measure(cmd.repeat, csv_file, template, Box::new(query))?;
         }
-        q @ _ => panic!(format!("TPC-H query {} is not supported!", q)),
+        q @ _ => panic!("TPC-H query {} is not supported!", q),
     };
 
     Ok(())
