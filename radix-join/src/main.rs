@@ -654,7 +654,7 @@ where
         ArgDataSet::Blanas4MB => {
             let gen = move |pk_rel: &mut [_], _: &mut [_], fk_rel: &mut [_], _: &mut [_]| {
                 datagen::relation::UniformRelation::gen_primary_key_par(pk_rel, selectivity)?;
-                datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
+                datagen::relation::UniformRelation::gen_attr_par(fk_rel, 0..pk_rel.len())?;
                 Ok(())
             };
 
@@ -674,7 +674,7 @@ where
         ArgDataSet::Lutz2Gv32G => {
             let gen = move |pk_rel: &mut [_], _: &mut [_], fk_rel: &mut [_], _: &mut [_]| {
                 datagen::relation::UniformRelation::gen_primary_key_par(pk_rel, selectivity)?;
-                datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
+                datagen::relation::UniformRelation::gen_attr_par(fk_rel, 0..pk_rel.len())?;
                 Ok(())
             };
 
@@ -687,7 +687,7 @@ where
         ArgDataSet::Lutz32Gv32G => {
             let gen = move |pk_rel: &mut [_], _: &mut [_], fk_rel: &mut [_], _: &mut [_]| {
                 datagen::relation::UniformRelation::gen_primary_key_par(pk_rel, selectivity)?;
-                datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
+                datagen::relation::UniformRelation::gen_attr_par(fk_rel, 0..pk_rel.len())?;
                 Ok(())
             };
 
@@ -701,7 +701,7 @@ where
             let uniform_gen = Box::new(
                 move |pk_rel: &mut [_], _: &mut [_], fk_rel: &mut [_], _: &mut [_]| {
                     datagen::relation::UniformRelation::gen_primary_key_par(pk_rel, selectivity)?;
-                    datagen::relation::UniformRelation::gen_attr_par(fk_rel, 1..=pk_rel.len())?;
+                    datagen::relation::UniformRelation::gen_attr_par(fk_rel, 0..pk_rel.len())?;
                     Ok(())
                 },
             );

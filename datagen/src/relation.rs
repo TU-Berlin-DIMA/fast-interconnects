@@ -17,7 +17,7 @@ use num_traits::FromPrimitive;
 use crate::error::{ErrorKind, Result};
 
 use std::convert::TryFrom;
-use std::ops::RangeInclusive;
+use std::ops::Range;
 
 use rand::distributions::{Distribution, Uniform};
 use rand::seq::SliceRandom;
@@ -75,7 +75,7 @@ impl UniformRelation {
     /// Generates a primary key attribute.
     ///
     /// The generated keys are unique and contiguous. The key range starts from
-    /// 1 and ends at, i.e. including, attr.len(). Keys are placed at random
+    /// 0 and ends before, i.e. excluding, attr.len(). Keys are placed at random
     /// locations within the slice.
     ///
     /// `selectivity` specifies the join selectivity in percent. An according
@@ -91,7 +91,7 @@ impl UniformRelation {
 
         attr.iter_mut()
             .by_ref()
-            .zip(1..)
+            .zip(0..)
             .map(|(x, i)| {
                 T::try_from_usize(i).map(|i| {
                     let val = if percent.sample(&mut rng) <= selectivity {
@@ -111,7 +111,7 @@ impl UniformRelation {
     /// Generates a primary key attribute in parallel.
     ///
     /// The generated keys are unique and contiguous. The key range starts from
-    /// 1 and ends at, i.e. including, attr.len(). Keys are placed at random
+    /// 0 and ends before, i.e. excluding, attr.len(). Keys are placed at random
     /// locations within the slice.
     ///
     /// `selectivity` specifies the join selectivity in percent. An according
@@ -123,7 +123,7 @@ impl UniformRelation {
     ) -> Result<()> {
         let selectivity = selectivity.unwrap_or_else(|| 100);
         let percent = Uniform::from(0..=100);
-        let mut shuffled: Vec<(usize, T)> = (1..(attr.len() + 1))
+        let mut shuffled: Vec<(usize, T)> = (0..(attr.len()))
             .into_par_iter()
             .map_init(thread_rng, |mut rng, i| {
                 T::try_from_usize(i).map(|i| {
@@ -165,7 +165,7 @@ impl UniformRelation {
     /// Generates a uniformly distributed attribute.
     ///
     /// The generated values are sampled from `range`.
-    pub fn gen_attr<T: FromPrimitive>(attr: &mut [T], range: RangeInclusive<usize>) -> Result<()> {
+    pub fn gen_attr<T: FromPrimitive>(attr: &mut [T], range: Range<usize>) -> Result<()> {
         let mut rng = thread_rng();
         let between = Uniform::from(range);
 
@@ -189,7 +189,7 @@ impl UniformRelation {
     /// The generated values are sampled from `range`.
     pub fn gen_attr_par<T: FromPrimitive + Send>(
         attr: &mut [T],
-        range: RangeInclusive<usize>,
+        range: Range<usize>,
     ) -> Result<()> {
         let between = Uniform::from(range);
 
@@ -250,7 +250,7 @@ impl ZipfRelation {
 
     /// Generates an attribute following the Zipf distribution in parallel.
     ///
-    /// The generated values are sampled from 1 to num_elements (inclusive).
+    /// The generated values are sampled from 0 to num_elements (exclusive).
     /// Note that the exponent must be greather than 0.
     ///
     /// In the literature, num_elements is also called the alphabet size.
@@ -265,11 +265,13 @@ impl ZipfRelation {
             )
         })?;
 
+        // ZipfDistribution generates elements in range [1, num_elements]. Thus,
+        // need to substract 1 to get a range [0, num_elements[.
         attr.par_iter_mut()
             .map_init(
                 || thread_rng(),
                 |mut rng, x| {
-                    FromPrimitive::from_usize(between.sample(&mut rng))
+                    FromPrimitive::from_usize(between.sample(&mut rng) - 1)
                         .ok_or_else(|| {
                             ErrorKind::IntegerOverflow("Failed to convert from usize".to_string())
                                 .into()

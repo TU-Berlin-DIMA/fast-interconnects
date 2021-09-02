@@ -11,7 +11,7 @@
 
 pub mod radix_partition;
 
-use datagen::relation::UniformRelation;
+use datagen::relation::{KeyAttribute, UniformRelation};
 use itertools::izip;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use radix_partition::{tuple_loss_or_duplicates, verify_partitions};
@@ -38,7 +38,7 @@ fn run_cpu_partitioning<T, KeyGenFn, PayGenFn, ValidatorFn>(
     mut validator: Box<ValidatorFn>,
 ) -> Result<(), Box<dyn Error>>
 where
-    T: Clone + Default + DeviceCopy + CpuRadixPartitionable,
+    T: Clone + Default + KeyAttribute + DeviceCopy + CpuRadixPartitionable,
     KeyGenFn: FnOnce(&mut [T]) -> Result<(), Box<dyn Error>>,
     PayGenFn: FnOnce(&mut [T]) -> Result<(), Box<dyn Error>>,
     ValidatorFn: FnMut(
@@ -76,7 +76,12 @@ where
         partitioned_relation
             .as_raw_relation_mut_slice()?
             .iter_mut()
-            .for_each(|x| *x = Tuple::default());
+            .for_each(|x| {
+                *x = Tuple {
+                    key: T::null_key(),
+                    value: T::default(),
+                }
+            });
     }
 
     let mut partitioner = CpuRadixPartitioner::new(
@@ -125,7 +130,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_small_data() -> Result<(), Box<dyn E
     run_cpu_partitioning(
         15,
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(4),
@@ -138,8 +143,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_small_data() -> Result<(), Box<dyn E
 fn cpu_verify_partitions_chunked_i32_small_data() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         15,
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(4),
@@ -153,7 +158,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_0_bits() -> Result<(), Box<dyn Error
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(0),
@@ -166,8 +171,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_0_bits() -> Result<(), Box<dyn Error
 fn cpu_verify_partitions_chunked_i32_0_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(0),
@@ -181,7 +186,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_1_bit() -> Result<(), Box<dyn Error>
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(1),
@@ -194,8 +199,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_1_bit() -> Result<(), Box<dyn Error>
 fn cpu_verify_partitions_chunked_i32_1_bit() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(1),
@@ -209,7 +214,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_2_bits() -> Result<(), Box<dyn Error
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(2),
@@ -222,8 +227,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_2_bits() -> Result<(), Box<dyn Error
 fn cpu_verify_partitions_chunked_i32_2_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(2),
@@ -237,7 +242,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_12_bits() -> Result<(), Box<dyn Erro
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(12),
@@ -250,8 +255,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_12_bits() -> Result<(), Box<dyn Erro
 fn cpu_verify_partitions_chunked_i32_12_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(12),
@@ -265,7 +270,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_13_bits() -> Result<(), Box<dyn Erro
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(13),
@@ -278,8 +283,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_13_bits() -> Result<(), Box<dyn Erro
 fn cpu_verify_partitions_chunked_i32_13_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(13),
@@ -293,7 +298,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_14_bits() -> Result<(), Box<dyn Erro
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(14),
@@ -306,8 +311,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_14_bits() -> Result<(), Box<dyn Erro
 fn cpu_verify_partitions_chunked_i32_14_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(14),
@@ -321,7 +326,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_15_bits() -> Result<(), Box<dyn Erro
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(15),
@@ -334,8 +339,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_15_bits() -> Result<(), Box<dyn Erro
 fn cpu_verify_partitions_chunked_i32_15_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(15),
@@ -349,7 +354,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_16_bits() -> Result<(), Box<dyn Erro
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(16),
@@ -362,8 +367,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_16_bits() -> Result<(), Box<dyn Erro
 fn cpu_verify_partitions_chunked_i32_16_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(16),
@@ -377,7 +382,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_17_bits() -> Result<(), Box<dyn Erro
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(17),
@@ -390,8 +395,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_17_bits() -> Result<(), Box<dyn Erro
 fn cpu_verify_partitions_chunked_i32_17_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(17),
@@ -406,7 +411,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_less_tuples_than_partitions(
     run_cpu_partitioning(
         (32 << 5) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(17),
@@ -419,8 +424,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_less_tuples_than_partitions(
 fn cpu_verify_partitions_chunked_i32_less_tuples_than_partitions() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 5) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(17),
@@ -434,7 +439,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_non_power_2_data_len() -> Result<(),
     run_cpu_partitioning(
         (32 << 10) / size_of::<i32>() - 7,
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(10),
@@ -447,8 +452,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_i32_non_power_2_data_len() -> Result<(),
 fn cpu_verify_partitions_chunked_i32_non_power_2_data_len() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 10) / size_of::<i32>() - 7,
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(10),
@@ -462,7 +467,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_i64_17_bits() -> Result<(), Box<dyn Erro
     run_cpu_partitioning(
         (64 << 20) / size_of::<i64>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i64>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i64>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i64>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(17),
@@ -475,8 +480,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_i64_17_bits() -> Result<(), Box<dyn Erro
 // fn cpu_verify_partitions_chunked_i64_17_bits() -> Result<(), Box<dyn Error>> {
 //     run_cpu_partitioning(
 //         (64 << 20) / size_of::<i64>(),
-//         Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i64>(keys, 1..=(32 << 20))?)),
-//         Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i64>(pays, 1..=10000)?)),
+//         Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i64>(keys, 0..(32 << 20))?)),
+//         Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i64>(pays, 0..10000)?)),
 //         CpuHistogramAlgorithm::Chunked,
 //         CpuRadixPartitionAlgorithm::NC,
 //         RadixBits::from(17),
@@ -491,7 +496,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_i32_12_bits() -> Result<(), Box<dyn
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(12),
@@ -505,8 +510,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_i32_12_bits() -> Result<(), Box<dyn
 fn cpu_verify_partitions_chunked_simd_i32_12_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::NC,
         RadixBits::from(12),
@@ -522,7 +527,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_small_data() -> Result<(), Box<
     run_cpu_partitioning(
         15,
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(4),
@@ -535,8 +540,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_small_data() -> Result<(), Box<
 fn cpu_verify_partitions_chunked_swwc_i32_small_data() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         15,
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(4),
@@ -550,7 +555,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_0_bits() -> Result<(), Box<dyn 
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(0),
@@ -563,8 +568,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_0_bits() -> Result<(), Box<dyn 
 fn cpu_verify_partitions_chunked_swwc_i32_0_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(0),
@@ -578,7 +583,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_1_bit() -> Result<(), Box<dyn E
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(1),
@@ -591,8 +596,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_1_bit() -> Result<(), Box<dyn E
 fn cpu_verify_partitions_chunked_swwc_i32_1_bit() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(1),
@@ -606,7 +611,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_2_bits() -> Result<(), Box<dyn 
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(2),
@@ -619,8 +624,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_2_bits() -> Result<(), Box<dyn 
 fn cpu_verify_partitions_chunked_swwc_i32_2_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(2),
@@ -634,7 +639,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_12_bits() -> Result<(), Box<dyn
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(12),
@@ -647,8 +652,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_12_bits() -> Result<(), Box<dyn
 fn cpu_verify_partitions_chunked_swwc_i32_12_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(12),
@@ -662,7 +667,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_13_bits() -> Result<(), Box<dyn
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(13),
@@ -675,8 +680,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_13_bits() -> Result<(), Box<dyn
 fn cpu_verify_partitions_chunked_swwc_i32_13_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(13),
@@ -690,7 +695,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_14_bits() -> Result<(), Box<dyn
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(14),
@@ -703,8 +708,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_14_bits() -> Result<(), Box<dyn
 fn cpu_verify_partitions_chunked_swwc_i32_14_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(14),
@@ -718,7 +723,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_15_bits() -> Result<(), Box<dyn
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(15),
@@ -731,8 +736,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_15_bits() -> Result<(), Box<dyn
 fn cpu_verify_partitions_chunked_swwc_i32_15_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(15),
@@ -746,7 +751,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_16_bits() -> Result<(), Box<dyn
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(16),
@@ -759,8 +764,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_16_bits() -> Result<(), Box<dyn
 fn cpu_verify_partitions_chunked_swwc_i32_16_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(16),
@@ -774,7 +779,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_17_bits() -> Result<(), Box<dyn
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(17),
@@ -787,8 +792,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_17_bits() -> Result<(), Box<dyn
 fn cpu_verify_partitions_chunked_swwc_i32_17_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(17),
@@ -803,7 +808,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_less_tuples_than_partitions(
     run_cpu_partitioning(
         (32 << 5) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(17),
@@ -817,8 +822,8 @@ fn cpu_verify_partitions_chunked_swwc_i32_less_tuples_than_partitions() -> Resul
 {
     run_cpu_partitioning(
         (32 << 5) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(17),
@@ -833,7 +838,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_non_power_2_data_len() -> Resul
     run_cpu_partitioning(
         (32 << 10) / size_of::<i32>() - 7,
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(10),
@@ -846,8 +851,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i32_non_power_2_data_len() -> Resul
 fn cpu_verify_partitions_chunked_swwc_i32_non_power_2_data_len() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 10) / size_of::<i32>() - 7,
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(10),
@@ -861,7 +866,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_i64_17_bits() -> Result<(), Box<dyn
     run_cpu_partitioning(
         (64 << 20) / size_of::<i64>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i64>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i64>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i64>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::Swwc,
         RadixBits::from(17),
@@ -878,7 +883,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_small_data() -> Result<(),
     run_cpu_partitioning(
         15,
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(4),
@@ -892,8 +897,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_small_data() -> Result<(),
 fn cpu_verify_partitions_chunked_swwc_simd_i32_small_data() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         15,
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(4),
@@ -908,7 +913,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_0_bits() -> Result<(), Box
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(0),
@@ -922,8 +927,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_0_bits() -> Result<(), Box
 fn cpu_verify_partitions_chunked_swwc_simd_i32_0_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(0),
@@ -938,7 +943,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_1_bit() -> Result<(), Box<
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(1),
@@ -952,8 +957,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_1_bit() -> Result<(), Box<
 fn cpu_verify_partitions_chunked_swwc_simd_i32_1_bit() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(1),
@@ -968,7 +973,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_2_bits() -> Result<(), Box
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(2),
@@ -982,8 +987,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_2_bits() -> Result<(), Box
 fn cpu_verify_partitions_chunked_swwc_simd_i32_2_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(2),
@@ -998,7 +1003,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_12_bits() -> Result<(), Bo
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(12),
@@ -1012,8 +1017,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_12_bits() -> Result<(), Bo
 fn cpu_verify_partitions_chunked_swwc_simd_i32_12_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(12),
@@ -1028,7 +1033,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_13_bits() -> Result<(), Bo
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(13),
@@ -1042,8 +1047,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_13_bits() -> Result<(), Bo
 fn cpu_verify_partitions_chunked_swwc_simd_i32_13_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(13),
@@ -1058,7 +1063,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_14_bits() -> Result<(), Bo
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(14),
@@ -1072,8 +1077,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_14_bits() -> Result<(), Bo
 fn cpu_verify_partitions_chunked_swwc_simd_i32_14_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(14),
@@ -1088,7 +1093,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_15_bits() -> Result<(), Bo
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(15),
@@ -1102,8 +1107,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_15_bits() -> Result<(), Bo
 fn cpu_verify_partitions_chunked_swwc_simd_i32_15_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(15),
@@ -1118,7 +1123,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_16_bits() -> Result<(), Bo
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(16),
@@ -1132,8 +1137,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_16_bits() -> Result<(), Bo
 fn cpu_verify_partitions_chunked_swwc_simd_i32_16_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(16),
@@ -1148,7 +1153,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_17_bits() -> Result<(), Bo
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(17),
@@ -1162,8 +1167,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_17_bits() -> Result<(), Bo
 fn cpu_verify_partitions_chunked_swwc_simd_i32_17_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(17),
@@ -1179,7 +1184,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_less_tuples_than_partition
     run_cpu_partitioning(
         (32 << 5) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(17),
@@ -1194,8 +1199,8 @@ fn cpu_verify_partitions_chunked_swwc_simd_i32_less_tuples_than_partitions(
 ) -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 5) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(17),
@@ -1211,7 +1216,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i32_non_power_2_data_len(
     run_cpu_partitioning(
         (32 << 10) / size_of::<i32>() - 7,
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(10),
@@ -1226,8 +1231,8 @@ fn cpu_verify_partitions_chunked_swwc_simd_i32_non_power_2_data_len() -> Result<
 {
     run_cpu_partitioning(
         (32 << 10) / size_of::<i32>() - 7,
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(10),
@@ -1242,7 +1247,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_swwc_simd_i64_17_bits() -> Result<(), Bo
     run_cpu_partitioning(
         (64 << 20) / size_of::<i64>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i64>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i64>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i64>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::Chunked,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(17),
@@ -1260,7 +1265,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_small_data() -> Resul
     run_cpu_partitioning(
         15,
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(4),
@@ -1274,8 +1279,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_small_data() -> Resul
 fn cpu_verify_partitions_chunked_simd_swwc_simd_i32_small_data() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         15,
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(4),
@@ -1290,7 +1295,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_0_bits() -> Result<()
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(0),
@@ -1304,8 +1309,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_0_bits() -> Result<()
 fn cpu_verify_partitions_chunked_simd_swwc_simd_i32_0_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(0),
@@ -1320,7 +1325,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_1_bit() -> Result<(),
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(1),
@@ -1334,8 +1339,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_1_bit() -> Result<(),
 fn cpu_verify_partitions_chunked_simd_swwc_simd_i32_1_bit() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(1),
@@ -1350,7 +1355,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_2_bits() -> Result<()
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(2),
@@ -1364,8 +1369,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_2_bits() -> Result<()
 fn cpu_verify_partitions_chunked_simd_swwc_simd_i32_2_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(2),
@@ -1380,7 +1385,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_12_bits() -> Result<(
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(12),
@@ -1394,8 +1399,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_12_bits() -> Result<(
 fn cpu_verify_partitions_chunked_simd_swwc_simd_i32_12_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(12),
@@ -1410,7 +1415,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_13_bits() -> Result<(
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(13),
@@ -1424,8 +1429,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_13_bits() -> Result<(
 fn cpu_verify_partitions_chunked_simd_swwc_simd_i32_13_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(13),
@@ -1440,7 +1445,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_14_bits() -> Result<(
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(14),
@@ -1454,8 +1459,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_14_bits() -> Result<(
 fn cpu_verify_partitions_chunked_simd_swwc_simd_i32_14_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(14),
@@ -1470,7 +1475,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_15_bits() -> Result<(
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(15),
@@ -1484,8 +1489,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_15_bits() -> Result<(
 fn cpu_verify_partitions_chunked_simd_swwc_simd_i32_15_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(15),
@@ -1500,7 +1505,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_16_bits() -> Result<(
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(16),
@@ -1514,8 +1519,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_16_bits() -> Result<(
 fn cpu_verify_partitions_chunked_simd_swwc_simd_i32_16_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(16),
@@ -1530,7 +1535,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_17_bits() -> Result<(
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(17),
@@ -1544,8 +1549,8 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_17_bits() -> Result<(
 fn cpu_verify_partitions_chunked_simd_swwc_simd_i32_17_bits() -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 20) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(17),
@@ -1561,7 +1566,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_less_tuples_than_part
     run_cpu_partitioning(
         (32 << 5) / size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(17),
@@ -1576,8 +1581,8 @@ fn cpu_verify_partitions_chunked_simd_swwc_simd_i32_less_tuples_than_partitions(
 ) -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 5) / size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(17),
@@ -1593,7 +1598,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i32_non_power_2_data_len(
     run_cpu_partitioning(
         (32 << 10) / size_of::<i32>() - 7,
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i32>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(10),
@@ -1608,8 +1613,8 @@ fn cpu_verify_partitions_chunked_simd_swwc_simd_i32_non_power_2_data_len(
 ) -> Result<(), Box<dyn Error>> {
     run_cpu_partitioning(
         (32 << 10) / size_of::<i32>() - 7,
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr::<i32>(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i32>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(10),
@@ -1624,7 +1629,7 @@ fn cpu_tuple_loss_or_duplicates_chunked_simd_swwc_simd_i64_17_bits() -> Result<(
     run_cpu_partitioning(
         (64 << 20) / size_of::<i64>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key::<i64>(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i64>(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr::<i64>(pays, 0..10000)?)),
         CpuHistogramAlgorithm::ChunkedSimd,
         CpuRadixPartitionAlgorithm::SwwcSimd,
         RadixBits::from(17),

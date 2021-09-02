@@ -52,7 +52,7 @@ impl Kim {
         assert!(fk_attr.len() == Self::foreign_key_len());
 
         UniformRelation::gen_primary_key_par(pk_attr, selectivity)?;
-        UniformRelation::gen_attr_par(fk_attr, 1..=pk_attr.len())?;
+        UniformRelation::gen_attr_par(fk_attr, 0..pk_attr.len())?;
         Ok(())
     }
 }
@@ -95,7 +95,7 @@ impl Blanas {
         assert!(fk_attr.len() == Self::foreign_key_len());
 
         UniformRelation::gen_primary_key_par(pk_attr, selectivity)?;
-        UniformRelation::gen_attr_par(fk_attr, 1..=pk_attr.len())?;
+        UniformRelation::gen_attr_par(fk_attr, 0..pk_attr.len())?;
         Ok(())
     }
 }

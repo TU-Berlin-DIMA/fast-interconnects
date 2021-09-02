@@ -11,7 +11,7 @@
 
 mod radix_partition;
 
-use datagen::relation::UniformRelation;
+use datagen::relation::{KeyAttribute, UniformRelation};
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::memory::{LaunchableMem, Mem};
 use numa_gpu::utils::DeviceType;
@@ -84,7 +84,12 @@ where
     // Ensure that the allocated memory is zeroed
     let alloc_fn = Box::new(|len: usize| {
         let mut mem = Allocator::alloc_deref_mem(DerefMemType::CudaUniMem, len);
-        mem.iter_mut().for_each(|x| *x = Default::default());
+        mem.iter_mut().for_each(|x| {
+            *x = Tuple {
+                key: i32::null_key(),
+                value: i32::default(),
+            }
+        });
         mem.into()
     });
 
@@ -202,7 +207,12 @@ where
     // Ensure that the allocated memory is zeroed
     let alloc_fn = Box::new(|len: usize| {
         let mut mem = Allocator::alloc_deref_mem(DerefMemType::CudaUniMem, len);
-        mem.iter_mut().for_each(|x| *x = Default::default());
+        mem.iter_mut().for_each(|x| {
+            *x = Tuple {
+                key: i32::null_key(),
+                value: i32::default(),
+            }
+        });
         mem.into()
     });
 
@@ -399,7 +409,12 @@ where
             partitioned_relation_2nd
                 .as_raw_relation_mut_slice()?
                 .iter_mut()
-                .for_each(|x| *x = Tuple::default());
+                .for_each(|x| {
+                    *x = Tuple {
+                        key: i32::null_key(),
+                        value: i32::default(),
+                    }
+                });
         }
 
         partitioner_2nd.prefix_sum_and_transform(
@@ -442,7 +457,7 @@ fn gpu_tuple_loss_or_duplicates_cpu_chunked_i32_2_bits() -> Result<(), Box<dyn E
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Cpu(CpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(2),
@@ -456,8 +471,8 @@ fn gpu_tuple_loss_or_duplicates_cpu_chunked_i32_2_bits() -> Result<(), Box<dyn E
 fn gpu_verify_partitions_cpu_chunked_i32_2_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Cpu(CpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(2),
@@ -472,7 +487,7 @@ fn gpu_tuple_loss_or_duplicates_small_chunked_i32_2_bits() -> Result<(), Box<dyn
     run_gpu_partitioning(
         100,
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(2),
@@ -486,8 +501,8 @@ fn gpu_tuple_loss_or_duplicates_small_chunked_i32_2_bits() -> Result<(), Box<dyn
 fn gpu_verify_partitions_small_chunked_i32_2_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         100,
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(2),
@@ -502,7 +517,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_i32_2_bits() -> Result<(), Box<dyn Error
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(2),
@@ -517,7 +532,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_i32_10_bits() -> Result<(), Box<dyn Erro
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(10),
@@ -531,8 +546,8 @@ fn gpu_tuple_loss_or_duplicates_chunked_i32_10_bits() -> Result<(), Box<dyn Erro
 fn gpu_verify_partitions_chunked_i32_2_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(2),
@@ -546,8 +561,8 @@ fn gpu_verify_partitions_chunked_i32_2_bits() -> Result<(), Box<dyn Error>> {
 fn gpu_verify_partitions_chunked_i32_10_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(10),
@@ -562,7 +577,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_i32_12_bits() -> Result<(), Box<dyn Erro
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(12),
@@ -576,8 +591,8 @@ fn gpu_tuple_loss_or_duplicates_chunked_i32_12_bits() -> Result<(), Box<dyn Erro
 fn gpu_verify_partitions_chunked_i32_12_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(12),
@@ -592,7 +607,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_non_power_two() -> Result<(), Box<dyn Er
     run_gpu_partitioning(
         10_usize.pow(6),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(10),
@@ -606,8 +621,8 @@ fn gpu_tuple_loss_or_duplicates_chunked_non_power_two() -> Result<(), Box<dyn Er
 fn gpu_verify_partitions_chunked_non_power_two() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(10),
@@ -622,7 +637,7 @@ fn gpu_tuple_loss_or_duplicates_contiguous_i32_2_bits() -> Result<(), Box<dyn Er
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Contiguous),
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(2),
@@ -637,7 +652,7 @@ fn gpu_tuple_loss_or_duplicates_contiguous_i32_10_bits() -> Result<(), Box<dyn E
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Contiguous),
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(10),
@@ -651,8 +666,8 @@ fn gpu_tuple_loss_or_duplicates_contiguous_i32_10_bits() -> Result<(), Box<dyn E
 fn gpu_verify_partitions_contiguous_i32_2_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Contiguous),
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(2),
@@ -666,8 +681,8 @@ fn gpu_verify_partitions_contiguous_i32_2_bits() -> Result<(), Box<dyn Error>> {
 fn gpu_verify_partitions_contiguous_i32_10_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Contiguous),
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(10),
@@ -682,7 +697,7 @@ fn gpu_tuple_loss_or_duplicates_contiguous_i32_12_bits() -> Result<(), Box<dyn E
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Contiguous),
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(12),
@@ -696,8 +711,8 @@ fn gpu_tuple_loss_or_duplicates_contiguous_i32_12_bits() -> Result<(), Box<dyn E
 fn gpu_verify_partitions_contiguous_i32_12_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Contiguous),
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(12),
@@ -712,7 +727,7 @@ fn gpu_tuple_loss_or_duplicates_contiguous_non_power_two() -> Result<(), Box<dyn
     run_gpu_partitioning(
         10_usize.pow(6),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Contiguous),
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(10),
@@ -726,8 +741,8 @@ fn gpu_tuple_loss_or_duplicates_contiguous_non_power_two() -> Result<(), Box<dyn
 fn gpu_verify_partitions_contiguous_non_power_two() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Contiguous),
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(10),
@@ -742,7 +757,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_laswwc_i32_2_bits() -> Result<(), Box<dy
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::LASWWC,
         RadixBits::from(2),
@@ -757,7 +772,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_laswwc_i32_10_bits() -> Result<(), Box<d
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::LASWWC,
         RadixBits::from(10),
@@ -771,8 +786,8 @@ fn gpu_tuple_loss_or_duplicates_chunked_laswwc_i32_10_bits() -> Result<(), Box<d
 fn gpu_verify_partitions_chunked_laswwc_i32_2_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::LASWWC,
         RadixBits::from(2),
@@ -786,8 +801,8 @@ fn gpu_verify_partitions_chunked_laswwc_i32_2_bits() -> Result<(), Box<dyn Error
 fn gpu_verify_partitions_chunked_laswwc_i32_10_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::LASWWC,
         RadixBits::from(10),
@@ -802,7 +817,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_laswwc_non_power_two() -> Result<(), Box
     run_gpu_partitioning(
         10_usize.pow(6),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::LASWWC,
         RadixBits::from(10),
@@ -816,8 +831,8 @@ fn gpu_tuple_loss_or_duplicates_chunked_laswwc_non_power_two() -> Result<(), Box
 fn gpu_verify_partitions_chunked_laswwc_non_power_two() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::LASWWC,
         RadixBits::from(10),
@@ -832,7 +847,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_i32_2_bits() -> Result<(), Box<dyn
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::SSWWC,
         RadixBits::from(2),
@@ -847,7 +862,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_i32_10_bits() -> Result<(), Box<dy
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::SSWWC,
         RadixBits::from(10),
@@ -861,8 +876,8 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_i32_10_bits() -> Result<(), Box<dy
 fn gpu_verify_partitions_chunked_sswwc_i32_2_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::SSWWC,
         RadixBits::from(2),
@@ -876,8 +891,8 @@ fn gpu_verify_partitions_chunked_sswwc_i32_2_bits() -> Result<(), Box<dyn Error>
 fn gpu_verify_partitions_chunked_sswwc_i32_10_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::SSWWC,
         RadixBits::from(10),
@@ -892,7 +907,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_non_power_two() -> Result<(), Box<
     run_gpu_partitioning(
         10_usize.pow(6),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::SSWWC,
         RadixBits::from(10),
@@ -906,8 +921,8 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_non_power_two() -> Result<(), Box<
 fn gpu_verify_partitions_chunked_sswwc_non_power_two() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::SSWWC,
         RadixBits::from(10),
@@ -923,7 +938,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_non_temporal_i32_10_bits(
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::SSWWCNT,
         RadixBits::from(10),
@@ -938,7 +953,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_v2_i32_2_bits() -> Result<(), Box<
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::SSWWCv2,
         RadixBits::from(2),
@@ -953,7 +968,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_v2_i32_10_bits() -> Result<(), Box
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::SSWWCv2,
         RadixBits::from(10),
@@ -968,7 +983,7 @@ fn gpu_tuple_loss_or_duplicates_contiguous_sswwc_v2_i32_10_bits() -> Result<(), 
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Contiguous),
         GpuRadixPartitionAlgorithm::SSWWCv2,
         RadixBits::from(10),
@@ -982,8 +997,8 @@ fn gpu_tuple_loss_or_duplicates_contiguous_sswwc_v2_i32_10_bits() -> Result<(), 
 fn gpu_verify_partitions_chunked_sswwc_v2_i32_2_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::SSWWCv2,
         RadixBits::from(2),
@@ -997,8 +1012,8 @@ fn gpu_verify_partitions_chunked_sswwc_v2_i32_2_bits() -> Result<(), Box<dyn Err
 fn gpu_verify_partitions_chunked_sswwc_v2_i32_10_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::SSWWCv2,
         RadixBits::from(10),
@@ -1012,8 +1027,8 @@ fn gpu_verify_partitions_chunked_sswwc_v2_i32_10_bits() -> Result<(), Box<dyn Er
 fn gpu_verify_partitions_contiguous_sswwc_v2_i32_10_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Contiguous),
         GpuRadixPartitionAlgorithm::SSWWCv2,
         RadixBits::from(10),
@@ -1028,7 +1043,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_v2_non_power_two() -> Result<(), B
     run_gpu_partitioning(
         10_usize.pow(6),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::SSWWCv2,
         RadixBits::from(10),
@@ -1042,8 +1057,8 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_v2_non_power_two() -> Result<(), B
 fn gpu_verify_partitions_chunked_sswwc_v2_non_power_two() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::SSWWCv2,
         RadixBits::from(10),
@@ -1058,7 +1073,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_v2g_i32_2_bits() -> Result<(), Box
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::SSWWCv2G,
         RadixBits::from(2),
@@ -1073,7 +1088,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_v2g_i32_10_bits() -> Result<(), Bo
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::SSWWCv2G,
         RadixBits::from(10),
@@ -1087,8 +1102,8 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_v2g_i32_10_bits() -> Result<(), Bo
 fn gpu_verify_partitions_chunked_sswwc_v2g_i32_2_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::SSWWCv2G,
         RadixBits::from(2),
@@ -1102,8 +1117,8 @@ fn gpu_verify_partitions_chunked_sswwc_v2g_i32_2_bits() -> Result<(), Box<dyn Er
 fn gpu_verify_partitions_chunked_sswwc_v2g_i32_10_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::SSWWCv2G,
         RadixBits::from(10),
@@ -1118,7 +1133,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_v2g_non_power_two() -> Result<(), 
     run_gpu_partitioning(
         10_usize.pow(6),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::SSWWCv2G,
         RadixBits::from(10),
@@ -1132,8 +1147,8 @@ fn gpu_tuple_loss_or_duplicates_chunked_sswwc_v2g_non_power_two() -> Result<(), 
 fn gpu_verify_partitions_chunked_sswwc_v2g_non_power_two() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::SSWWCv2G,
         RadixBits::from(10),
@@ -1148,7 +1163,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_i32_2_bits() -> Result<(), Box<dy
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWC,
         RadixBits::from(2),
@@ -1163,7 +1178,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_i32_10_bits() -> Result<(), Box<d
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWC,
         RadixBits::from(10),
@@ -1177,8 +1192,8 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_i32_10_bits() -> Result<(), Box<d
 fn gpu_verify_partitions_chunked_hsswwc_i32_2_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWC,
         RadixBits::from(2),
@@ -1192,8 +1207,8 @@ fn gpu_verify_partitions_chunked_hsswwc_i32_2_bits() -> Result<(), Box<dyn Error
 fn gpu_verify_partitions_chunked_hsswwc_i32_10_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWC,
         RadixBits::from(10),
@@ -1208,7 +1223,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_non_power_two() -> Result<(), Box
     run_gpu_partitioning(
         10_usize.pow(6),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWC,
         RadixBits::from(10),
@@ -1222,8 +1237,8 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_non_power_two() -> Result<(), Box
 fn gpu_verify_partitions_chunked_hsswwc_non_power_two() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWC,
         RadixBits::from(10),
@@ -1238,7 +1253,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v2_i32_2_bits() -> Result<(), Box
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWCv2,
         RadixBits::from(2),
@@ -1253,7 +1268,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v2_i32_10_bits() -> Result<(), Bo
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWCv2,
         RadixBits::from(10),
@@ -1267,8 +1282,8 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v2_i32_10_bits() -> Result<(), Bo
 fn gpu_verify_partitions_chunked_hsswwc_v2_i32_2_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWCv2,
         RadixBits::from(2),
@@ -1282,8 +1297,8 @@ fn gpu_verify_partitions_chunked_hsswwc_v2_i32_2_bits() -> Result<(), Box<dyn Er
 fn gpu_verify_partitions_chunked_hsswwc_v2_i32_10_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWCv2,
         RadixBits::from(10),
@@ -1298,7 +1313,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v2_non_power_two() -> Result<(), 
     run_gpu_partitioning(
         10_usize.pow(6),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWCv2,
         RadixBits::from(10),
@@ -1312,8 +1327,8 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v2_non_power_two() -> Result<(), 
 fn gpu_verify_partitions_chunked_hsswwc_v2_non_power_two() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWCv2,
         RadixBits::from(10),
@@ -1328,7 +1343,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v3_i32_2_bits() -> Result<(), Box
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWCv3,
         RadixBits::from(2),
@@ -1343,7 +1358,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v3_i32_10_bits() -> Result<(), Bo
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWCv3,
         RadixBits::from(10),
@@ -1357,8 +1372,8 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v3_i32_10_bits() -> Result<(), Bo
 fn gpu_verify_partitions_chunked_hsswwc_v3_i32_2_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWCv3,
         RadixBits::from(2),
@@ -1372,8 +1387,8 @@ fn gpu_verify_partitions_chunked_hsswwc_v3_i32_2_bits() -> Result<(), Box<dyn Er
 fn gpu_verify_partitions_chunked_hsswwc_v3_i32_10_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWCv3,
         RadixBits::from(10),
@@ -1388,7 +1403,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v3_non_power_two() -> Result<(), 
     run_gpu_partitioning(
         10_usize.pow(6),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWCv3,
         RadixBits::from(10),
@@ -1402,8 +1417,8 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v3_non_power_two() -> Result<(), 
 fn gpu_verify_partitions_chunked_hsswwc_v3_non_power_two() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWCv3,
         RadixBits::from(10),
@@ -1418,7 +1433,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v4_i32_2_bits() -> Result<(), Box
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWCv4,
         RadixBits::from(2),
@@ -1433,7 +1448,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v4_i32_10_bits() -> Result<(), Bo
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWCv4,
         RadixBits::from(10),
@@ -1448,7 +1463,7 @@ fn gpu_tuple_loss_or_duplicates_contiguous_hsswwc_v4_i32_10_bits() -> Result<(),
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Contiguous),
         GpuRadixPartitionAlgorithm::HSSWWCv4,
         RadixBits::from(10),
@@ -1462,8 +1477,8 @@ fn gpu_tuple_loss_or_duplicates_contiguous_hsswwc_v4_i32_10_bits() -> Result<(),
 fn gpu_verify_partitions_chunked_hsswwc_v4_i32_2_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWCv4,
         RadixBits::from(2),
@@ -1477,8 +1492,8 @@ fn gpu_verify_partitions_chunked_hsswwc_v4_i32_2_bits() -> Result<(), Box<dyn Er
 fn gpu_verify_partitions_chunked_hsswwc_v4_i32_10_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWCv4,
         RadixBits::from(10),
@@ -1492,8 +1507,8 @@ fn gpu_verify_partitions_chunked_hsswwc_v4_i32_10_bits() -> Result<(), Box<dyn E
 fn gpu_verify_partitions_contiguous_hsswwc_v4_i32_10_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         (32 << 20) / mem::size_of::<i32>(),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Contiguous),
         GpuRadixPartitionAlgorithm::HSSWWCv4,
         RadixBits::from(10),
@@ -1508,7 +1523,7 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v4_non_power_two() -> Result<(), 
     run_gpu_partitioning(
         10_usize.pow(6),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWCv4,
         RadixBits::from(10),
@@ -1522,8 +1537,8 @@ fn gpu_tuple_loss_or_duplicates_chunked_hsswwc_v4_non_power_two() -> Result<(), 
 fn gpu_verify_partitions_chunked_hsswwc_v4_non_power_two() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         DeviceType::Gpu(GpuHistogramAlgorithm::Chunked),
         GpuRadixPartitionAlgorithm::HSSWWCv4,
         RadixBits::from(10),
@@ -1539,7 +1554,7 @@ fn gpu_tuple_loss_or_duplicates_copy_with_payload_contiguous_i32_2_bits(
     run_gpu_partitioning_and_copy_with_payload(
         10_usize.pow(6),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Contiguous,
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(2),
@@ -1557,7 +1572,7 @@ fn gpu_tuple_loss_or_duplicates_copy_with_payload_contiguous_i32_10_bits(
     run_gpu_partitioning_and_copy_with_payload(
         10_usize.pow(6),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Contiguous,
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(10),
@@ -1573,8 +1588,8 @@ fn gpu_tuple_loss_or_duplicates_copy_with_payload_contiguous_i32_10_bits(
 fn gpu_verify_partitions_copy_with_payload_contiguous_i32_2_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning_and_copy_with_payload(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Contiguous,
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(2),
@@ -1590,8 +1605,8 @@ fn gpu_verify_partitions_copy_with_payload_contiguous_i32_2_bits() -> Result<(),
 fn gpu_verify_partitions_copy_with_payload_contiguous_i32_10_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning_and_copy_with_payload(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Contiguous,
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(10),
@@ -1607,8 +1622,8 @@ fn gpu_verify_partitions_copy_with_payload_contiguous_i32_10_bits() -> Result<()
 fn gpu_check_copy_with_payload_contiguous_i32_2_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning_and_copy_with_payload(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Contiguous,
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(2),
@@ -1622,8 +1637,8 @@ fn gpu_check_copy_with_payload_contiguous_i32_2_bits() -> Result<(), Box<dyn Err
 fn gpu_check_copy_with_payload_contiguous_i32_10_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_partitioning_and_copy_with_payload(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Contiguous,
         GpuRadixPartitionAlgorithm::NC,
         RadixBits::from(10),
@@ -1638,7 +1653,7 @@ fn gpu_loss_or_duplicates_two_pass_chunked_contiguous_i32_0_0_bits() -> Result<(
     run_gpu_two_pass_partitioning(
         10_usize.pow(6),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Chunked,
         GpuRadixPartitionAlgorithm::NC,
         GpuHistogramAlgorithm::Contiguous,
@@ -1655,7 +1670,7 @@ fn gpu_loss_or_duplicates_two_pass_chunked_contiguous_i32_2_2_bits() -> Result<(
     run_gpu_two_pass_partitioning(
         10_usize.pow(6),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Chunked,
         GpuRadixPartitionAlgorithm::NC,
         GpuHistogramAlgorithm::Contiguous,
@@ -1673,7 +1688,7 @@ fn gpu_loss_or_duplicates_two_pass_chunked_contiguous_i32_10_10_bits() -> Result
     run_gpu_two_pass_partitioning(
         10_usize.pow(6),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Chunked,
         GpuRadixPartitionAlgorithm::NC,
         GpuHistogramAlgorithm::Contiguous,
@@ -1691,7 +1706,7 @@ fn gpu_loss_or_duplicates_two_pass_contiguous_contiguous_i32_2_2_bits() -> Resul
     run_gpu_two_pass_partitioning(
         10_usize.pow(6),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Contiguous,
         GpuRadixPartitionAlgorithm::NC,
         GpuHistogramAlgorithm::Contiguous,
@@ -1707,8 +1722,8 @@ fn gpu_loss_or_duplicates_two_pass_contiguous_contiguous_i32_2_2_bits() -> Resul
 fn gpu_verify_two_pass_chunked_contiguous_i32_0_0_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_two_pass_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Chunked,
         GpuRadixPartitionAlgorithm::NC,
         GpuHistogramAlgorithm::Contiguous,
@@ -1724,8 +1739,8 @@ fn gpu_verify_two_pass_chunked_contiguous_i32_0_0_bits() -> Result<(), Box<dyn E
 fn gpu_verify_two_pass_chunked_contiguous_i32_2_2_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_two_pass_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Chunked,
         GpuRadixPartitionAlgorithm::NC,
         GpuHistogramAlgorithm::Contiguous,
@@ -1741,8 +1756,8 @@ fn gpu_verify_two_pass_chunked_contiguous_i32_2_2_bits() -> Result<(), Box<dyn E
 fn gpu_verify_two_pass_chunked_contiguous_i32_10_10_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_two_pass_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Chunked,
         GpuRadixPartitionAlgorithm::NC,
         GpuHistogramAlgorithm::Contiguous,
@@ -1758,8 +1773,8 @@ fn gpu_verify_two_pass_chunked_contiguous_i32_10_10_bits() -> Result<(), Box<dyn
 fn gpu_verify_two_pass_contiguous_contiguous_i32_2_2_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_two_pass_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Contiguous,
         GpuRadixPartitionAlgorithm::NC,
         GpuHistogramAlgorithm::Contiguous,
@@ -1775,8 +1790,8 @@ fn gpu_verify_two_pass_contiguous_contiguous_i32_2_2_bits() -> Result<(), Box<dy
 fn gpu_transform_two_pass_chunked_contiguous_i32_0_0_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_two_pass_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Chunked,
         GpuRadixPartitionAlgorithm::NC,
         GpuHistogramAlgorithm::Contiguous,
@@ -1792,8 +1807,8 @@ fn gpu_transform_two_pass_chunked_contiguous_i32_0_0_bits() -> Result<(), Box<dy
 fn gpu_transform_two_pass_chunked_contiguous_i32_2_2_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_two_pass_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Chunked,
         GpuRadixPartitionAlgorithm::NC,
         GpuHistogramAlgorithm::Contiguous,
@@ -1809,8 +1824,8 @@ fn gpu_transform_two_pass_chunked_contiguous_i32_2_2_bits() -> Result<(), Box<dy
 fn gpu_transform_two_pass_chunked_contiguous_i32_10_10_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_two_pass_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Chunked,
         GpuRadixPartitionAlgorithm::NC,
         GpuHistogramAlgorithm::Contiguous,
@@ -1826,8 +1841,8 @@ fn gpu_transform_two_pass_chunked_contiguous_i32_10_10_bits() -> Result<(), Box<
 fn gpu_transform_two_pass_contiguous_contiguous_i32_2_2_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_two_pass_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Contiguous,
         GpuRadixPartitionAlgorithm::NC,
         GpuHistogramAlgorithm::Contiguous,
@@ -1844,7 +1859,7 @@ fn gpu_loss_or_duplicates_two_pass_laswwc_i32_6_6_bits() -> Result<(), Box<dyn E
     run_gpu_two_pass_partitioning(
         10_usize.pow(6),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Chunked,
         GpuRadixPartitionAlgorithm::NC,
         GpuHistogramAlgorithm::Contiguous,
@@ -1860,8 +1875,8 @@ fn gpu_loss_or_duplicates_two_pass_laswwc_i32_6_6_bits() -> Result<(), Box<dyn E
 fn gpu_verify_partitions_two_pass_laswwc_i32_6_6_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_two_pass_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Chunked,
         GpuRadixPartitionAlgorithm::NC,
         GpuHistogramAlgorithm::Contiguous,
@@ -1878,7 +1893,7 @@ fn gpu_loss_or_duplicates_two_pass_sswwc_i32_6_6_bits() -> Result<(), Box<dyn Er
     run_gpu_two_pass_partitioning(
         10_usize.pow(6),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Chunked,
         GpuRadixPartitionAlgorithm::NC,
         GpuHistogramAlgorithm::Contiguous,
@@ -1894,8 +1909,8 @@ fn gpu_loss_or_duplicates_two_pass_sswwc_i32_6_6_bits() -> Result<(), Box<dyn Er
 fn gpu_verify_partitions_two_pass_sswwc_i32_6_6_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_two_pass_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Chunked,
         GpuRadixPartitionAlgorithm::NC,
         GpuHistogramAlgorithm::Contiguous,
@@ -1912,7 +1927,7 @@ fn gpu_loss_or_duplicates_two_pass_sswwc_v2_i32_6_6_bits() -> Result<(), Box<dyn
     run_gpu_two_pass_partitioning(
         10_usize.pow(6),
         Box::new(|keys: &mut _| Ok(UniformRelation::gen_primary_key(keys, None)?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Chunked,
         GpuRadixPartitionAlgorithm::NC,
         GpuHistogramAlgorithm::Contiguous,
@@ -1928,8 +1943,8 @@ fn gpu_loss_or_duplicates_two_pass_sswwc_v2_i32_6_6_bits() -> Result<(), Box<dyn
 fn gpu_verify_partitions_two_pass_sswwc_v2_i32_6_6_bits() -> Result<(), Box<dyn Error>> {
     run_gpu_two_pass_partitioning(
         10_usize.pow(6),
-        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 1..=(32 << 20))?)),
-        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 1..=10000)?)),
+        Box::new(|keys: &mut _| Ok(UniformRelation::gen_attr(keys, 0..(32 << 20))?)),
+        Box::new(|pays: &mut _| Ok(UniformRelation::gen_attr(pays, 0..10000)?)),
         GpuHistogramAlgorithm::Chunked,
         GpuRadixPartitionAlgorithm::NC,
         GpuHistogramAlgorithm::Contiguous,

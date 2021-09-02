@@ -39,7 +39,7 @@ use std::error::Error;
 use std::fs;
 use std::io::Write;
 use std::mem;
-use std::ops::RangeInclusive;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -703,7 +703,7 @@ where
     T: Clone + Default + Send + DeviceCopy + FromPrimitive + KeyAttribute,
 {
     let key_range = tuples;
-    const PAYLOAD_RANGE: RangeInclusive<usize> = 1..=10000;
+    const PAYLOAD_RANGE: Range<usize> = 0..10000;
 
     let mut data_key = Allocator::alloc_deref_mem(mem_type.clone(), tuples);
     let mut data_pay = Allocator::alloc_deref_mem(mem_type.clone(), tuples);
@@ -716,10 +716,10 @@ where
             UniformRelation::gen_primary_key_par(data_key.as_mut_slice(), None)?;
         }
         ArgDataDistribution::Uniform => {
-            UniformRelation::gen_attr_par(data_key.as_mut_slice(), 1..=key_range)?;
+            UniformRelation::gen_attr_par(data_key.as_mut_slice(), 0..key_range)?;
         }
         ArgDataDistribution::Zipf if !(zipf_exponent.unwrap() > 0.0) => {
-            UniformRelation::gen_attr_par(data_key.as_mut_slice(), 1..=key_range)?;
+            UniformRelation::gen_attr_par(data_key.as_mut_slice(), 0..key_range)?;
         }
         ArgDataDistribution::Zipf => {
             ZipfRelation::gen_attr_par(data_key.as_mut_slice(), key_range, zipf_exponent.unwrap())?;

@@ -48,6 +48,9 @@
 
 #include <constants.h>
 
+#define CUDA_MODIFIER
+#include <gpu_common.h>
+
 #if defined(__x86_64__)
 #include <immintrin.h>
 #elif defined(__ALTIVEC__)
@@ -124,16 +127,6 @@ struct RadixPartitionArgs {
 
   // Outputs
   void *const __restrict__ partitioned_relation;
-};
-
-// A key-value tuple.
-//
-// Note that the struct's layout must be kept in sync with its counterpart in
-// Rust.
-template <typename K, typename V>
-struct Tuple {
-  K key;
-  V value;
 };
 
 // A set of buffers used for software write-combinining.
@@ -526,10 +519,12 @@ void cpu_chunked_radix_partition_swwc(RadixPartitionArgs &args) {
   const size_t partitioned_data_offset =
       args.partition_offsets[0] - args.padding_length;
 
-  // Zero the buffers so that we don't write out uninitialized data
+  // Initialize the buffers with NULL so that we don't write out uninitialized
+  // data
   for (size_t p = 0; p < fanout; ++p) {
     for (size_t i = 0; i < tuples_per_buffer; ++i) {
-      buffers[p].tuples.data[i] = {};
+      buffers[p].tuples.data[i].key = null_key<K>();
+      buffers[p].tuples.data[i].value = {};
     }
   }
 
@@ -608,10 +603,12 @@ void cpu_chunked_radix_partition_swwc_simd(RadixPartitionArgs &args) {
   const vector M ignore_bits_vsx = vec_splats(static_cast<M>(0U));
   size_t i;
 
-  // Zero the buffers so that we don't write out uninitialized data
+  // Initialize the buffers with NULL so that we don't write out uninitialized
+  // data
   for (size_t p = 0; p < fanout; ++p) {
     for (size_t i = 0; i < tuples_per_buffer; ++i) {
-      buffers[p].tuples.data[i] = {};
+      buffers[p].tuples.data[i].key = null_key<K>();
+      buffers[p].tuples.data[i].value = {};
     }
   }
 

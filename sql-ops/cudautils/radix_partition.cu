@@ -4,9 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019-2020 Clemens Lutz, German Research Center for Artificial
- * Intelligence
- * Author: Clemens Lutz, DFKI GmbH <clemens.lutz@dfki.de>
+ * Copyright (c) 2019-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 #define CUDA_MODIFIER __device__
@@ -754,10 +753,11 @@ __device__ void gpu_chunked_sswwc_radix_partition(RadixPartitionArgs &args,
     signal_slots[i] = aligned_fill_state;
   }
 
-  // Zero the buffers so that we don't write out uninitialized data
+  // Initialize the buffers with NULL so that we don't write out uninitialized
+  // data
   for (uint32_t i = threadIdx.x; i < fanout * tuples_per_buffer;
        i += blockDim.x) {
-    buffers[i] = {};
+    buffers[i] = {null_key<K>(), {}};
   }
 
   __syncthreads();
@@ -993,10 +993,11 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
     signal_slots[i] = aligned_fill_state;
   }
 
-  // Zero the buffers so that we don't write out uninitialized data
+  // Initialize the buffers with NULL so that we don't write out uninitialized
+  // data
   for (uint32_t i = threadIdx.x; i < fanout * tuples_per_buffer;
        i += blockDim.x) {
-    buffers[i] = {};
+    buffers[i] = {null_key<K>(), {}};
   }
 
   __syncthreads();
@@ -1205,10 +1206,11 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2g(
     signal_slots[i] = aligned_fill_state;
   }
 
-  // Zero the buffers so that we don't write out uninitialized data
+  // Initialize the buffers with NULL so that we don't write out uninitialized
+  // data
   for (uint32_t i = threadIdx.x; i < fanout * tuples_per_buffer;
        i += blockDim.x) {
-    buffers[i] = {};
+    buffers[i] = {null_key<K>(), {}};
   }
 
   __syncthreads();
@@ -1435,15 +1437,17 @@ __device__ void gpu_chunked_hsswwc_radix_partition(RadixPartitionArgs &args,
     signal_slots[i] = smem_fill_state;
   }
 
-  // Zero the buffers so that we don't write out uninitialized data
+  // Initialize the buffers with NULL so that we don't write out uninitialized
+  // data
   for (uint32_t i = threadIdx.x; i < fanout * tuples_per_buffer;
        i += blockDim.x) {
-    buffers[i] = {};
+    buffers[i] = {null_key<K>(), {}};
   }
 
   for (uint32_t i = warp_id; i < fanout; i += num_warps) {
     for (uint32_t j = lane_id; i < align_tuples; i += warpSize) {
-      dmem_buffers[write_combine_slot(tuples_per_dmem_buffer, i, j)] = {};
+      dmem_buffers[write_combine_slot(tuples_per_dmem_buffer, i, j)] = {
+          null_key<K>(), {}};
     }
   }
 
@@ -1708,15 +1712,17 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v2(
     signal_slots[i] = smem_fill_state;
   }
 
-  // Zero the buffers so that we don't write out uninitialized data
+  // Initialize the buffers with NULL so that we don't write out uninitialized
+  // data
   for (uint32_t i = threadIdx.x; i < fanout * tuples_per_buffer;
        i += blockDim.x) {
-    buffers[i] = {};
+    buffers[i] = {null_key<K>(), {}};
   }
 
   for (uint32_t i = warp_id; i < fanout; i += num_warps) {
     for (uint32_t j = lane_id; i < align_tuples; i += warpSize) {
-      dmem_buffers[write_combine_slot(tuples_per_dmem_buffer, i, j)] = {};
+      dmem_buffers[write_combine_slot(tuples_per_dmem_buffer, i, j)] = {
+          null_key<K>(), {}};
     }
   }
 
@@ -1994,15 +2000,17 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v3(
     dmem_locks[i] = 0;
   }
 
-  // Zero the buffers so that we don't write out uninitialized data
+  // Initialize the buffers with NULL so that we don't write out uninitialized
+  // data
   for (uint32_t i = threadIdx.x; i < fanout * tuples_per_buffer;
        i += blockDim.x) {
-    buffers[i] = {};
+    buffers[i] = {null_key<K>(), {}};
   }
 
   for (uint32_t i = warp_id; i < fanout; i += num_warps) {
     for (uint32_t j = lane_id; i < align_tuples; i += warpSize) {
-      dmem_buffers[write_combine_slot(tuples_per_dmem_buffer, i, j)] = {};
+      dmem_buffers[write_combine_slot(tuples_per_dmem_buffer, i, j)] = {
+          null_key<K>(), {}};
     }
   }
 
@@ -2322,10 +2330,11 @@ __device__ void gpu_chunked_hsswwc_radix_partition_v4(
     dmem_buffer_map[i] = i;
   }
 
-  // Zero the buffers so that we don't write out uninitialized data
+  // Initialize the buffers with NULL so that we don't write out uninitialized
+  // data
   for (uint32_t i = threadIdx.x; i < fanout * tuples_per_buffer;
        i += blockDim.x) {
-    buffers[i] = {};
+    buffers[i] = {null_key<K>(), {}};
   }
 
   __syncthreads();

@@ -9,6 +9,7 @@
  * Author: Clemens Lutz, DFKI GmbH <clemens.lutz@dfki.de>
  */
 
+use datagen::relation::KeyAttribute;
 use rustacuda::memory::DeviceCopy;
 use sql_ops::partition::{PartitionedRelation, RadixBits, RadixPass, Tuple};
 use std::collections::hash_map::{Entry, HashMap};
@@ -35,7 +36,7 @@ pub fn tuple_loss_or_duplicates<T>(
     partition_id: Option<u32>,
 ) -> Result<(), Box<dyn Error>>
 where
-    T: Clone + Debug + Default + Display + DeviceCopy + Eq + Hash,
+    T: Clone + Debug + Default + Display + DeviceCopy + Eq + Hash + KeyAttribute,
 {
     let mut original_tuples: HashMap<_, _> = data_key
         .iter()
@@ -64,7 +65,7 @@ where
             }
             entry @ Entry::Vacant(_) => {
                 // skip padding entries
-                if *entry.key() != T::default() {
+                if *entry.key() != T::null_key() {
                     assert!(false, "Invalid key: {}", entry.key());
                 }
             }
