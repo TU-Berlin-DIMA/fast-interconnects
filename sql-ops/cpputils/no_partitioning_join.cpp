@@ -93,16 +93,16 @@ bool cpu_ht_findkey_linearprobing(
     HtEntry<T, T> const *const __restrict__ hash_table,
     unsigned int log2_hash_table_entries, T key, T const **found_payload,
     uint64_t *__restrict__ last_index, bool use_last_index) {
+  uint64_t hash_table_entries = 1ULL << log2_hash_table_entries;
+  uint64_t hash_table_mask = hash_table_entries - 1ULL;
+
   uint64_t index = 0;
   if (use_last_index) {
     index = *last_index;
-    index += 1ULL;
+    index = (index + 1ULL) & hash_table_mask;
   } else {
     index = hash<T>(key, log2_hash_table_entries);
   }
-
-  uint64_t hash_table_entries = 1ULL << log2_hash_table_entries;
-  uint64_t hash_table_mask = hash_table_entries - 1ULL;
 
   for (uint64_t i = 0; i < hash_table_mask + 1ULL;
        ++i, index = (index + 1ULL) & hash_table_mask) {

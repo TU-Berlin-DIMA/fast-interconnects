@@ -131,18 +131,18 @@ __device__ bool gpu_ht_findkey_linearprobing_int32(
     const HtEntry<int, int> *const __restrict__ hash_table,
     unsigned int log2_hash_table_entries, int key, int *found_payload,
     uint64_t *__restrict__ last_index, bool use_last_index) {
+  uint64_t hash_table_entries = 1ULL << log2_hash_table_entries;
+  uint64_t hash_table_mask = hash_table_entries - 1ULL;
+
   uint64_t index = 0;
   if (use_last_index) {
     index = *last_index;
-    index += 1ULL;
+    index = (index + 1ULL) & hash_table_mask;
   } else {
     index = hash<int>(key, log2_hash_table_entries);
   }
 
-  uint64_t hash_table_entries = 1ULL << log2_hash_table_entries;
-  uint64_t hash_table_mask = hash_table_entries - 1ULL;
-
-  for (uint64_t i = 0; i < hash_table_mask + 1ULL;
+  for (uint64_t i = 0; i < hash_table_entries;
        ++i, index = (index + 1ULL) & hash_table_mask) {
     HtEntry<int, int> entry;
     entry.load(hash_table[index]);
@@ -164,18 +164,18 @@ __device__ bool gpu_ht_findkey_linearprobing_int64(
     unsigned int log2_hash_table_entries, long long key,
     long long *found_payload, uint64_t *__restrict__ last_index,
     bool use_last_index) {
+  uint64_t hash_table_entries = 1ULL << log2_hash_table_entries;
+  uint64_t hash_table_mask = hash_table_entries - 1ULL;
+
   uint64_t index = 0;
   if (use_last_index) {
     index = *last_index;
-    index += 1ULL;
+    index = (index + 1ULL) & hash_table_mask;
   } else {
     index = hash<long long>(key, log2_hash_table_entries);
   }
 
-  uint64_t hash_table_entries = 1ULL << log2_hash_table_entries;
-  uint64_t hash_table_mask = hash_table_entries - 1ULL;
-
-  for (uint64_t i = 0; i < hash_table_mask + 1ULL;
+  for (uint64_t i = 0; i < hash_table_entries;
        ++i, index = (index + 1ULL) & hash_table_mask) {
     HtEntry<long long, long long> entry;
     entry.load(hash_table[index]);
