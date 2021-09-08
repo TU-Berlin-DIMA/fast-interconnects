@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2020, Clemens Lutz <lutzcle@cml.li>
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2020-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 use crate::error::Result;
@@ -142,9 +142,9 @@ impl LineItem {
             },
         );
 
-        UniformRelation::gen_attr_par(&mut discount, 0..=10)?;
-        UniformRelation::gen_attr_par(&mut quantity, 1..=50)?;
-        UniformRelation::gen_attr_par(&mut extendedprice, 1..=(i32::max_value() as usize))?;
+        UniformRelation::gen_attr_par(&mut discount, 0..11)?;
+        UniformRelation::gen_attr_par(&mut quantity, 1..51)?;
+        UniformRelation::gen_attr_par(&mut extendedprice, 1..(i32::max_value() as usize + 1))?;
 
         // Finalize lineitem relation
         Ok(Self {
