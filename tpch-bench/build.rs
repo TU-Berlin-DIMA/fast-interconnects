@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
+    let include_path = Path::new("include");
     let out_dir = env::var("OUT_DIR").unwrap();
     let cpp_compiler = env::var("CXX");
 
@@ -91,6 +92,7 @@ fn main() {
 
     // Add CPP utils
     cc::Build::new()
+        .include(include_path)
         .cpp(true)
         // Note: -march not supported by GCC-7 on Power9, use -mcpu instead
         .flag("-std=c++11")

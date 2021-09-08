@@ -4,15 +4,26 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2020, Clemens Lutz <lutzcle@cml.li>
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2020-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 #include <cstdint>
 
+#if defined(__powerpc64__)
+#include <ppc_intrinsics.h>
+#endif
+
+// Disable strided prefetch and set maximum prefetch depth
+#define PPC_TUNE_DSCR 7ULL
+
 extern "C" void tpch_q6_branching(uint64_t length, int32_t *l_shipdate,
                                   int32_t *l_discount, int32_t *l_quantity,
                                   int32_t *l_extendedprice, int64_t *revenue) {
+#if defined(__powerpc64__)
+  __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
+#endif
+
   *revenue = 0;
   for (uint64_t i = 0; i < length; ++i) {
     if (l_shipdate[i] >= 366 + 365 + 1 && l_shipdate[i] < 366 + 365 + 365 + 1 &&
@@ -26,6 +37,10 @@ extern "C" void tpch_q6_predication(uint64_t length, int32_t *l_shipdate,
                                     int32_t *l_discount, int32_t *l_quantity,
                                     int32_t *l_extendedprice,
                                     int64_t *revenue) {
+#if defined(__powerpc64__)
+  __mtspr(PPC_DSCR, PPC_TUNE_DSCR);
+#endif
+
   *revenue = 0;
   for (uint64_t i = 0; i < length; ++i) {
     int condition = (l_shipdate[i] >= 366 + 365 + 1) &
