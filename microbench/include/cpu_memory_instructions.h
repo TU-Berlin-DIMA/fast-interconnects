@@ -91,7 +91,7 @@ inline unsigned __int128 load(unsigned __int128 const *const addr) {
  */
 template <>
 inline __m128i load(__m128i const *const addr) {
-  return _mm_stream_load_si128(const_cast<__m128i *const>(addr));
+  return _mm_stream_load_si128(const_cast<__m128i *>(addr));
 }
 #endif /* defined(__powerpc64__) */
 
