@@ -9,9 +9,10 @@
  */
 
 use numa_gpu::runtime::allocator::{Allocator, MemType};
+use numa_gpu::runtime::hw_info::NvidiaDriverInfo;
 use numa_gpu::runtime::memory::{Mem, MemLock};
 use numa_gpu::runtime::nvml::ThrottleReasons;
-use numa_gpu::runtime::{cuda_wrapper, hw_info, numa};
+use numa_gpu::runtime::{cuda_wrapper, hw_info, linux_wrapper, numa};
 
 #[cfg(not(target_arch = "aarch64"))]
 use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
@@ -134,6 +135,20 @@ impl MemoryLatency {
                 )
             }
             DeviceId::Gpu(did) => {
+                let device = device.expect("No device found");
+                if let Ok(local_cpu_node) = device.numa_memory_affinity() {
+                    linux_wrapper::numa_run_on_node(local_cpu_node).expect(&format!(
+                        "Failed to bind main thread to CPU node {}",
+                        local_cpu_node
+                    ));
+                } else {
+                    eprintln!(
+                        "Warning: Couldn't bind main thread to the CPU closest to GPU {}. This may
+                        cause additional latency in measurements.",
+                        did
+                    );
+                }
+
                 let ml = GpuMemoryLatency::new(did);
                 let prepare = match mem {
                     Mem::CudaUniMem(_) => GpuMemoryLatency::prepare_prefetch,
