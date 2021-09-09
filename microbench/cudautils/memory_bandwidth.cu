@@ -15,7 +15,7 @@
 #include <cstdint>
 
 // X mod Y, assuming that Y is a power of 2
-#define FAST_MODULO(X, Y) ((X) & ((Y) - 1U))
+#define FAST_MODULO(X, Y) ((X) & ((Y)-1U))
 
 namespace cg = cooperative_groups;
 
@@ -55,7 +55,9 @@ __device__ void gpu_read_bandwidth_seq_kernel(
   sum = stop - start;
 
   // Write result
-  atomicMax(measured_cycles, sum);
+  if (threadIdx.x == 0) {
+    atomicMax(measured_cycles, sum);
+  }
   if (gid == 0) {
     *memory_accesses = size;
   }
@@ -102,7 +104,9 @@ __device__ void gpu_write_bandwidth_seq_kernel(
   sum = stop - start;
 
   // Write result
-  atomicMax(measured_cycles, sum);
+  if (threadIdx.x == 0) {
+    atomicMax(measured_cycles, sum);
+  }
   if (gid == 0) {
     *memory_accesses = size;
   }
@@ -144,7 +148,9 @@ __device__ void gpu_cas_bandwidth_seq_kernel(
   sum = stop - start;
 
   // Write result
-  atomicMax(measured_cycles, sum);
+  if (threadIdx.x == 0) {
+    atomicMax(measured_cycles, sum);
+  }
   if (gid == 0) {
     *memory_accesses = size;
   }
@@ -205,7 +211,9 @@ __device__ void gpu_read_bandwidth_lcg_kernel(
   sum = stop - start;
 
   // Write result
-  atomicMax(measured_cycles, sum);
+  if (threadIdx.x == 0) {
+    atomicMax(measured_cycles, sum);
+  }
   atomicAdd(memory_accesses, mem_accesses);
 
   // Prevent compiler optimization
@@ -282,7 +290,9 @@ __device__ void gpu_read_bandwidth_lcg_tiled_kernel(
   sum = stop - start;
 
   // Write result
-  atomicMax(measured_cycles, sum);
+  if (threadIdx.x == 0) {
+    atomicMax(measured_cycles, sum);
+  }
   atomicAdd(memory_accesses, mem_accesses);
 
   // Prevent compiler optimization
@@ -346,7 +356,9 @@ __device__ void gpu_write_bandwidth_lcg_kernel(
   sum = stop - start;
 
   // Write result
-  atomicMax(measured_cycles, sum);
+  if (threadIdx.x == 0) {
+    atomicMax(measured_cycles, sum);
+  }
   atomicAdd(memory_accesses, mem_accesses);
 }
 
@@ -418,7 +430,9 @@ __device__ void gpu_write_bandwidth_lcg_tiled_kernel(
   sum = stop - start;
 
   // Write result
-  atomicMax(measured_cycles, sum);
+  if (threadIdx.x == 0) {
+    atomicMax(measured_cycles, sum);
+  }
   atomicAdd(memory_accesses, mem_accesses);
 }
 
@@ -477,7 +491,9 @@ __device__ void gpu_cas_bandwidth_lcg_kernel(
   sum = stop - start;
 
   // Write result
-  atomicMax(measured_cycles, sum);
+  if (threadIdx.x == 0) {
+    atomicMax(measured_cycles, sum);
+  }
   atomicAdd(memory_accesses, mem_accesses);
 }
 
@@ -550,7 +566,9 @@ __device__ void gpu_cas_bandwidth_lcg_tiled_kernel(
   sum = stop - start;
 
   // Write result
-  atomicMax(measured_cycles, sum);
+  if (threadIdx.x == 0) {
+    atomicMax(measured_cycles, sum);
+  }
   atomicAdd(memory_accesses, mem_accesses);
 }
 
