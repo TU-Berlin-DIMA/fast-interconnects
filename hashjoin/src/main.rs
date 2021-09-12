@@ -25,7 +25,9 @@ use numa_gpu::runtime::allocator;
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::dispatcher::{MorselSpec, WorkerCpuAffinity};
 use numa_gpu::runtime::hw_info::NvidiaDriverInfo;
+use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::numa::{self, NodeRatio};
+use rustacuda::context::CurrentContext;
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
@@ -468,6 +470,29 @@ where
             cpu_workers,
             gpu_workers,
         }
+    };
+
+    // Bind main thread to the CPU node closest to the GPU. This improves NVLink latency.
+    match exec_method {
+        ArgExecutionMethod::Gpu
+        | ArgExecutionMethod::GpuStream
+        | ArgExecutionMethod::Het
+        | ArgExecutionMethod::GpuBuildHetProbe => {
+            let device = CurrentContext::get_device()?;
+            if let Ok(local_cpu_node) = device.numa_memory_affinity() {
+                linux_wrapper::numa_run_on_node(local_cpu_node).expect(&format!(
+                    "Failed to bind main thread to CPU node {}",
+                    local_cpu_node
+                ));
+            } else {
+                eprintln!(
+                    "Warning: Couldn't bind main thread to the CPU closest to GPU {}. This may
+                        cause additional latency in measurements.",
+                    device_id
+                );
+            }
+        }
+        _ => {}
     };
 
     // Create closure that wraps a hash join benchmark function
