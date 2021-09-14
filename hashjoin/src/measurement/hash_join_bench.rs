@@ -248,6 +248,8 @@ where
         probe_dim: (GridSize, BlockSize),
         transfer_strategy: CudaTransferStrategy,
         gpu_morsel_bytes: usize,
+        cpu_memcpy_threads: usize,
+        cpu_affinity: &CpuAffinity,
     ) -> Result<HashJoinPoint> {
         let ht_malloc_timer = Instant::now();
         let mut hash_table_mem = hash_table_alloc(self.hash_table_len);
@@ -306,10 +308,18 @@ where
 
         let mut build_relation = (build_rel_key, build_rel_pay);
         let mut probe_relation = (probe_rel_key, probe_rel_pay);
-        let mut build_iter =
-            build_relation.into_cuda_iter_with_strategy(transfer_strategy, gpu_morsel_bytes)?;
-        let mut probe_iter =
-            probe_relation.into_cuda_iter_with_strategy(transfer_strategy, gpu_morsel_bytes)?;
+        let mut build_iter = build_relation.into_cuda_iter_with_strategy(
+            transfer_strategy,
+            gpu_morsel_bytes,
+            cpu_memcpy_threads,
+            cpu_affinity,
+        )?;
+        let mut probe_iter = probe_relation.into_cuda_iter_with_strategy(
+            transfer_strategy,
+            gpu_morsel_bytes,
+            cpu_memcpy_threads,
+            cpu_affinity,
+        )?;
 
         let build_timer = Instant::now();
         let build_mnts = build_iter.fold(|(key, val), stream| {

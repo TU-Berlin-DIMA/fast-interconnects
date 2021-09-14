@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2019 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2019-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 //! CUDA runtime for data transfer and kernel execution.
@@ -19,7 +19,6 @@ use crossbeam_utils::thread::{scope, ScopedJoinHandle};
 
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::slice::{ParallelSlice, ParallelSliceMut};
-use rayon::ThreadPoolBuilder;
 
 use rustacuda::context::CurrentContext;
 use rustacuda::error::CudaResult;
@@ -37,6 +36,7 @@ use std::thread::Result as ThreadResult;
 use std::time::Instant;
 
 use crate::error::{ErrorKind, Result, ResultExt};
+use crate::runtime::cpu_affinity::CpuAffinity;
 use crate::runtime::cuda_wrapper::{
     current_device_id, host_register, host_unregister, prefetch_async,
 };
@@ -183,6 +183,8 @@ pub trait IntoCudaIteratorWithStrategy<'a> {
         &'a mut self,
         strategy: CudaTransferStrategy,
         chunk_len: usize,
+        cpu_memcpy_threads: usize,
+        cpu_affinity: &CpuAffinity,
     ) -> Result<Self::Iter>;
 }
 
@@ -229,10 +231,11 @@ where
         &'i mut self,
         strategy: CudaTransferStrategy,
         gpu_morsel_bytes: usize,
+        cpu_memcpy_threads: usize,
+        cpu_affinity: &CpuAffinity,
     ) -> Result<CudaIterator2<'i, R, S>> {
         assert_eq!(self.0.len(), self.1.len());
 
-        let memcpy_threads = 8;
         let num_partitions = 4;
 
         let streams = std::iter::repeat_with(|| Stream::new(StreamFlags::NON_BLOCKING, None))
@@ -250,13 +253,21 @@ where
             })
             .collect::<Result<Vec<_>>>()?;
 
-        // Error occurs after first call, because pool is already built
-        let _ignore_error = ThreadPoolBuilder::new()
-            .num_threads(memcpy_threads)
-            .build_global();
+        let boxed_cpu_affinity = Box::new(cpu_affinity.clone());
+        let thread_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(cpu_memcpy_threads)
+            .start_handler(move |tid| {
+                boxed_cpu_affinity
+                    .clone()
+                    .set_affinity(tid as u16)
+                    .expect("Couldn't set CPU core affinity")
+            })
+            .build()
+            .map_err(|_| ErrorKind::RuntimeError("Failed to create thread pool".to_string()))?;
 
         Ok(CudaIterator2::<'i> {
             data: (&mut self.0, &mut self.1),
+            thread_pool,
             chunk_len,
             streams,
             strategy,
@@ -349,7 +360,12 @@ trait CudaTransferStrategyImpl: Send {
     /// Prepare the chunk for copying.
     ///
     /// For example, copy to an itermediate buffer.
-    fn warm_up(&mut self, _chunk: &[Self::Item], _stream: &Stream) -> Result<()> {
+    fn warm_up(
+        &mut self,
+        _chunk: &[Self::Item],
+        _stream: &Stream,
+        _thread_pool: &rayon::ThreadPool,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -439,18 +455,25 @@ impl<T: Copy + DeviceCopy> CudaPinnedCopyStrategy<T> {
 impl<T: Copy + DeviceCopy + Send + Sync> CudaTransferStrategyImpl for CudaPinnedCopyStrategy<T> {
     type Item = T;
 
-    fn warm_up(&mut self, chunk: &[T], stream: &Stream) -> Result<()> {
+    fn warm_up(
+        &mut self,
+        chunk: &[T],
+        stream: &Stream,
+        thread_pool: &rayon::ThreadPool,
+    ) -> Result<()> {
         stream.synchronize()?;
 
-        let memcpy_threads = rayon::current_num_threads();
+        let memcpy_threads = thread_pool.current_num_threads();
         let par_chunk_len = (chunk.len() + memcpy_threads - 1) / memcpy_threads;
 
-        self.host_buffer[0..chunk.len()]
-            .par_chunks_mut(par_chunk_len)
-            .zip(chunk.par_chunks(par_chunk_len))
-            .for_each(|(dst, src)| {
-                dst.copy_from_slice(src);
-            });
+        thread_pool.install(|| {
+            self.host_buffer[0..chunk.len()]
+                .par_chunks_mut(par_chunk_len)
+                .zip(chunk.par_chunks(par_chunk_len))
+                .for_each(|(dst, src)| {
+                    dst.copy_from_slice(src);
+                });
+        });
 
         Ok(())
     }
@@ -488,7 +511,12 @@ impl<T: DeviceCopy> CudaLazyPinnedCopyStrategy<T> {
 impl<T: DeviceCopy> CudaTransferStrategyImpl for CudaLazyPinnedCopyStrategy<T> {
     type Item = T;
 
-    fn warm_up(&mut self, chunk: &[T], stream: &Stream) -> Result<()> {
+    fn warm_up(
+        &mut self,
+        chunk: &[T],
+        stream: &Stream,
+        _thread_pool: &rayon::ThreadPool,
+    ) -> Result<()> {
         stream.synchronize()?;
         unsafe {
             host_register(chunk).chain_err(|| {
@@ -575,6 +603,7 @@ impl<T: DeviceCopy + Send> CudaTransferStrategyImpl for CudaCoherenceStrategy<T>
 /// inputs, e.g. a `CudaIterator1` or `CudaIterator3`.
 pub struct CudaIterator2<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> {
     data: (&'a mut [R], &'a mut [S]),
+    thread_pool: rayon::ThreadPool,
     chunk_len: usize,
     streams: Vec<Stream>,
     // partitions: Vec<(&'a mut [R], &'a mut [S])>,
@@ -710,6 +739,7 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
         let strategy_impls = &mut self.strategy_impls;
         let chunk_len = self.chunk_len;
         let af = std::sync::Arc::new(f);
+        let thread_pool = &self.thread_pool;
 
         let summed_times: ThreadResult<Result<_>> = scope(|scope| {
             let mut thread_handles = partitions
@@ -727,8 +757,8 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
                                 .zip(partition_snd.chunks_mut(chunk_len))
                                 .map(|(fst, snd)| {
                                     let warm_up_timer = Instant::now();
-                                    strategy_fst.warm_up(&fst, &stream)?;
-                                    strategy_snd.warm_up(&snd, &stream)?;
+                                    strategy_fst.warm_up(&fst, &stream, thread_pool)?;
+                                    strategy_snd.warm_up(&snd, &stream, thread_pool)?;
                                     let warm_up_ns = warm_up_timer.elapsed().as_nanos() as f64;
 
                                     let begin_copy_event = Event::new(EventFlags::DEFAULT)?;
@@ -837,6 +867,7 @@ impl<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> CudaIterator2<'a, R, S> {
         let snd = &mut self.data.1;
         let streams = &self.streams;
         let (strategy_fst, strategy_snd) = &mut self.strategy_impls[0];
+        let thread_pool = &self.thread_pool;
 
         let timers = fst
             .chunks_mut(chunk_len)
@@ -845,8 +876,8 @@ impl<'a, R: Copy + DeviceCopy, S: Copy + DeviceCopy> CudaIterator2<'a, R, S> {
             .map(|((fst, snd), stream)| {
                 // Warm-up
                 let warm_up_timer = EventTimer::record_start(&stream)?;
-                strategy_fst.warm_up(&fst, &stream)?;
-                strategy_snd.warm_up(&snd, &stream)?;
+                strategy_fst.warm_up(&fst, &stream, thread_pool)?;
+                strategy_snd.warm_up(&snd, &stream, thread_pool)?;
                 warm_up_timer.record_stop(&stream)?;
 
                 // Copy to device

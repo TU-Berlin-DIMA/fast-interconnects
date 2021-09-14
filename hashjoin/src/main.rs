@@ -591,6 +591,8 @@ where
                 (grid_size.clone(), block_size.clone()),
                 transfer_strategy.into(),
                 morsel_spec.gpu_morsel_bytes,
+                threads,
+                &worker_cpu_affinity.cpu_workers,
             )
         }),
         ArgExecutionMethod::Het => Box::new(move || {
