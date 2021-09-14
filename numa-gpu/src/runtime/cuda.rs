@@ -40,6 +40,8 @@ use crate::runtime::cpu_affinity::CpuAffinity;
 use crate::runtime::cuda_wrapper::{
     current_device_id, host_register, host_unregister, prefetch_async,
 };
+use crate::runtime::hw_info::NvidiaDriverInfo;
+use crate::runtime::linux_wrapper;
 use crate::runtime::memory::{LaunchableMem, LaunchableSlice};
 
 /// Timer based on CUDA events.
@@ -751,6 +753,22 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
                         let unowned_context = CurrentContext::get_current()?;
                         let handle: ScopedJoinHandle<'_, Result<_>> = scope.spawn(move |_| {
                             CurrentContext::set_current(&unowned_context)?;
+
+                            // Bind main thread to the CPU node closest to the GPU. This improves
+                            // NVLink latency.
+                            let device = CurrentContext::get_device()?;
+                            if let Ok(local_cpu_node) = device.numa_memory_affinity() {
+                                linux_wrapper::numa_run_on_node(local_cpu_node).expect(&format!(
+                                    "Failed to bind main thread to CPU node {}",
+                                    local_cpu_node
+                                ));
+                            } else {
+                                eprintln!(
+                                    "Warning: Couldn't bind main thread to the CPU closest to
+                                GPU. This may cause additional latency in measurements."
+                                );
+                            }
+
                             let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
                             let times = partition_fst
                                 .chunks_mut(chunk_len)
