@@ -331,6 +331,30 @@ where
         + num_traits::FromPrimitive
         + DeserializeOwned,
 {
+    // Bind main thread to the CPU node closest to the GPU. This improves NVLink latency.
+    match cmd.execution_method {
+        ArgExecutionMethod::Gpu
+        | ArgExecutionMethod::GpuStream
+        | ArgExecutionMethod::Het
+        | ArgExecutionMethod::GpuBuildHetProbe => {
+            let device = CurrentContext::get_device()?;
+            if let Ok(local_cpu_node) = device.numa_memory_affinity() {
+                linux_wrapper::numa_run_on_node(local_cpu_node).expect(&format!(
+                    "Failed to bind main thread to CPU node {}",
+                    local_cpu_node
+                ));
+                linux_wrapper::numa_set_preferred(local_cpu_node);
+            } else {
+                eprintln!(
+                    "Warning: Couldn't bind main thread to the CPU closest to GPU {}. This may
+                        cause additional latency in measurements.",
+                    cmd.device_id
+                );
+            }
+        }
+        _ => {}
+    };
+
     // Convert ArgHashingScheme to HashingScheme
     let (hashing_scheme, hash_table_load_factor) = match cmd.hashing_scheme {
         ArgHashingScheme::Perfect => (HashingScheme::Perfect, 1),
@@ -470,29 +494,6 @@ where
             cpu_workers,
             gpu_workers,
         }
-    };
-
-    // Bind main thread to the CPU node closest to the GPU. This improves NVLink latency.
-    match exec_method {
-        ArgExecutionMethod::Gpu
-        | ArgExecutionMethod::GpuStream
-        | ArgExecutionMethod::Het
-        | ArgExecutionMethod::GpuBuildHetProbe => {
-            let device = CurrentContext::get_device()?;
-            if let Ok(local_cpu_node) = device.numa_memory_affinity() {
-                linux_wrapper::numa_run_on_node(local_cpu_node).expect(&format!(
-                    "Failed to bind main thread to CPU node {}",
-                    local_cpu_node
-                ));
-            } else {
-                eprintln!(
-                    "Warning: Couldn't bind main thread to the CPU closest to GPU {}. This may
-                        cause additional latency in measurements.",
-                    device_id
-                );
-            }
-        }
-        _ => {}
     };
 
     // Create closure that wraps a hash join benchmark function
