@@ -20,12 +20,12 @@ use numa_gpu::runtime::cuda::{
 use numa_gpu::runtime::dispatcher::{
     HetMorselExecutorBuilder, IntoHetMorselIterator, MorselSpec, WorkerCpuAffinity,
 };
-use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::*;
+use numa_gpu::runtime::{cuda_wrapper, linux_wrapper};
 use numa_gpu::utils::CachePadded;
 use rustacuda::event::{Event, EventFlags};
 use rustacuda::function::{BlockSize, GridSize};
-use rustacuda::memory::DeviceCopy;
+use rustacuda::memory::{AsyncCopyDestination, DeviceBuffer, DeviceCopy};
 use rustacuda::stream::{Stream, StreamFlags};
 use sql_ops::join::{no_partitioning_join, HashingScheme, HtEntry};
 use std::cell::RefCell;
@@ -184,15 +184,12 @@ where
         let hash_table = hash_table;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
-        let mut result_sums = allocator::Allocator::alloc_mem(
-            allocator::MemType::CudaUniMem,
-            (probe_dim.0.x * probe_dim.1.x) as usize,
-        );
-
-        // Initialize result
-        if let CudaUniMem(ref mut c) = result_sums {
-            c.iter_mut().map(|sum| *sum = 0).for_each(drop);
-        }
+        let mut result_sums = {
+            let mut mem =
+                unsafe { DeviceBuffer::uninitialized((probe_dim.0.x * probe_dim.1.x) as usize)? };
+            cuda_wrapper::memset_async(mem.as_launchable_mut_slice(), 0, &stream)?;
+            Mem::CudaDevMem(mem)
+        };
 
         stream.synchronize()?;
 
@@ -230,7 +227,14 @@ where
         stop_event.synchronize()?;
         let probe_millis = stop_event.elapsed_time_f32(&start_event)?;
 
+        let mut result_sums_host = vec![0; result_sums.len()];
+        if let Mem::CudaDevMem(results) = result_sums {
+            unsafe { results.async_copy_to(&mut result_sums_host, &stream)? };
+        }
+
         stream.synchronize()?;
+        let _sum: u64 = result_sums_host.iter().sum();
+
         Ok(HashJoinPoint {
             build_ns: Some(build_millis as f64 * 10_f64.powf(6.0)),
             probe_ns: Some(probe_millis as f64 * 10_f64.powf(6.0)),
@@ -251,6 +255,8 @@ where
         cpu_memcpy_threads: usize,
         cpu_affinity: &CpuAffinity,
     ) -> Result<HashJoinPoint> {
+        let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
+
         let ht_malloc_timer = Instant::now();
         let mut hash_table_mem = hash_table_alloc(self.hash_table_len);
         if let CudaUniMem(ref mut _mem) = hash_table_mem {
@@ -271,15 +277,14 @@ where
         let hash_table = hash_table;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
-        let mut result_sums = allocator::Allocator::alloc_mem(
-            allocator::MemType::CudaUniMem,
-            (probe_dim.0.x * probe_dim.1.x) as usize,
-        );
+        let result_sums = {
+            let mut mem =
+                unsafe { DeviceBuffer::uninitialized((probe_dim.0.x * probe_dim.1.x) as usize)? };
+            cuda_wrapper::memset_async(mem.as_launchable_mut_slice(), 0, &stream)?;
+            Mem::CudaDevMem(mem)
+        };
 
-        // Initialize sums
-        if let CudaUniMem(ref mut c) = result_sums {
-            c.iter_mut().map(|sum| *sum = 0).for_each(drop);
-        }
+        stream.synchronize()?;
 
         let build_rel_key: &mut [T] = (&mut data.build_relation_key)
             .try_into()
@@ -339,6 +344,14 @@ where
         })?;
         let probe_time = probe_timer.elapsed();
 
+        let mut result_sums_host = vec![0; result_sums.len()];
+        if let Mem::CudaDevMem(results) = result_sums {
+            unsafe { results.async_copy_to(&mut result_sums_host, &stream)? };
+        }
+
+        stream.synchronize()?;
+        let _sum: u64 = result_sums_host.iter().sum();
+
         Ok(HashJoinPoint {
             build_ns: Some(build_time.as_nanos() as f64),
             probe_ns: Some(probe_time.as_nanos() as f64),
@@ -363,6 +376,8 @@ where
         probe_dim: (GridSize, BlockSize),
         gpu_morsel_bytes: usize,
     ) -> Result<HashJoinPoint> {
+        let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
+
         let ht_malloc_timer = Instant::now();
         let hash_table_mem = hash_table_alloc(self.hash_table_len);
         let mut hash_table =
@@ -371,15 +386,14 @@ where
         let hash_table = hash_table;
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
-        let mut result_sums = allocator::Allocator::alloc_mem(
-            allocator::MemType::CudaUniMem,
-            (probe_dim.0.x * probe_dim.1.x) as usize,
-        );
+        let result_sums = {
+            let mut mem =
+                unsafe { DeviceBuffer::uninitialized((probe_dim.0.x * probe_dim.1.x) as usize)? };
+            cuda_wrapper::memset_async(mem.as_launchable_mut_slice(), 0, &stream)?;
+            Mem::CudaDevMem(mem)
+        };
 
-        // Initialize sums
-        if let CudaUniMem(ref mut c) = result_sums {
-            c.iter_mut().map(|sum| *sum = 0).for_each(drop);
-        }
+        stream.synchronize()?;
 
         let build_rel_key = match data.build_relation_key {
             Mem::CudaUniMem(ref mut m) => m,
@@ -432,6 +446,14 @@ where
                     Ok(())
                 })?;
         let probe_time = probe_timer.elapsed();
+
+        let mut result_sums_host = vec![0; result_sums.len()];
+        if let Mem::CudaDevMem(results) = result_sums {
+            unsafe { results.async_copy_to(&mut result_sums_host, &stream)? };
+        }
+
+        stream.synchronize()?;
+        let _sum: u64 = result_sums_host.iter().sum();
 
         Ok(HashJoinPoint {
             build_ns: Some(build_time.as_nanos() as f64),
@@ -556,6 +578,8 @@ where
         probe_dim: (GridSize, BlockSize),
         morsel_spec: &MorselSpec,
     ) -> Result<HashJoinPoint> {
+        let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
+
         // FIXME: specify load factor as argument
         let ht_malloc_timer = Instant::now();
         let hash_table_mem = hash_table_alloc(self.hash_table_len);
@@ -565,11 +589,14 @@ where
         let hash_table = Arc::new(hash_table);
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
-        // Note: CudaDevMem is initialized with zeroes by the allocator
-        let result_sums: Mem<u64> = allocator::Allocator::alloc_mem(
-            allocator::MemType::CudaDevMem,
-            (probe_dim.0.x * probe_dim.1.x) as usize,
-        );
+        let result_sums = {
+            let mut mem =
+                unsafe { DeviceBuffer::uninitialized((probe_dim.0.x * probe_dim.1.x) as usize)? };
+            cuda_wrapper::memset_async(mem.as_launchable_mut_slice(), 0, &stream)?;
+            Mem::CudaDevMem(mem)
+        };
+
+        stream.synchronize()?;
 
         // Convert Mem<T> into &mut [T]
         let build_rel_key: &mut [T] = (&mut data.build_relation_key)
@@ -649,7 +676,6 @@ where
                         .build()
                         .expect("Failed to build GPU hash join");
 
-                    // FIXME: retrieve sums of all threads, e.g., by implementing fold instead of map
                     hj_op
                         .probe_sum(rel, pay, &result_sums, stream)
                         .expect("Failed to run GPU hash join probe");
@@ -659,6 +685,14 @@ where
             )?;
 
         let probe_time = probe_timer.elapsed();
+
+        let mut result_sums_host = vec![0; result_sums.len()];
+        if let Mem::CudaDevMem(results) = result_sums {
+            unsafe { results.async_copy_to(&mut result_sums_host, &stream)? };
+        }
+
+        stream.synchronize()?;
+        let _sum: u64 = result_sums_host.iter().sum();
 
         Ok(HashJoinPoint {
             build_ns: Some(build_time.as_nanos() as f64),
@@ -681,6 +715,8 @@ where
         probe_dim: (GridSize, BlockSize),
         morsel_spec: &MorselSpec,
     ) -> Result<HashJoinPoint> {
+        let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
+
         let ht_malloc_timer = Instant::now();
 
         let gpu_hash_table_mem = gpu_hash_table_alloc(self.hash_table_len);
@@ -695,11 +731,14 @@ where
 
         let ht_malloc_time = ht_malloc_timer.elapsed();
 
-        // Note: CudaDevMem is initialized with zeroes by the allocator
-        let result_sums: Mem<u64> = allocator::Allocator::alloc_mem(
-            allocator::MemType::CudaDevMem,
-            (probe_dim.0.x * probe_dim.1.x) as usize,
-        );
+        let result_sums = {
+            let mut mem =
+                unsafe { DeviceBuffer::uninitialized((probe_dim.0.x * probe_dim.1.x) as usize)? };
+            cuda_wrapper::memset_async(mem.as_launchable_mut_slice(), 0, &stream)?;
+            Mem::CudaDevMem(mem)
+        };
+
+        stream.synchronize()?;
 
         // Convert Mem<T> into &mut [T]
         let probe_rel_key: &mut [T] = (&mut data.probe_relation_key)
@@ -765,7 +804,6 @@ where
                         .build()
                         .expect("Failed to run GPU hash join build");
 
-                    // FIXME: retrieve sums of all threads, e.g., by implementing fold instead of map
                     hj_op
                         .probe_sum(rel, pay, &result_sums, stream)
                         .expect("Failed to run GPU hash join probe");
@@ -774,6 +812,14 @@ where
                 },
             )?;
         let probe_time = probe_timer.elapsed();
+
+        let mut result_sums_host = vec![0; result_sums.len()];
+        if let Mem::CudaDevMem(results) = result_sums {
+            unsafe { results.async_copy_to(&mut result_sums_host, &stream)? };
+        }
+
+        stream.synchronize()?;
+        let _sum: u64 = result_sums_host.iter().sum();
 
         Ok(HashJoinPoint {
             build_ns: Some(build_time.as_nanos() as f64),
