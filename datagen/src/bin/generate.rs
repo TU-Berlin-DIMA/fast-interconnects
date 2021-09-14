@@ -295,7 +295,7 @@ where
     let fk_timer = Instant::now();
     match dist {
         DataDistribution::Uniform => {
-            UniformRelation::gen_attr_par(&mut outer_rel, 1..=inner_rel.len())?
+            UniformRelation::gen_attr_par(&mut outer_rel, 0..inner_rel.len())?
         }
         DataDistribution::Zipf(exp) => ZipfRelation::gen_attr_par(&mut outer_rel, inner_len, exp)?,
     };
