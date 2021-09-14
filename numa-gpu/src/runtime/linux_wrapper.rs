@@ -32,6 +32,7 @@ mod bindings {
             maxnode: c_ulong,
             flags: c_uint,
         ) -> c_long;
+        pub fn numa_set_preferred(node: c_int);
         pub fn numa_run_on_node(node: c_int) -> c_int;
         pub fn numa_set_strict(strict: c_int);
         pub fn numa_tonode_memory(start: *mut c_void, size: usize, node: c_int);
@@ -357,6 +358,14 @@ mod test {
 
         Ok(())
     }
+}
+
+/// Try to allocate memory on the sepecified NUMA node.
+///
+/// Falls back to other NUMA nodes if no memory is available on the preferred
+/// node.
+pub fn numa_set_preferred(node: u16) {
+    unsafe { bindings::numa_set_preferred(node.into()) };
 }
 
 /// NUMA allocations will fail if the memory cannot be allocated on the target
