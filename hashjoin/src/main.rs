@@ -272,6 +272,14 @@ struct CmdOpt {
     /// Path to CPU affinity map file for GPU workers
     #[structopt(long = "gpu-affinity", parse(from_os_str))]
     gpu_affinity: Option<PathBuf>,
+
+    /// The CUDA grid size [Default: all SMs]
+    #[structopt(long = "grid-size", require_delimiter = true)]
+    grid_size: Option<u32>,
+
+    /// The CUDA block size [Default: 1024]
+    #[structopt(long = "block-size", require_delimiter = true)]
+    block_size: Option<u32>,
 }
 
 impl CmdOpt {
@@ -367,8 +375,11 @@ where
     let warp_overcommit_factor = 4;
     let grid_overcommit_factor = 2;
 
-    let block_size = BlockSize::x(warp_size * warp_overcommit_factor);
-    let grid_size = GridSize::x(multiprocessors * grid_overcommit_factor);
+    let block_size = BlockSize::x(cmd.block_size.unwrap_or(warp_size * warp_overcommit_factor));
+    let grid_size = GridSize::x(
+        cmd.grid_size
+            .unwrap_or(multiprocessors * grid_overcommit_factor),
+    );
 
     assert_eq!(
         cmd.hash_table_location.len(),
@@ -477,7 +488,8 @@ where
         .fill_from_cmd_options(cmd)?
         .fill_from_join_data(&join_data)
         .fill_from_hash_join_bench(&hjb)
-        .set_init_time(malloc_time, data_gen_time);
+        .set_init_time(malloc_time, data_gen_time)
+        .set_gpu_threads(&grid_size, &block_size);
 
     let worker_cpu_affinity = {
         let cpu_workers = if let Some(ref cpu_affinity_file) = cmd.cpu_affinity {

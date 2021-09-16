@@ -15,6 +15,7 @@ use data_store::join_data::JoinData;
 use numa_gpu::error::Result;
 use numa_gpu::runtime::hw_info::cpu_codename;
 use rustacuda::device::Device;
+use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
 use serde::Serializer;
 use serde_derive::Serialize;
@@ -33,6 +34,8 @@ pub struct DataPoint {
     pub cpu_morsel_bytes: Option<usize>,
     pub gpu_morsel_bytes: Option<usize>,
     pub threads: Option<usize>,
+    pub grid_size: Option<u32>,
+    pub block_size: Option<u32>,
     pub hashing_scheme: Option<ArgHashingScheme>,
     pub hash_table_memory_type: Option<ArgMemType>,
     #[serde(serialize_with = "serialize_vec")]
@@ -175,6 +178,14 @@ impl DataPoint {
         DataPoint {
             relation_malloc_ns: Some(malloc.as_nanos() as f64),
             relation_gen_ns: Some(data_gen.as_nanos() as f64),
+            ..self.clone()
+        }
+    }
+
+    pub fn set_gpu_threads(&self, grid_size: &GridSize, block_size: &BlockSize) -> DataPoint {
+        DataPoint {
+            grid_size: Some(grid_size.x),
+            block_size: Some(block_size.x),
             ..self.clone()
         }
     }
