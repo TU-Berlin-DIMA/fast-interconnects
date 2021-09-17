@@ -23,7 +23,8 @@ use crate::types::*;
 use num_rational::Ratio;
 use numa_gpu::runtime::allocator::DerefMemType;
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
-use numa_gpu::runtime::hw_info::cpu_codename;
+use numa_gpu::runtime::hw_info::{cpu_codename, NvidiaDriverInfo};
+use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::numa::NodeRatio;
 use rustacuda::device::DeviceAttribute;
 use rustacuda::function::{BlockSize, GridSize};
@@ -37,10 +38,26 @@ fn main() -> Result<()> {
     // Parse commandline arguments
     let cmd = CmdOpt::from_args();
 
-    // Initialize CUDA
     let _context = if cmd.execution_method != ArgExecutionMethod::Cpu {
+        // Initialize CUDA
         rustacuda::init(CudaFlags::empty())?;
         let device = Device::get_device(cmd.device_id.into())?;
+
+        // Bind main thread to the CPU node closest to the GPU. This improves NVLink latency.
+        if let Ok(local_cpu_node) = device.numa_memory_affinity() {
+            linux_wrapper::numa_run_on_node(local_cpu_node).expect(&format!(
+                "Failed to bind main thread to CPU node {}",
+                local_cpu_node
+            ));
+            linux_wrapper::numa_set_preferred(local_cpu_node);
+        } else {
+            eprintln!(
+                "Warning: Couldn't bind main thread to the CPU closest to GPU {}. This may cause
+                additional latency in measurements.",
+                cmd.device_id
+            );
+        }
+
         Some(Context::create_and_push(
             ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO,
             device,
