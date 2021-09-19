@@ -28,8 +28,10 @@
 
 use super::{HashingScheme, HtEntry};
 use crate::error::{ErrorKind, Result};
+use cstr::cstr;
 use cuda_sys::cuda::cuMemsetD32_v2;
 use datagen::relation::KeyAttribute;
+use likwid;
 use num_traits::cast::AsPrimitive;
 use numa_gpu::error::Result as NumaGpuResult;
 use numa_gpu::error::ToResult;
@@ -455,6 +457,9 @@ macro_rules! impl_cpu_hash_join_for_type {
                     let join_attr_len = join_attr.len() as u64;
                     let hash_table_size = hj.hash_table.size as u64;
 
+                    let region_name = cstr!("cpu_hash_join_build");
+                    likwid::marker_start_region(region_name)?;
+
                     match (&hj.hashing_scheme, &hj.is_selective) {
                         (HashingScheme::Perfect, false) => unsafe {
                             [<cpu_ht_build_perfect_ $Suffix>](
@@ -488,6 +493,8 @@ macro_rules! impl_cpu_hash_join_for_type {
 			(HashingScheme::BucketChaining, true) => unimplemented!(),
                     };
 
+                    likwid::marker_stop_region(region_name)?;
+
                     Ok(())
                 }
             }
@@ -509,6 +516,9 @@ macro_rules! impl_cpu_hash_join_for_type {
 
                     let join_attr_len = join_attr.len() as u64;
                     let hash_table_size = hj.hash_table.size as u64;
+
+                    let region_name = cstr!("cpu_hash_join_probe");
+                    likwid::marker_start_region(region_name)?;
 
                     match &hj.hashing_scheme {
                         HashingScheme::Perfect => unsafe {
@@ -533,6 +543,8 @@ macro_rules! impl_cpu_hash_join_for_type {
                         },
                         HashingScheme::BucketChaining => unimplemented!(),
                     };
+
+                    likwid::marker_stop_region(region_name)?;
 
                     Ok(())
                 }

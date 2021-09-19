@@ -495,7 +495,8 @@ where
                 boxed_cpu_affinity
                     .clone()
                     .set_affinity(tid as u16)
-                    .expect("Couldn't set CPU core affinity")
+                    .expect("Couldn't set CPU core affinity");
+                likwid::thread_init();
             })
             .build()
             .map_err(|_| ErrorKind::RuntimeError("Failed to create thread pool".to_string()))?;

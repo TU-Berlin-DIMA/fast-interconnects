@@ -19,6 +19,7 @@ use crate::measurement::hash_join_bench::{HashJoinBenchBuilder, HashJoinPoint};
 use crate::types::*;
 use data_store::join_data::{JoinDataBuilder, JoinDataGenFn};
 use datagen::relation::KeyAttribute;
+use likwid;
 use num_rational::Ratio;
 use num_traits::cast::AsPrimitive;
 use numa_gpu::runtime::allocator;
@@ -48,6 +49,9 @@ fn main() -> Result<()> {
     let device = Device::get_device(cmd.device_id.into())?;
     let _context =
         Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
+
+    // Initialize LIKWID
+    let _likwid = likwid::Likwid::init();
 
     let cache_node = device.numa_node().ok();
     let overflow_node = match device.numa_memory_affinity() {

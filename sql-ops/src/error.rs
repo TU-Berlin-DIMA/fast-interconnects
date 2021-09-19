@@ -17,6 +17,7 @@ pub enum ErrorKind {
     CudaError(rustacuda::error::CudaError),
     IntegerOverflow(String),
     InvalidArgument(String),
+    LikwidError(likwid::error::LikwidError),
     Msg(String),
     NulCharError(String),
     NumaGpuError(numa_gpu::error::Error),
@@ -50,6 +51,14 @@ impl From<rustacuda::error::CudaError> for Error {
     }
 }
 
+impl From<likwid::error::LikwidError> for Error {
+    fn from(error: likwid::error::LikwidError) -> Self {
+        Self {
+            kind: ErrorKind::LikwidError(error),
+        }
+    }
+}
+
 impl From<numa_gpu::error::Error> for Error {
     fn from(error: numa_gpu::error::Error) -> Self {
         Self {
@@ -70,6 +79,7 @@ impl std::fmt::Display for ErrorKind {
             ErrorKind::CudaError(ref e) => e.fmt(f),
             ErrorKind::IntegerOverflow(ref s) => write!(f, "IntegerOverflow: {}", s),
             ErrorKind::InvalidArgument(ref s) => write!(f, "InvalidArgument: {}", s),
+            ErrorKind::LikwidError(ref e) => e.fmt(f),
             ErrorKind::NulCharError(ref s) => write!(f, "NulCharError: {}", s),
             ErrorKind::NumaGpuError(ref e) => e.fmt(f),
             ErrorKind::Msg(ref s) => write!(f, "Msg: {}", s),
