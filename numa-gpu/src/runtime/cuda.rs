@@ -653,6 +653,7 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
     /// # Example
     ///
     /// ```
+    /// # use numa_gpu::runtime::cpu_affinity::CpuAffinity;
     /// # use numa_gpu::runtime::cuda::{
     /// #     CudaTransferStrategy, IntoCudaIterator, IntoCudaIteratorWithStrategy,
     /// # };
@@ -674,6 +675,8 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
     /// # let data_len = 2_usize.pow(20);
     /// let chunk_len = 1024_usize;
     /// # assert_eq!(data_len % chunk_len, 0);
+    /// let cpu_memcpy_threads = 2_usize;
+    /// let cpu_affinity = CpuAffinity::default();
     ///
     /// let mut data_0 = vec![1.0_f32; data_len];
     /// let mut data_1 = vec![1.0_f32; data_len];
@@ -681,7 +684,12 @@ impl<'a, R: Copy + DeviceCopy + Send, S: Copy + DeviceCopy + Send> CudaIterator2
     /// let result_ptr = result.as_device_ptr();
     ///
     /// (data_0.as_mut_slice(), data_1.as_mut_slice())
-    ///     .into_cuda_iter_with_strategy(CudaTransferStrategy::PageableCopy, chunk_len)
+    ///     .into_cuda_iter_with_strategy(
+    ///         CudaTransferStrategy::PageableCopy,
+    ///         chunk_len,
+    ///         cpu_memcpy_threads,
+    ///         &cpu_affinity,
+    ///     )
     ///     .unwrap()
     ///     .fold(|(x, y), stream| {
     ///         unsafe {

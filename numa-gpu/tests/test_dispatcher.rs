@@ -4,8 +4,8 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019, Clemens Lutz <lutzcle@cml.li>
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2019-2021, Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 use assert_approx_eq::assert_approx_eq;
@@ -42,14 +42,14 @@ fn test_iter() -> Result<(), Box<dyn Error>> {
     let result_ptr = result.as_device_ptr();
     let cpu_result = Mutex::new(0.0_f32);
 
-    let executor = HetMorselExecutorBuilder::new()
+    let mut executor = HetMorselExecutorBuilder::new()
         .morsel_spec(morsel_spec)
         .worker_cpu_affinity(WorkerCpuAffinity::default())
         .gpu_ids(vec![0])
         .build()?;
 
     (data_0.as_mut_slice(), data_1.as_mut_slice())
-        .into_het_morsel_iter(&executor)
+        .into_het_morsel_iter(&mut executor)
         .fold(
             |(x, y)| {
                 let sum: f32 = x.iter().zip(y.iter()).map(|(x, y)| x * y).sum();
@@ -106,14 +106,14 @@ fn test_iter_non_divisor_morsel_len() -> Result<(), Box<dyn Error>> {
     let result_ptr = result.as_device_ptr();
     let cpu_result = Mutex::new(0.0_f32);
 
-    let executor = HetMorselExecutorBuilder::new()
+    let mut executor = HetMorselExecutorBuilder::new()
         .morsel_spec(morsel_spec)
         .worker_cpu_affinity(WorkerCpuAffinity::default())
         .gpu_ids(vec![0])
         .build()?;
 
     (data_0.as_mut_slice(), data_1.as_mut_slice())
-        .into_het_morsel_iter(&executor)
+        .into_het_morsel_iter(&mut executor)
         .fold(
             |(x, y)| {
                 let sum: f32 = x.iter().zip(y.iter()).map(|(x, y)| x * y).sum();

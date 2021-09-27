@@ -4,12 +4,13 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright 2019 German Research Center for Artificial Intelligence (DFKI)
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2019-2021, Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 use assert_approx_eq::assert_approx_eq;
 
+use numa_gpu::runtime::cpu_affinity::CpuAffinity;
 use numa_gpu::runtime::cuda::{
     CudaTransferStrategy, IntoCudaIterator, IntoCudaIteratorWithStrategy,
 };
@@ -42,6 +43,8 @@ fn test_cuda_iterator_2_pageable_copy() -> Result<(), Box<dyn Error>> {
     let data_len = 2_usize.pow(20);
     let chunk_len = 1024_usize;
     assert_eq!(data_len % chunk_len, 0);
+    let cpu_memcpy_threads = 2_usize;
+    let cpu_affinity = CpuAffinity::default();
 
     let mut data_0 = vec![1.0_f32; data_len];
     let mut data_1 = vec![1.0_f32; data_len];
@@ -52,6 +55,8 @@ fn test_cuda_iterator_2_pageable_copy() -> Result<(), Box<dyn Error>> {
         .into_cuda_iter_with_strategy(
             CudaTransferStrategy::PageableCopy,
             chunk_len * 2 * size_of::<f32>(),
+            cpu_memcpy_threads,
+            &cpu_affinity,
         )?
         .fold(|(x, y), stream| {
             assert_ne!(x.len(), 0);
@@ -89,6 +94,8 @@ fn test_cuda_iterator_2_pinned_copy() -> Result<(), Box<dyn Error>> {
     let data_len = 2_usize.pow(20);
     let chunk_len = 1024_usize;
     assert_eq!(data_len % chunk_len, 0);
+    let cpu_memcpy_threads = 2_usize;
+    let cpu_affinity = CpuAffinity::default();
 
     let mut data_0 = vec![1.0_f32; data_len];
     let mut data_1 = vec![1.0_f32; data_len];
@@ -99,6 +106,8 @@ fn test_cuda_iterator_2_pinned_copy() -> Result<(), Box<dyn Error>> {
         .into_cuda_iter_with_strategy(
             CudaTransferStrategy::PinnedCopy,
             chunk_len * 2 * size_of::<f32>(),
+            cpu_memcpy_threads,
+            &cpu_affinity,
         )?
         .fold(|(x, y), stream| {
             assert_ne!(x.len(), 0);
@@ -136,6 +145,8 @@ fn test_cuda_iterator_2_lazy_pinned_copy() -> Result<(), Box<dyn Error>> {
     let data_len = 2_usize.pow(20);
     let chunk_len = 1024_usize;
     assert_eq!(data_len % chunk_len, 0);
+    let cpu_memcpy_threads = 2_usize;
+    let cpu_affinity = CpuAffinity::default();
 
     let mut data_0 = vec![1.0_f32; data_len];
     let mut data_1 = vec![1.0_f32; data_len];
@@ -146,6 +157,8 @@ fn test_cuda_iterator_2_lazy_pinned_copy() -> Result<(), Box<dyn Error>> {
         .into_cuda_iter_with_strategy(
             CudaTransferStrategy::LazyPinnedCopy,
             chunk_len * 2 * size_of::<f32>(),
+            cpu_memcpy_threads,
+            &cpu_affinity,
         )?
         .fold(|(x, y), stream| {
             assert_ne!(x.len(), 0);
@@ -279,6 +292,8 @@ fn test_cuda_iterator_2_pageable_copy_non_divisor_chunk_len() -> Result<(), Box<
 
     let data_len = 2_usize.pow(20);
     let chunk_len = 1023_usize;
+    let cpu_memcpy_threads = 2_usize;
+    let cpu_affinity = CpuAffinity::default();
 
     let mut data_0 = vec![1.0_f32; data_len];
     let mut data_1 = vec![1.0_f32; data_len];
@@ -289,6 +304,8 @@ fn test_cuda_iterator_2_pageable_copy_non_divisor_chunk_len() -> Result<(), Box<
         .into_cuda_iter_with_strategy(
             CudaTransferStrategy::PageableCopy,
             chunk_len * 2 * size_of::<f32>(),
+            cpu_memcpy_threads,
+            &cpu_affinity,
         )?
         .fold(|(x, y), stream| {
             assert_ne!(x.len(), 0);
@@ -324,6 +341,8 @@ fn test_cuda_iterator_2_pinned_copy_non_divisor_chunk_len() -> Result<(), Box<dy
 
     let data_len = 2_usize.pow(20);
     let chunk_len = 1023_usize;
+    let cpu_memcpy_threads = 2_usize;
+    let cpu_affinity = CpuAffinity::default();
 
     let mut data_0 = vec![1.0_f32; data_len];
     let mut data_1 = vec![1.0_f32; data_len];
@@ -334,6 +353,8 @@ fn test_cuda_iterator_2_pinned_copy_non_divisor_chunk_len() -> Result<(), Box<dy
         .into_cuda_iter_with_strategy(
             CudaTransferStrategy::PinnedCopy,
             chunk_len * 2 * size_of::<f32>(),
+            cpu_memcpy_threads,
+            &cpu_affinity,
         )?
         .fold(|(x, y), stream| {
             assert_ne!(x.len(), 0);
@@ -369,6 +390,8 @@ fn test_cuda_iterator_2_lazy_pinned_copy_non_divisor_chunk_len() -> Result<(), B
 
     let data_len = 2_usize.pow(20);
     let chunk_len = 1023_usize;
+    let cpu_memcpy_threads = 2_usize;
+    let cpu_affinity = CpuAffinity::default();
 
     let mut data_0 = vec![1.0_f32; data_len];
     let mut data_1 = vec![1.0_f32; data_len];
@@ -379,6 +402,8 @@ fn test_cuda_iterator_2_lazy_pinned_copy_non_divisor_chunk_len() -> Result<(), B
         .into_cuda_iter_with_strategy(
             CudaTransferStrategy::LazyPinnedCopy,
             chunk_len * 2 * size_of::<f32>(),
+            cpu_memcpy_threads,
+            &cpu_affinity,
         )?
         .fold(|(x, y), stream| {
             assert_ne!(x.len(), 0);
