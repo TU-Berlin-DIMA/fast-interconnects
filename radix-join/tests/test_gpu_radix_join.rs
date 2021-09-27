@@ -18,9 +18,7 @@ use numa_gpu::runtime::numa::{NodeRatio, PageType};
 use numa_gpu::utils::DeviceType;
 use once_cell::sync::Lazy;
 use radix_join::error::Result as RJResult;
-use radix_join::execution_methods::{
-    cpu_partitioned_radix_join::cpu_partitioned_radix_join, gpu_radix_join::gpu_radix_join,
-};
+use radix_join::execution_methods::gpu_radix_join::gpu_radix_join;
 use radix_join::measurement::harness::RadixJoinPoint;
 use rustacuda::context::{Context, CurrentContext, UnownedContext};
 use rustacuda::device::Device;
@@ -34,7 +32,9 @@ use std::mem;
 use std::result::Result;
 
 #[cfg(target_arch = "powerpc64")]
-use radix_join::execution_methods::gpu_triton_join::gpu_triton_join;
+use radix_join::execution_methods::{
+    cpu_partitioned_radix_join::cpu_partitioned_radix_join, gpu_triton_join::gpu_triton_join,
+};
 
 static mut CUDA_CONTEXT_OWNER: Option<Context> = None;
 static CUDA_CONTEXT: Lazy<UnownedContext> = Lazy::new(|| {
@@ -241,6 +241,7 @@ fn test_gpu_radix_partition_validate_sum_bucketchaining_large_i32() -> Result<()
     )
 }
 
+#[cfg(target_arch = "powerpc64")]
 #[test]
 fn test_cpu_partitioned_validate_sum_perfect_small_i32() -> Result<(), Box<dyn Error>> {
     run_gpu_radix_join_validate_sum(
@@ -258,6 +259,7 @@ fn test_cpu_partitioned_validate_sum_perfect_small_i32() -> Result<(), Box<dyn E
     )
 }
 
+#[cfg(target_arch = "powerpc64")]
 #[test]
 fn test_cpu_partitioned_validate_sum_bucketchaining_small_i32() -> Result<(), Box<dyn Error>> {
     run_gpu_radix_join_validate_sum(
@@ -275,6 +277,7 @@ fn test_cpu_partitioned_validate_sum_bucketchaining_small_i32() -> Result<(), Bo
     )
 }
 
+#[cfg(target_arch = "powerpc64")]
 #[test]
 fn test_cpu_partitioned_validate_sum_bucketchaining_large_i32() -> Result<(), Box<dyn Error>> {
     run_gpu_radix_join_validate_sum(
