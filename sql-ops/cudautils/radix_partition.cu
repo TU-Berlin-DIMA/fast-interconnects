@@ -954,7 +954,7 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
       "Payload column should be aligned to ALIGN_BYTES for best performance");
 
   const uint32_t sswwc_buffer_bytes =
-      shared_mem_bytes - 3U * fanout * sizeof(uint32_t);
+      shared_mem_bytes - 4U * fanout * sizeof(uint32_t);
   const uint32_t tuples_per_buffer =
       1U << log2_floor_power_of_two(sswwc_buffer_bytes / sizeof(Tuple<K, V>) /
                                     fanout);
@@ -964,13 +964,15 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
   Tuple<K, V> *const buffers = reinterpret_cast<Tuple<K, V> *>(shared_mem);
   unsigned int *const tmp_partition_offsets =
       reinterpret_cast<unsigned int *>(&buffers[fanout * tuples_per_buffer]);
-  unsigned int *const slots =
+  unsigned int *const base_partition_offsets =
       reinterpret_cast<unsigned int *>(&tmp_partition_offsets[fanout]);
+  unsigned int *const slots =
+      reinterpret_cast<unsigned int *>(&base_partition_offsets[fanout]);
   unsigned int *const signal_slots = &slots[fanout];
 
   // Load partition offsets from device memory into shared memory.
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
-    tmp_partition_offsets[i] = static_cast<unsigned int>(
+    base_partition_offsets[i] = static_cast<unsigned int>(
         args.partition_offsets[blockIdx.x * fanout + i] -
         partitioned_relation_offset);
   }
@@ -981,7 +983,7 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
 
   for (uint32_t i = threadIdx.x; i < fanout; i += blockDim.x) {
     // Align the initial slots to cache lines
-    auto offset = tmp_partition_offsets[i];
+    auto offset = base_partition_offsets[i];
     Tuple<K, V> *base_ptr = reinterpret_cast<Tuple<K, V> *>(
         reinterpret_cast<uintptr_t>(&partitioned_relation[offset]) &
         offset_align_mask);
@@ -1064,10 +1066,21 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
         auto dst = tmp_partition_offsets[current_index];
 
         // Memcpy from cached buffer to memory
+        //
+        // If partitions small, then there exists a race condition in which
+        // the first flush performed by a thread block overwrites the last
+        // values written by the neighboring thread block. In this case,
+        // threads are not allowed to write before the first valid
+        // destination.
+        //
+        // The race condition typically occurs within a small partition, e.g.,
+        // in the second partitioning pass.
         for (uint32_t i = lane_id; i < tuples_per_buffer; i += warpSize) {
-          Tuple<K, V> tuple =
-              buffers[write_combine_slot(tuples_per_buffer, current_index, i)];
-          tuple.store(partitioned_relation[dst + i]);
+          if (dst + i >= base_partition_offsets[current_index]) {
+            Tuple<K, V> tuple = buffers[write_combine_slot(tuples_per_buffer,
+                                                           current_index, i)];
+            tuple.store(partitioned_relation[dst + i]);
+          }
         }
 
         if (lane_id == leader_id) {
@@ -1097,13 +1110,10 @@ __device__ void gpu_chunked_sswwc_radix_partition_v2(
 
     if (slot < slots[p_index]) {
       auto dst = tmp_partition_offsets[p_index] + slot;
-      auto base_offset = static_cast<unsigned int>(
-          args.partition_offsets[blockIdx.x * fanout + p_index] -
-          partitioned_relation_offset);
 
       // Consider that buffer flush is aligned; don't invalid tuples in front
       // of the partition
-      if (dst >= base_offset) {
+      if (dst >= base_partition_offsets[p_index]) {
         Tuple<K, V> tuple = buffers[i];
         tuple.store(partitioned_relation[dst]);
       }
