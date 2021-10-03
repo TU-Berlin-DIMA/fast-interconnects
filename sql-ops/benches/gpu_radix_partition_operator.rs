@@ -14,6 +14,8 @@ use num_rational::Ratio;
 use num_traits::cast::FromPrimitive;
 use numa_gpu::runtime::allocator::{Allocator, DerefMemType, MemType};
 use numa_gpu::runtime::cpu_affinity::CpuAffinity;
+use numa_gpu::runtime::hw_info::NvidiaDriverInfo;
+use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::{Mem, MemLock};
 use numa_gpu::runtime::numa::{NodeRatio, PageType};
 use numa_gpu::utils::DeviceType;
@@ -605,6 +607,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         if !parent.exists() {
             fs::create_dir_all(parent)?;
         }
+    }
+
+    // Bind main thread to the CPU node closest to the GPU. This improves NVLink latency.
+    if let Ok(local_cpu_node) = device.numa_memory_affinity() {
+        linux_wrapper::numa_run_on_node(local_cpu_node).expect(&format!(
+            "Failed to bind main thread to CPU node {}",
+            local_cpu_node
+        ));
+        linux_wrapper::numa_set_preferred(local_cpu_node);
+    } else {
+        eprintln!(
+            "Warning: Couldn't bind main thread to the CPU closest to GPU {}. This may
+                        cause additional latency in measurements.",
+            options.device_id
+        );
     }
 
     let csv_file = std::fs::File::create(&options.csv)?;
