@@ -1,13 +1,13 @@
 /*
  * Copyright (c) 2014 Cagri Balkesen, ETH Zurich
  * Copyright (c) 2014 Claude Barthels, ETH Zurich
- * Copyright (c) 2019-2021 Clemens Lutz, German Research Center for Artificial
- * Intelligence
+ * Copyright (c) 2019-2021 Clemens Lutz
  *
  * Original sources by Cagri Balkesen and Claude Barthels are copyrighted under
  * the MIT license.
  *
  * Modications by Clemens Lutz are copyrighted under the Apache License 2.0.
+ * See the Rust module for a summary of changes.
  *
  * MIT license:
  *
@@ -31,7 +31,7 @@
  *
  * Apache License 2.0:
  *
- * Author: Clemens Lutz, DFKI GmbH <clemens.lutz@dfki.de>
+ * Author: Clemens Lutz <lutzcle@cml.li>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.

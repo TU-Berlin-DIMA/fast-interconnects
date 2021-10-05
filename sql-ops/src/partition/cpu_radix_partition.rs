@@ -1,6 +1,6 @@
 /*
- * Copyright 2019-2021 Clemens Lutz, German Research Center for Artificial Intelligence
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2019-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -64,6 +64,35 @@
 //! into the CPU's L1 cache. This upper bound for buckets is given by the
 //! GPU hardware and partitioning algorithm.
 //!
+//! # Optimizations and tuning
+//!
+//! ## Hardware prefetching
+//!
+//! On most CPU architectures, the behavior of the hardware prefetcher can be
+//! tuned using model-specific registers (MSRs). On POWER9, disabling N-stride
+//! prefetching and setting an aggressive prefetch depth increases the
+//! throughput of the prefix sum and partitioning.
+//!
+//! ## Loop unrolling
+//!
+//! Manual loop unrolling is a well-known optimization. For the POWER9
+//! architecture, loading 128-byte cachelines with a sequence of SIMD
+//! instructions improves throughput. However, as the VSX instruction set
+//! doesn't support gather-scatter memory operations, this is only a load
+//! optimization and not a "pure" SIMD implementation.
+//!
+//! ## SIMD vectorization
+//!
+//! Keys are hashed using VSX instructions on POWER9.
+//!
+//! ## Data hazard avoidance
+//!
+//! Out-of-order execution stalls if there is a read-after-write hazard in the
+//! CPU pipeline. This occurs in the prefix sum due the memory dependency on the
+//! previous value of a histogram bucket. As only small histograms are affected,
+//! the histogram can be replicated within the L1 cache for low fanouts, and use
+//! a single copy per thread for high fanouts.
+//!
 //! # Copyright notes
 //!
 //! The C/C++ CPU code is based on [code kindly published by Cagri Balkesen and
@@ -71,6 +100,34 @@
 //! (MIT) in derived code. Modifications are licensed under Apache License 2.0.
 //!
 //! [mchj]: https://www.systems.ethz.ch/sites/default/files/file/PublishedCode/multicore-distributed-hashjoins-0_1.zip
+//! ## Summary of changes
+//!
+//! We have made several changes to the original code. These include:
+//!
+//!  - Fix race condition in SWWC partitioning variant. Each thread writes its
+//!  result into a separate chunk with padding between chunks and (within each
+//!  chunk) partitions. The race condition occurs because the flushes are
+//!  aligned to a cacheline. Thus, the first flush of a thread might overwrite
+//!  the last flush of its neighboring thread. A (potential) drawback is that
+//!  resulting partitions are non-contiguous.
+//!
+//!  - Support different tuple types at run-time instead of at compile-time.
+//!  Implemented by instantiating C++ templates with multiple types instead of C
+//!  preprocessor.
+//!
+//!  - Split prefix sum and partitioning into separate functions. This
+//!  facilitates CPU microarchitecture optimization and allows recombination
+//!  with equivalent GPU kernels.
+//!
+//!  - Add SIMD prefix sum variant for IBM POWER9.
+//!
+//!  - Add SIMD partitioning variant for IBM POWER9.
+//!
+//!  - Avoid data hazards in the prefix sum.
+//!
+//!  - Tune the hardware prefetcher for IBM POWER9.
+//!
+//!  - Add SWWC flush variants for POWERPC64 VSX and x86_64 AVX-512.
 
 use super::{
     fanout, HistogramAlgorithmType, PartitionOffsetsMutSlice, PartitionedRelationMutSlice,
