@@ -17,3 +17,6 @@ opt-level = 3
 [profile.bench]
 debug = true
 opt-level = 3
+
+[patch.crates-io]
+cuda-driver-sys = { git = "https://github.com/LutzCle/cuda-sys.git", branch = "nvtx-sys" }
