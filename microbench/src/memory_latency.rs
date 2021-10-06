@@ -20,13 +20,15 @@ use nvml_wrapper::{enum_wrappers::device::Clock, NVML};
 #[cfg(target_arch = "aarch64")]
 use numa_gpu::runtime::hw_info::CudaDeviceInfo;
 
-use rustacuda::context::CurrentContext;
 use rustacuda::memory::DeviceBox;
 use rustacuda::prelude::*;
+use rustacuda::stream::{Stream, StreamFlags};
+use rustacuda::{launch, CudaFlags};
 
 use serde_derive::Serialize;
 
 use std::convert::TryInto;
+use std::ffi::CString;
 use std::mem::size_of;
 use std::ops::RangeInclusive;
 
@@ -34,7 +36,6 @@ use crate::types::*;
 use crate::ArgPageType;
 
 extern "C" {
-    pub fn gpu_stride(data: *const u32, iterations: u32, cycles: *mut u64);
     pub fn cpu_stride(data: *const u32, iterations: u32) -> u64;
 }
 
@@ -196,6 +197,9 @@ struct Measurement {
 
 #[derive(Debug)]
 struct GpuMemoryLatency {
+    // `module` must be dropped before `context`. Rust specifies the drop order as the field order
+    // in the struct. See RFC 1857: https://github.com/rust-lang/rfcs/pull/1857
+    module: Module,
     device_id: u32,
 
     #[cfg(not(target_arch = "aarch64"))]
@@ -298,14 +302,29 @@ impl Measurement {
 impl GpuMemoryLatency {
     #[cfg(not(target_arch = "aarch64"))]
     fn new(device_id: u32) -> Self {
+        let module = Self::load_module();
         let nvml = NVML::init().expect("Couldn't initialize NVML");
 
-        Self { device_id, nvml }
+        Self {
+            module,
+            device_id,
+            nvml,
+        }
     }
 
     #[cfg(target_arch = "aarch64")]
     fn new(device_id: u32) -> Self {
-        Self { device_id }
+        let module = Self::load_module();
+
+        Self { module, device_id }
+    }
+
+    fn load_module() -> Module {
+        let module_path = CString::new(env!("CUDAUTILS_PATH"))
+            .expect("Failed to load CUDA module, check your CUDAUTILS_PATH");
+        let module = Module::load_from_file(&module_path).expect("Failed to load CUDA module");
+
+        module
     }
 
     fn prepare(_state: &mut Self, mem: &mut Mem<u32>, mp: &MeasurementParameters) {
@@ -372,14 +391,21 @@ impl GpuMemoryLatency {
 
         // Launch GPU code
         let mut dev_cycles = DeviceBox::new(&0_u64).expect("Couldn't allocate device memory");
+        let stream =
+            Stream::new(StreamFlags::NON_BLOCKING, None).expect("Failed to create CUDA stream");
+
         unsafe {
-            gpu_stride(
-                mem.as_ptr(),
+            let module = &_state.module;
+            launch!(module.gpu_stride<<<1, 1, 0, stream>>>(
+                mem.as_launchable_ptr(),
                 mp.iterations,
-                dev_cycles.as_device_ptr().as_raw_mut(),
-            )
+                dev_cycles.as_device_ptr()
+            ))
+            .expect("Failed to launch gpu_stride kernel");
         };
-        CurrentContext::synchronize().unwrap();
+        stream
+            .synchronize()
+            .expect("Failed to synchronize CUDA stream");
 
         // Check if GPU is running in a throttled state
         #[cfg(not(target_arch = "aarch64"))]

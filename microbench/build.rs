@@ -34,6 +34,7 @@ fn main() {
     let cuda_lib_file = format!("{}/cudautils.fatbin", out_dir);
     let cuda_files = vec![
         "cudautils/memory_bandwidth.cu",
+        "cudautils/memory_latency.cu",
         "cudautils/tlb_latency.cu",
         "cudautils/cuda_clock.cu",
     ];
@@ -117,29 +118,6 @@ fn main() {
     );
     println!("cargo:rustc-link-search=native=/opt/cuda/lib64");
     println!("cargo:rustc-link-search=native=/usr/local/cuda/lib64");
-    println!("cargo:rustc-link-lib=cudart");
-
-    let cuda_old_files = vec!["cudautils/memory_latency.cu"];
-
-    cc::Build::new()
-        .include(include_path)
-        .cuda(true)
-        .flag("-std=c++11")
-        .flag("-cudart=shared")
-        .pic(true)
-        .flag("-gencode")
-        .flag("arch=compute_50,code=sm_50") // GTX 940M
-        .flag("-gencode")
-        .flag("arch=compute_52,code=sm_52") // GTX 980
-        .flag("-gencode")
-        .flag("arch=compute_53,code=sm_53") // Jetson Nano
-        .flag("-gencode")
-        .flag("arch=compute_61,code=sm_61") // GTX 1080
-        .flag("-gencode")
-        .flag("arch=compute_70,code=sm_70") // Tesla V100
-        .files(&cuda_old_files)
-        .debug(false) // Debug enabled slows down mem latency by 10x
-        .compile("libcudautils.a");
 
     let cpp_files = vec![
         "cpputils/memory_bandwidth.cpp",
@@ -148,6 +126,7 @@ fn main() {
 
     cc::Build::new()
         .include(include_path)
+        .cpp(true)
         // Note: Disable to prevent linking twice with above CUDA
         // .cpp(true)
         // Note: -march not supported by GCC-7 on Power9, use -mcpu instead
@@ -169,7 +148,6 @@ fn main() {
         .iter()
         .chain(include_files.iter())
         .chain(cuda_files.iter())
-        .chain(cuda_old_files.iter())
         .chain(cpp_files.iter())
         .for_each(|file| println!("cargo:rerun-if-changed={}", file));
 }

@@ -1,12 +1,10 @@
-#include <helper.h>
-
 #include <cstdint>
 
 // X mod Y, assuming that Y is a power of 2
 #define FAST_MODULO(X, Y) (X & (Y - 1))
 
-__global__ void gpu_stride_kernel(uint32_t *data, uint32_t iterations,
-                                  uint64_t *cycles) {
+__global__ void gpu_stride(uint32_t *data, uint32_t iterations,
+                           uint64_t *cycles) {
   uint64_t sum = 0;
   uint64_t start = 0;
   uint64_t stop = 0;
@@ -42,9 +40,4 @@ __global__ void gpu_stride_kernel(uint32_t *data, uint32_t iterations,
   if (pos == 1) {
     data[1] = dependency;
   }
-}
-
-extern "C" void gpu_stride(uint32_t *data, uint32_t iterations,
-                           uint64_t *cycles) {
-  gpu_stride_kernel<<<1, 1>>>(data, iterations, cycles);
 }
