@@ -15,7 +15,7 @@ itertools = "0.9"
 num-rational = "~0.2.0"
 num-traits = "~0.2.0"
 rayon = "~1.2.0"
-rustacuda = { git = "https://github.com/LutzCle/RustaCUDA", branch = "custom_mods" }
+rustacuda = { git = "https://github.com/LutzCle/RustaCUDA", branch = "custom_mods_10_2" }
 serde = "~1.0.76"
 serde_derive = "~1.0.76"
 serde_repr = "~0.1"

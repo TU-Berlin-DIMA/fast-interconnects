@@ -307,11 +307,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "cuda-sys"
-version = "0.2.1-alpha.0"
-source = "git+https://github.com/LutzCle/cuda-sys?branch=cuda-10.0#c2268117e0a4d7afca42f52565bfb6fce15e4608"
+name = "cuda-config"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ee74643f7430213a1a78320f88649de309b20b80818325575e393f848f79f5d"
 dependencies = [
  "glob",
+]
+
+[[package]]
+name = "cuda-driver-sys"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d4c552cc0de854877d80bcd1f11db75d42be32962d72a6799b88dcca88fffbd"
+dependencies = [
+ "cuda-config",
 ]
 
 [[package]]
@@ -655,7 +665,7 @@ dependencies = [
  "average",
  "cc",
  "csv",
- "cuda-sys",
+ "cuda-driver-sys",
  "hostname 0.3.1",
  "itertools",
  "libc",
@@ -738,7 +748,7 @@ dependencies = [
  "assert_approx_eq",
  "bitflags",
  "crossbeam-utils 0.6.6",
- "cuda-sys",
+ "cuda-driver-sys",
  "error-chain",
  "libc",
  "num-rational",
@@ -1125,28 +1135,28 @@ checksum = "cabe4fa914dec5870285fa7f71f602645da47c486e68486d2b4ceb4a343e90ac"
 
 [[package]]
 name = "rustacuda"
-version = "0.1.1"
-source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#fcc0a0d3ff251aefc8a4c4de43ed570ea9e7d144"
+version = "0.1.2"
+source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods_10_2#b9da4a00ba43fa384310a164b583a751789d2af5"
 dependencies = [
  "bitflags",
- "cuda-sys",
+ "cuda-driver-sys",
  "rustacuda_core",
  "rustacuda_derive",
 ]
 
 [[package]]
 name = "rustacuda_core"
-version = "0.1.1"
-source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#fcc0a0d3ff251aefc8a4c4de43ed570ea9e7d144"
+version = "0.1.2"
+source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods_10_2#b9da4a00ba43fa384310a164b583a751789d2af5"
 
 [[package]]
 name = "rustacuda_derive"
-version = "0.1.1"
-source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods#fcc0a0d3ff251aefc8a4c4de43ed570ea9e7d144"
+version = "0.1.2"
+source = "git+https://github.com/LutzCle/RustaCUDA?branch=custom_mods_10_2#b9da4a00ba43fa384310a164b583a751789d2af5"
 dependencies = [
- "proc-macro2 0.4.30",
- "quote 0.6.13",
- "syn 0.15.44",
+ "proc-macro2 1.0.24",
+ "quote 1.0.7",
+ "syn 1.0.48",
 ]
 
 [[package]]
@@ -1205,7 +1215,7 @@ dependencies = [
  "cc",
  "cstr",
  "csv",
- "cuda-sys",
+ "cuda-driver-sys",
  "datagen",
  "hostname 0.2.0",
  "itertools",

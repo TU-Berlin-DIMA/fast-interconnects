@@ -2,7 +2,7 @@
 
 use crate::error::{Error, ErrorKind, Result, ToResult};
 use crate::runtime::memory::LaunchableMutSlice;
-use cuda_sys::cuda::{
+use cuda_driver_sys::{
     cuCtxGetDevice, cuMemAdvise, cuMemGetInfo_v2, cuMemHostRegister_v2, cuMemHostUnregister,
     cuMemPrefetchAsync, cuMemcpyAsync, cuMemsetD32Async, CUdevice, CUstream,
     CU_MEMHOSTREGISTER_DEVICEMAP, CU_MEMHOSTREGISTER_PORTABLE,
@@ -13,7 +13,7 @@ use std::mem::{size_of, transmute_copy, zeroed};
 use std::os::raw::{c_uint, c_void};
 
 // re-export mem_advise enum
-pub use cuda_sys::cuda::CUmem_advise_enum as MemAdviseFlags;
+pub use cuda_driver_sys::CUmem_advise_enum as MemAdviseFlags;
 
 /// CUDA memory information
 pub struct CudaMemInfo {

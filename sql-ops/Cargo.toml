@@ -10,12 +10,12 @@ edition = "2018"
 
 [dependencies]
 cstr = "0.2.8"
-cuda-sys = { git = "https://github.com/LutzCle/cuda-sys", branch = "cuda-10.0" }
+cuda-driver-sys = "0.3"
 likwid = { git = "https://github.com/LutzCle/likwid-rs.git", branch = "master" }
 num-traits = "~0.2.0"
 once_cell = "1.5"
 paste = "~0.1"
-rustacuda = { git = "https://github.com/LutzCle/RustaCUDA", branch = "custom_mods" }
+rustacuda = { git = "https://github.com/LutzCle/RustaCUDA", branch = "custom_mods_10_2" }
 
 [dependencies.datagen]
 path = "../datagen"

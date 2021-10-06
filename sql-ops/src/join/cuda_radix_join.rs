@@ -147,7 +147,7 @@ macro_rules! impl_cuda_radix_join_for_type {
                     let module = *crate::MODULE;
                     let device = CurrentContext::get_device()?;
                     let max_shared_mem_bytes =
-                        device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
+                        device.get_attribute(DeviceAttribute::MaxSharedMemoryPerBlockOptin)? as u32;
                     let radix_bits = rj.radix_bits.pass_radix_bits(rj.radix_pass).unwrap();
                     let ignore_bits = rj.radix_bits.pass_ignore_bits(rj.radix_pass) + radix_bits;
 

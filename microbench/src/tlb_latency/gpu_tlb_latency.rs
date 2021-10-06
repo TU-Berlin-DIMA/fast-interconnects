@@ -124,7 +124,7 @@ impl GpuTlbLatency {
         let block_size =
             BlockSize::from(device.get_attribute(DeviceAttribute::MaxBlockDimX)? as u32);
         let max_shared_mem_bytes =
-            device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
+            device.get_attribute(DeviceAttribute::MaxSharedMemoryPerBlockOptin)? as u32;
 
         let mut tlb_data_points: usize =
             max_shared_mem_bytes as usize / (mem::size_of::<u32>() + mem::size_of::<u64>());

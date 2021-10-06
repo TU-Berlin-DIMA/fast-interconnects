@@ -29,7 +29,7 @@
 use super::{HashingScheme, HtEntry};
 use crate::error::{ErrorKind, Result};
 use cstr::cstr;
-use cuda_sys::cuda::cuMemsetD32_v2;
+use cuda_driver_sys::cuMemsetD32_v2;
 use datagen::relation::KeyAttribute;
 use likwid;
 use num_traits::cast::AsPrimitive;

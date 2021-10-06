@@ -661,7 +661,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
 
                     let module = *crate::MODULE;
                     let max_shared_mem_bytes =
-                        device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
+                        device.get_attribute(DeviceAttribute::MaxSharedMemoryPerBlockOptin)? as u32;
                     let fanout_u32 = rp.radix_bits.pass_fanout(pass).unwrap();
                     let ignore_bits = rp.radix_bits.pass_ignore_bits(pass);
                     let grid_size = rp.grid_size.clone();
@@ -803,7 +803,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
 
                     let module = *crate::MODULE;
                     let max_shared_mem_bytes =
-                        device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
+                        device.get_attribute(DeviceAttribute::MaxSharedMemoryPerBlockOptin)? as u32;
                     let fanout_u32 = rp.radix_bits.pass_fanout(pass).unwrap();
                     let ignore_bits = rp.radix_bits.pass_ignore_bits(pass);
                     let grid_size = rp.grid_size.clone();
@@ -936,7 +936,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
 
                     let module = *crate::MODULE;
                     let max_shared_mem_bytes =
-                        device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
+                        device.get_attribute(DeviceAttribute::MaxSharedMemoryPerBlockOptin)? as u32;
                     let fanout_u32 = rp.radix_bits.pass_fanout(pass).unwrap();
                     let ignore_bits = rp.radix_bits.pass_ignore_bits(pass);
                     let grid_size = rp.grid_size.clone();
@@ -1136,7 +1136,7 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     let rp_block_size = rp.rp_block_size.clone();
                     let device = CurrentContext::get_device()?;
                     let max_shared_mem_bytes =
-                        device.get_attribute(DeviceAttribute::MaxSharedMemPerBlockOptin)? as u32;
+                        device.get_attribute(DeviceAttribute::MaxSharedMemoryPerBlockOptin)? as u32;
                     let fanout_u32 = rp.radix_bits.pass_fanout(pass).unwrap();
                     let ignore_bits = rp.radix_bits.pass_ignore_bits(pass);
                     let data_len = partition_attr.len();
