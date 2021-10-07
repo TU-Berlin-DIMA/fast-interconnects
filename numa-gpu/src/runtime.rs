@@ -18,3 +18,4 @@ pub mod linux_wrapper;
 pub mod memory;
 pub mod numa;
 pub mod nvml;
+pub mod nvtx;

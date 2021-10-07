@@ -752,10 +752,12 @@ dependencies = [
  "num-rational",
  "num-traits",
  "nvml-wrapper",
+ "nvtx-sys",
  "once_cell",
  "procfs",
  "rayon",
  "rustacuda",
+ "serde",
 ]
 
 [[package]]
@@ -780,6 +782,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4be195fa681ad2a9c903a866bc3f97f174333f04fb7b9e7c1f2413452f698484"
 dependencies = [
  "libloading",
+]
+
+[[package]]
+name = "nvtx-sys"
+version = "0.3.0-alpha.0"
+source = "git+https://github.com/LutzCle/cuda-sys.git?branch=nvtx-sys#6456cd652aa1872b0467926d3e17f46dbc17a329"
+dependencies = [
+ "cuda-config",
 ]
 
 [[package]]
