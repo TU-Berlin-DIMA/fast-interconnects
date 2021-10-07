@@ -246,6 +246,8 @@ fn test_cuda_iterator_2_coherence() -> Result<(), Box<dyn Error>> {
     let data_len = 2_usize.pow(20);
     let chunk_len = 1024_usize;
     assert_eq!(data_len % chunk_len, 0);
+    let cpu_memcpy_threads = 2_usize;
+    let cpu_affinity = CpuAffinity::default();
 
     let mut data_0 = vec![1.0_f32; data_len];
     let mut data_1 = vec![1.0_f32; data_len];
@@ -256,6 +258,8 @@ fn test_cuda_iterator_2_coherence() -> Result<(), Box<dyn Error>> {
         .into_cuda_iter_with_strategy(
             CudaTransferStrategy::Coherence,
             chunk_len * 2 * size_of::<f32>(),
+            cpu_memcpy_threads,
+            &cpu_affinity,
         )?
         .fold(|(x, y), stream| {
             assert_ne!(x.len(), 0);
@@ -487,6 +491,8 @@ fn test_cuda_iterator_2_coherence_non_divisor_chunk_len() -> Result<(), Box<dyn 
 
     let data_len = 2_usize.pow(20);
     let chunk_len = 1023_usize;
+    let cpu_memcpy_threads = 2_usize;
+    let cpu_affinity = CpuAffinity::default();
 
     let mut data_0 = vec![1.0_f32; data_len];
     let mut data_1 = vec![1.0_f32; data_len];
@@ -497,6 +503,8 @@ fn test_cuda_iterator_2_coherence_non_divisor_chunk_len() -> Result<(), Box<dyn 
         .into_cuda_iter_with_strategy(
             CudaTransferStrategy::Coherence,
             chunk_len * 2 * size_of::<f32>(),
+            cpu_memcpy_threads,
+            &cpu_affinity,
         )?
         .fold(|(x, y), stream| {
             assert_ne!(x.len(), 0);
