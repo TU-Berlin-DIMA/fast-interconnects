@@ -753,10 +753,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     // Initialize CUDA
-    rustacuda::init(rustacuda::CudaFlags::empty())?;
-    let device = Device::get_device(options.device_id.into())?;
-    let _context =
-        Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
+    let _context = if options
+        .execution_methods
+        .contains(&ArgExecutionMethod::CpuRadixPartitionWithTransfer)
+    {
+        rustacuda::init(rustacuda::CudaFlags::empty())?;
+        let device = Device::get_device(options.device_id.into())?;
+        let context =
+            Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
+        Some(context)
+    } else {
+        None
+    };
 
     if let Some(parent) = options.csv.parent() {
         if !parent.exists() {
