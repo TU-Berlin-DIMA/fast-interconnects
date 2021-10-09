@@ -393,8 +393,8 @@ where
     let linux_wrapper::NumaMemInfo { free, .. } = linux_wrapper::numa_mem_info(cache_node)?;
     let free = free - GPU_MEM_SLACK_BYTES;
 
-    // Use one half of space for inner relation, and the other half for outer
-    // relation
+    // Assign cache space in proportion to the relation sizes. This way transfer
+    // and compute overlap for both relations.
     let cache_bytes = max_partitions_cache_bytes.map_or(free, |bytes| {
         if bytes > free {
             eprintln!(
@@ -403,7 +403,10 @@ where
         }
         cmp::min(bytes, free)
     });
-    let cached_len = cache_bytes / 2 / mem::size_of::<Tuple<T, T>>();
+    let cache_proportion_inner = data.build_relation_key.len() as f64
+        / (data.build_relation_key.len() as f64 + data.probe_relation_key.len() as f64);
+    let cache_bytes_inner = (cache_bytes as f64 * cache_proportion_inner) as usize;
+    let cache_bytes_outer = cache_bytes - cache_bytes_inner;
 
     let (inner_rel_alloc, cached_build_tuples) =
         Allocator::mem_spill_alloc_fn(CacheSpillType::CacheAndSpill {
@@ -416,7 +419,7 @@ where
         histogram_algorithm_fst.either(|cpu| cpu.into(), |gpu| gpu.into()),
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         max_chunks_1st,
-        inner_rel_alloc(cached_len),
+        inner_rel_alloc(cache_bytes_inner / mem::size_of::<Tuple<T, T>>()),
         Allocator::mem_alloc_fn(offsets_mem_type.clone()),
     );
 
@@ -431,7 +434,7 @@ where
         histogram_algorithm_fst.either(|cpu| cpu.into(), |gpu| gpu.into()),
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         max_chunks_1st,
-        outer_rel_alloc(cached_len),
+        outer_rel_alloc(cache_bytes_outer / mem::size_of::<Tuple<T, T>>()),
         Allocator::mem_alloc_fn(offsets_mem_type.clone()),
     );
 
