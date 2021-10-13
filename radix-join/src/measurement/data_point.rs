@@ -11,6 +11,7 @@
 use crate::types::*;
 use data_store::join_data::JoinData;
 use numa_gpu::error::Result;
+use numa_gpu::runtime::nvtx::RangeId;
 use rustacuda::function::{BlockSize, GridSize};
 use rustacuda::memory::DeviceCopy;
 use serde::Serializer;
@@ -59,6 +60,7 @@ pub struct DataPoint {
     pub zipf_exponent: Option<f64>,
     pub join_selectivity: Option<f64>,
     pub warm_up: Option<bool>,
+    pub nvtx_run_id: Option<RangeId>,
     pub prefix_sum_ns: Option<f64>,
     pub partition_ns: Option<f64>,
     pub join_ns: Option<f64>,

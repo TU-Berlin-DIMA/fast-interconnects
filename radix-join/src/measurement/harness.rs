@@ -4,12 +4,14 @@
  * obtain one at http://mozilla.org/MPL/2.0/.
  *
  *
- * Copyright (c) 2019-2020, Clemens Lutz <lutzcle@cml.li>
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright 2019-2021 Clemens Lutz
+ * Author: Clemens Lutz <lutzcle@cml.li>
  */
 
 use super::data_point::DataPoint;
 use crate::error::Result;
+use numa_gpu::runtime::nvtx::Range;
+use std::ffi::CString;
 use std::path::PathBuf;
 
 #[derive(Debug, Default)]
@@ -32,9 +34,17 @@ pub fn measure(
 ) -> Result<()> {
     let measurements = (0..repeat)
         .zip(std::iter::once(true).chain(std::iter::repeat(false)))
-        .map(|(_, warm_up)| {
-            func().map(|p| DataPoint {
+        .map(|(run, warm_up)| {
+            let range_message =
+                CString::new(format!("Measurement run {}", run)).expect("Failed to format string");
+
+            let range = Range::new(&range_message);
+            let result = func();
+            let run_id = range.end();
+
+            result.map(|p| DataPoint {
                 warm_up: Some(warm_up),
+                nvtx_run_id: Some(run_id),
                 cached_build_tuples: p.cached_build_tuples,
                 cached_probe_tuples: p.cached_probe_tuples,
                 relation_malloc_ns: if warm_up {
