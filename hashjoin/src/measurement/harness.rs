@@ -12,6 +12,8 @@ use super::data_point::DataPoint;
 use super::hash_join_bench::HashJoinPoint;
 use crate::error::Result;
 use error_chain::ensure;
+use numa_gpu::runtime::nvtx::Range;
+use std::ffi::CString;
 use std::path::PathBuf;
 
 pub fn measure(
@@ -23,9 +25,17 @@ pub fn measure(
 ) -> Result<()> {
     let measurements = (0..repeat)
         .zip(std::iter::once(true).chain(std::iter::repeat(false)))
-        .map(|(_, warm_up)| {
-            func().map(|p| DataPoint {
+        .map(|(run, warm_up)| {
+            let range_message =
+                CString::new(format!("Measurement run {}", run)).expect("Failed to format string");
+
+            let range = Range::new(&range_message);
+            let result = func();
+            let run_id = range.end();
+
+            result.map(|p| DataPoint {
                 warm_up: Some(warm_up),
+                nvtx_run_id: Some(run_id),
                 relation_malloc_ns: if warm_up {
                     template.relation_malloc_ns
                 } else {
