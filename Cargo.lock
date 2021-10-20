@@ -919,6 +919,7 @@ dependencies = [
 name = "radix-join"
 version = "0.1.0"
 dependencies = [
+ "cstr",
  "csv",
  "data-store",
  "datagen",

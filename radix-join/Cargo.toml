@@ -9,6 +9,7 @@ readme = "../README.md"
 edition = "2018"
 
 [dependencies]
+cstr = "0.2.8"
 csv = "~1.1.1"
 hostname = "~0.1.5"
 itertools = "0.9"

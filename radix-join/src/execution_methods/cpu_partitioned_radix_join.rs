@@ -10,6 +10,7 @@
 
 use crate::error::{ErrorKind, Result};
 use crate::measurement::harness::RadixJoinPoint;
+use cstr::cstr;
 use data_store::join_data::JoinData;
 use datagen::relation::KeyAttribute;
 use itertools::izip;
@@ -21,6 +22,7 @@ use numa_gpu::runtime::hw_info::NvidiaDriverInfo;
 use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::*;
 use numa_gpu::runtime::numa::PageType;
+use numa_gpu::runtime::nvtx::Range;
 use numa_gpu::utils::DeviceType;
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
 use rustacuda::event::{Event, EventFlags};
@@ -228,6 +230,8 @@ where
     outer_rel_partition_offsets.mlock()?;
 
     let partitions_malloc_time = partitions_malloc_timer.elapsed();
+
+    let prefix_sum_range = Range::new(cstr!("phase_prefix_sum"));
     let prefix_sum_timer = Instant::now();
 
     let inner_key_slice: &[T] = (&data.build_relation_key).try_into().map_err(|_| {
@@ -279,6 +283,8 @@ where
     });
 
     let prefix_sum_time = prefix_sum_timer.elapsed().as_nanos() as f64;
+    prefix_sum_range.end();
+
     let state_malloc_timer = Instant::now();
 
     let max_inner_partition_len =
@@ -433,6 +439,8 @@ where
     let cached_build_tuples = cached_inner_partitions.iter().map(|p| p.padded_len()).sum();
 
     let state_malloc_time = state_malloc_timer.elapsed();
+
+    let partition_range = Range::new(cstr!("phase_partition"));
     let partition_timer = Instant::now();
 
     // Partition inner relation
@@ -527,8 +535,11 @@ where
     });
 
     let partition_time = partition_timer.elapsed();
+    partition_range.end();
+
     let join_timer = Instant::now();
 
+    let join_range = Range::new(cstr!("phase_join"));
     let join_start_event = Event::new(EventFlags::DEFAULT)?;
     stream_states
         .iter()
@@ -711,6 +722,7 @@ where
         })?;
 
     let join_time = join_timer.elapsed();
+    join_range.end();
 
     let mut result_sums_host = vec![0; join_result_sums_len * NUM_STREAMS];
     stream_states

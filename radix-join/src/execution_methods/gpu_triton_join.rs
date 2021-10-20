@@ -10,6 +10,7 @@
 
 use crate::error::{ErrorKind, Result};
 use crate::measurement::harness::RadixJoinPoint;
+use cstr::cstr;
 use data_store::join_data::JoinData;
 use datagen::relation::KeyAttribute;
 use numa_gpu::error::Result as NumaGpuResult;
@@ -19,6 +20,7 @@ use numa_gpu::runtime::cuda_wrapper;
 use numa_gpu::runtime::linux_wrapper;
 use numa_gpu::runtime::memory::*;
 use numa_gpu::runtime::numa::PageType;
+use numa_gpu::runtime::nvtx::Range;
 use numa_gpu::utils::DeviceType;
 use rustacuda::context::{CacheConfig, CurrentContext, SharedMemoryConfig};
 use rustacuda::event::{Event, EventFlags};
@@ -210,6 +212,7 @@ where
 
     let partitions_malloc_time = partitions_malloc_timer.elapsed();
 
+    let prefix_sum_range = Range::new(cstr!("phase_prefix_sum"));
     let prefix_sum_time = match histogram_algorithm_fst {
         DeviceType::Cpu(histogram_algorithm) => {
             let prefix_sum_timer = Instant::now();
@@ -277,6 +280,7 @@ where
                 * 10_f64.powf(6.0)
         }
     };
+    prefix_sum_range.end();
 
     let state_malloc_timer = Instant::now();
 
@@ -445,6 +449,7 @@ where
 
     let partition_start_event = Event::new(EventFlags::DEFAULT)?;
     let partition_stop_event = Event::new(EventFlags::DEFAULT)?;
+    let partition_range = Range::new(cstr!("phase_partition"));
     partition_start_event.record(&stream)?;
 
     // Partition inner relation
@@ -472,9 +477,11 @@ where
     stream.synchronize()?;
     let partition_time =
         partition_stop_event.elapsed_time_f32(&partition_start_event)? as f64 * 10_f64.powf(6.0);
+    partition_range.end();
 
     Stream::drop(stream).map_err(|(e, _)| e)?;
 
+    let join_range = Range::new(cstr!("phase_join"));
     let join_start_event = Event::new(EventFlags::DEFAULT)?;
     stream_states
         .iter()
@@ -592,6 +599,7 @@ where
                 stop_event.elapsed_time_f32(&join_start_event)? as f64 * 10_f64.powf(6.0);
             Ok(time.max(new_time))
         })?;
+    join_range.end();
 
     let mut result_sums_host = vec![0; join_result_sums_len * NUM_STREAMS];
     stream_states
