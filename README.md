@@ -7,7 +7,7 @@ NUMA-GPU
 
 NUMA-GPU is an on-going research project investigating the use of a fast GPU
 interconnect to speed-up data processing on GPUs. Fast interconnects such as
-NVLink 2.0 provide GPUs with high-bandwidth, cache-coherenct access to main
+NVLink 2.0 provide GPUs with high-bandwidth, cache-coherent access to main
 memory. Thus, our goal is to unlock higher DBMS query performance with this new
 class of hardware.
 
