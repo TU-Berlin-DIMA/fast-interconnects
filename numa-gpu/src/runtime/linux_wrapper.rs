@@ -120,20 +120,23 @@ pub struct MemProtectFlags: c_int {
 /// Limitations
 /// ===========
 ///
-/// The set is currently restricted to a single 64-bit integer. Therefore, IDs
-/// must be smaller or equal to 63.
+/// The set is currently restricted to a 16 64-bit integers. Therefore, IDs
+/// must be smaller or equal to 1023.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub struct CpuSet {
-    mask: [u64; 4],
+    mask: [u64; Self::MASK_LEN as usize],
 }
 
 impl CpuSet {
-    const MAX_LEN: u16 = 256;
+    const MASK_LEN: u16 = 16;
     const ENTRY_LEN: u16 = 64;
+    const MAX_LEN: u16 = Self::MASK_LEN * Self::ENTRY_LEN;
 
     /// Create an empty CPU set.
     pub fn new() -> Self {
-        Self { mask: [0; 4] }
+        Self {
+            mask: [0; Self::MASK_LEN as usize],
+        }
     }
 
     /// Add an ID to the set.
@@ -175,7 +178,7 @@ impl CpuSet {
 
     /// Reset the set to zero.
     pub fn zero(&mut self) {
-        self.mask = [0; 4];
+        self.mask.fill(0);
     }
 
     /// Query the maximum possible number of IDs currently in the set.
