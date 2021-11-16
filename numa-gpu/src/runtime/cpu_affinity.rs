@@ -126,7 +126,7 @@ impl Default for CpuAffinity {
             }
         }
 
-        let affinity_list: Vec<_> = (0..=cpu_set.max_id())
+        let affinity_list: Vec<_> = (0..cpu_set.max_id())
             .filter(|&cpu_id| cpu_set.is_set(cpu_id))
             .collect();
 
