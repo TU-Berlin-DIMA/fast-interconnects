@@ -140,9 +140,11 @@ cargo build --release
 
 ### Advanced Guides
 
-Detailed setup guides are provided for the following topics:
+Detailed setup guides are provided for the topics:
 
- * [Huge Pages](./guides/huge_pages.md)
+ * [Huge pages](./guides/huge_pages.md)
+
+ * [NUMA in the context of fast interconnects](./guides/numa.md)
 
 ## Usage
 
