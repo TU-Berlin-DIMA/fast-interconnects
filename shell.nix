@@ -4,8 +4,8 @@ let src = fetchFromGitHub {
       owner = "mozilla";
       repo = "nixpkgs-mozilla";
       # commit from: 2019-05-15
-      rev = "8c007b60731c07dd7a052cce508de3bb1ae849b4";
-      sha256 = "1zybp62zz0h077zm2zmqs2wcg3whg6jqaah9hcl1gv4x8af4zhs6";
+      rev = "f233fdc4ff6ba2ffeb1e3e3cd6d63bb1297d6996";
+      sha256 = "1rzz03h0b38l5sg61rmfvzpbmbd5fn2jsi1ccvq22rb76s1nbh8i";
    };
 in
 with import "${src.out}/rust-overlay.nix" pkgs pkgs;
