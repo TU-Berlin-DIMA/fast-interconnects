@@ -1,0 +1,1 @@
+initSidebarItems({"enum":[["ArgDataSet",""],["ArgDistribution",""],["ArgFileType",""],["ArgTupleBytes",""],["Command",""],["DataDistribution",""]],"fn":[["generate",""],["generate_popular",""],["is_percent",""],["main",""],["write_file",""]],"struct":[["CmdOpt",""],["CmdPkFkJoin",""],["Record",""]],"type":[["Result",""]]});

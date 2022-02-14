@@ -1,0 +1,1 @@
+initSidebarItems({"struct":[["ThrottleReasons",""]],"trait":[["DeviceClocks",""],["NvmlDeviceExtra","Extra features for GPU devices with NVML"]]});

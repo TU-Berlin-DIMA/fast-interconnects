@@ -1,0 +1,1 @@
+initSidebarItems({"fn":[["cpu_codename","Returns the codename of the current CPU."]],"struct":[["ProcessorCache",""]],"trait":[["CudaDeviceInfo","Extends Rustacuda’s Device with methods that provide additional hardware information."],["NvidiaDriverInfo","Extends Rustacuda’s Device with hardware information obtained from the Nvidia device driver"]]});

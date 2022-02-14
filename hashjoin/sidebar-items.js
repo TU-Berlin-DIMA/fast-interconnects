@@ -1,0 +1,1 @@
+initSidebarItems({"fn":[["args_to_bench",""],["data_gen_fn",""],["is_percent",""],["main",""]],"mod":[["error",""],["measurement",""],["types",""]],"struct":[["CmdOpt",""]]});

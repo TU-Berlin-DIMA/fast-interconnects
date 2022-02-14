@@ -1,0 +1,67 @@
+cargo:rerun-if-env-changed=LIBZ_SYS_STATIC
+cargo:rerun-if-changed=build.rs
+cargo:rerun-if-env-changed=ZLIB_NO_PKG_CONFIG
+cargo:rerun-if-env-changed=PKG_CONFIG
+cargo:rerun-if-env-changed=ZLIB_STATIC
+cargo:rerun-if-env-changed=ZLIB_DYNAMIC
+cargo:rerun-if-env-changed=PKG_CONFIG_ALL_STATIC
+cargo:rerun-if-env-changed=PKG_CONFIG_ALL_DYNAMIC
+cargo:rerun-if-env-changed=PKG_CONFIG_PATH_x86_64-unknown-linux-gnu
+cargo:rerun-if-env-changed=PKG_CONFIG_PATH_x86_64_unknown_linux_gnu
+cargo:rerun-if-env-changed=HOST_PKG_CONFIG_PATH
+cargo:rerun-if-env-changed=PKG_CONFIG_PATH
+cargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR_x86_64-unknown-linux-gnu
+cargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR_x86_64_unknown_linux_gnu
+cargo:rerun-if-env-changed=HOST_PKG_CONFIG_LIBDIR
+cargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR
+cargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR_x86_64-unknown-linux-gnu
+cargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR_x86_64_unknown_linux_gnu
+cargo:rerun-if-env-changed=HOST_PKG_CONFIG_SYSROOT_DIR
+cargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR
+OPT_LEVEL = Some("0")
+TARGET = Some("x86_64-unknown-linux-gnu")
+HOST = Some("x86_64-unknown-linux-gnu")
+CC_x86_64-unknown-linux-gnu = None
+CC_x86_64_unknown_linux_gnu = None
+HOST_CC = None
+CC = Some("gcc")
+CFLAGS_x86_64-unknown-linux-gnu = None
+CFLAGS_x86_64_unknown_linux_gnu = None
+HOST_CFLAGS = None
+CFLAGS = None
+CRATE_CC_NO_DEFAULTS = None
+DEBUG = Some("true")
+CARGO_CFG_TARGET_FEATURE = Some("fxsr,sse,sse2")
+running "gcc" "src/smoke.c" "-o" "/dev/null" "-lz"
+running: "gcc" "-O0" "-ffunction-sections" "-fdata-sections" "-fPIC" "-g" "-fno-omit-frame-pointer" "-m64" "-I" "src/zlib" "-fvisibility=hidden" "-DZ_SOLO" "-DSTDC" "-D_LARGEFILE64_SOURCE" "-D_POSIX_SOURCE" "-o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/adler32.o" "-c" "src/zlib/adler32.c"
+exit status: 0
+running: "gcc" "-O0" "-ffunction-sections" "-fdata-sections" "-fPIC" "-g" "-fno-omit-frame-pointer" "-m64" "-I" "src/zlib" "-fvisibility=hidden" "-DZ_SOLO" "-DSTDC" "-D_LARGEFILE64_SOURCE" "-D_POSIX_SOURCE" "-o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/compress.o" "-c" "src/zlib/compress.c"
+exit status: 0
+running: "gcc" "-O0" "-ffunction-sections" "-fdata-sections" "-fPIC" "-g" "-fno-omit-frame-pointer" "-m64" "-I" "src/zlib" "-fvisibility=hidden" "-DZ_SOLO" "-DSTDC" "-D_LARGEFILE64_SOURCE" "-D_POSIX_SOURCE" "-o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/crc32.o" "-c" "src/zlib/crc32.c"
+exit status: 0
+running: "gcc" "-O0" "-ffunction-sections" "-fdata-sections" "-fPIC" "-g" "-fno-omit-frame-pointer" "-m64" "-I" "src/zlib" "-fvisibility=hidden" "-DZ_SOLO" "-DSTDC" "-D_LARGEFILE64_SOURCE" "-D_POSIX_SOURCE" "-o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/deflate.o" "-c" "src/zlib/deflate.c"
+exit status: 0
+running: "gcc" "-O0" "-ffunction-sections" "-fdata-sections" "-fPIC" "-g" "-fno-omit-frame-pointer" "-m64" "-I" "src/zlib" "-fvisibility=hidden" "-DZ_SOLO" "-DSTDC" "-D_LARGEFILE64_SOURCE" "-D_POSIX_SOURCE" "-o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/infback.o" "-c" "src/zlib/infback.c"
+exit status: 0
+running: "gcc" "-O0" "-ffunction-sections" "-fdata-sections" "-fPIC" "-g" "-fno-omit-frame-pointer" "-m64" "-I" "src/zlib" "-fvisibility=hidden" "-DZ_SOLO" "-DSTDC" "-D_LARGEFILE64_SOURCE" "-D_POSIX_SOURCE" "-o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/inffast.o" "-c" "src/zlib/inffast.c"
+exit status: 0
+running: "gcc" "-O0" "-ffunction-sections" "-fdata-sections" "-fPIC" "-g" "-fno-omit-frame-pointer" "-m64" "-I" "src/zlib" "-fvisibility=hidden" "-DZ_SOLO" "-DSTDC" "-D_LARGEFILE64_SOURCE" "-D_POSIX_SOURCE" "-o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/inflate.o" "-c" "src/zlib/inflate.c"
+exit status: 0
+running: "gcc" "-O0" "-ffunction-sections" "-fdata-sections" "-fPIC" "-g" "-fno-omit-frame-pointer" "-m64" "-I" "src/zlib" "-fvisibility=hidden" "-DZ_SOLO" "-DSTDC" "-D_LARGEFILE64_SOURCE" "-D_POSIX_SOURCE" "-o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/inftrees.o" "-c" "src/zlib/inftrees.c"
+exit status: 0
+running: "gcc" "-O0" "-ffunction-sections" "-fdata-sections" "-fPIC" "-g" "-fno-omit-frame-pointer" "-m64" "-I" "src/zlib" "-fvisibility=hidden" "-DZ_SOLO" "-DSTDC" "-D_LARGEFILE64_SOURCE" "-D_POSIX_SOURCE" "-o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/trees.o" "-c" "src/zlib/trees.c"
+running: "gcc" "-O0" "-ffunction-sections" "-fdata-sections" "-fPIC" "-g" "-fno-omit-frame-pointer" "-m64" "-I" "src/zlib" "-fvisibility=hidden" "-DZ_SOLO" "-DSTDC" "-D_LARGEFILE64_SOURCE" "-D_POSIX_SOURCE" "-o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/uncompr.o" "-c" "src/zlib/uncompr.c"
+exit status: 0
+running: "gcc" "-O0" "-ffunction-sections" "-fdata-sections" "-fPIC" "-g" "-fno-omit-frame-pointer" "-m64" "-I" "src/zlib" "-fvisibility=hidden" "-DZ_SOLO" "-DSTDC" "-D_LARGEFILE64_SOURCE" "-D_POSIX_SOURCE" "-o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/zutil.o" "-c" "src/zlib/zutil.c"
+exit status: 0
+exit status: 0
+AR_x86_64-unknown-linux-gnu = None
+AR_x86_64_unknown_linux_gnu = None
+HOST_AR = None
+AR = Some("ar")
+running: "ar" "crs" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/libz.a" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/adler32.o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/compress.o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/crc32.o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/deflate.o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/infback.o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/inffast.o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/inflate.o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/inftrees.o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/trees.o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/uncompr.o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build/src/zlib/zutil.o"
+exit status: 0
+cargo:rustc-link-lib=static=z
+cargo:rustc-link-search=native=/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/build
+cargo:root=/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out
+cargo:include=/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/libz-sys-4f84a52c8278d188/out/include

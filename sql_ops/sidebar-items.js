@@ -1,0 +1,1 @@
+initSidebarItems({"constant":[["CPU_CACHE_LINE_SIZE",""],["GPU_CACHE_LINE_SIZE",""]],"mod":[["error",""],["join","A collection of relational join operators."],["partition","A collection of partitioning operators."],["prefix_scan","A collection of prefix scan operators."]]});

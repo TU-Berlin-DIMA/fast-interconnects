@@ -1,0 +1,1 @@
+initSidebarItems({"fn":[["mark","Set a marker."]],"struct":[["Range","A range denoting a time span."],["RangeId","A range identifier."]]});

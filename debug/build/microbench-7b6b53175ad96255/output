@@ -1,0 +1,91 @@
+cargo:rerun-if-env-changed=CXX
+cargo:rustc-env=CUDAUTILS_PATH=/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/microbench-7b6b53175ad96255/out/cudautils.fatbin
+cargo:rustc-link-search=native=/opt/cuda/lib64
+cargo:rustc-link-search=native=/usr/local/cuda/lib64
+TARGET = Some("x86_64-unknown-linux-gnu")
+OPT_LEVEL = Some("0")
+HOST = Some("x86_64-unknown-linux-gnu")
+CXX_x86_64-unknown-linux-gnu = None
+CXX_x86_64_unknown_linux_gnu = None
+HOST_CXX = None
+CXX = Some("g++")
+CXXFLAGS_x86_64-unknown-linux-gnu = None
+CXXFLAGS_x86_64_unknown_linux_gnu = None
+HOST_CXXFLAGS = None
+CXXFLAGS = None
+CRATE_CC_NO_DEFAULTS = None
+DEBUG = Some("true")
+CARGO_CFG_TARGET_FEATURE = Some("fxsr,sse,sse2")
+CXX_x86_64-unknown-linux-gnu = None
+CXX_x86_64_unknown_linux_gnu = None
+HOST_CXX = None
+CXX = Some("g++")
+CXXFLAGS_x86_64-unknown-linux-gnu = None
+CXXFLAGS_x86_64_unknown_linux_gnu = None
+HOST_CXXFLAGS = None
+CXXFLAGS = None
+CRATE_CC_NO_DEFAULTS = None
+CARGO_CFG_TARGET_FEATURE = Some("fxsr,sse,sse2")
+CXX_x86_64-unknown-linux-gnu = None
+CXX_x86_64_unknown_linux_gnu = None
+HOST_CXX = None
+CXX = Some("g++")
+CXXFLAGS_x86_64-unknown-linux-gnu = None
+CXXFLAGS_x86_64_unknown_linux_gnu = None
+HOST_CXXFLAGS = None
+CXXFLAGS = None
+CRATE_CC_NO_DEFAULTS = None
+CARGO_CFG_TARGET_FEATURE = Some("fxsr,sse,sse2")
+running: "g++" "-O0" "-ffunction-sections" "-fdata-sections" "-fPIC" "-g" "-fno-omit-frame-pointer" "-m64" "-I" "include" "-Wall" "-Wextra" "-std=c++11" "-fopenmp" "-mtune=native" "-mcpu=native" "-march=native" "-o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/microbench-7b6b53175ad96255/out/cpputils/memory_bandwidth.o" "-c" "cpputils/memory_bandwidth.cpp"
+running: "g++" "-O0" "-ffunction-sections" "-fdata-sections" "-fPIC" "-g" "-fno-omit-frame-pointer" "-m64" "-I" "include" "-Wall" "-Wextra" "-std=c++11" "-fopenmp" "-mtune=native" "-mcpu=native" "-march=native" "-o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/microbench-7b6b53175ad96255/out/cpputils/memory_latency.o" "-c" "cpputils/memory_latency.cpp"
+cargo:warning=In file included from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/include/c++/8.5.0/x86_64-unknown-linux-gnu/bits/os_defines.h:39,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/include/c++/8.5.0/x86_64-unknown-linux-gnu/bits/c++config.h:508,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/include/c++/8.5.0/cstdlib:41,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/include/c++/8.5.0/stdlib.h:36,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/lib/gcc/x86_64-unknown-linux-gnu/8.5.0/include/mm_malloc.h:27,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/lib/gcc/x86_64-unknown-linux-gnu/8.5.0/include/xmmintrin.h:34,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/lib/gcc/x86_64-unknown-linux-gnu/8.5.0/include/x86intrin.h:33,
+cargo:warning=                 from include/cpu_clock.h:19,
+cargo:warning=                 from cpputils/memory_bandwidth.cpp:15:
+cargo:warning=/nix/store/pvn23vycg674bj6nypjcfyhqbr85rqxa-glibc-2.34-115-dev/include/features.h:412:4: warning: #warning _FORTIFY_SOURCE requires compiling with optimization (-O) [-Wcpp]
+cargo:warning= #  warning _FORTIFY_SOURCE requires compiling with optimization (-O)
+cargo:warning=    ^~~~~~~
+cargo:warning=In file included from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/include/c++/8.5.0/x86_64-unknown-linux-gnu/bits/os_defines.h:39,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/include/c++/8.5.0/x86_64-unknown-linux-gnu/bits/c++config.h:508,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/include/c++/8.5.0/type_traits:38,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/include/c++/8.5.0/ratio:38,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/include/c++/8.5.0/chrono:38,
+cargo:warning=                 from cpputils/memory_latency.cpp:15:
+cargo:warning=/nix/store/pvn23vycg674bj6nypjcfyhqbr85rqxa-glibc-2.34-115-dev/include/features.h:412:4: warning: #warning _FORTIFY_SOURCE requires compiling with optimization (-O) [-Wcpp]
+cargo:warning= #  warning _FORTIFY_SOURCE requires compiling with optimization (-O)
+cargo:warning=    ^~~~~~~
+exit status: 0
+exit status: 0
+AR_x86_64-unknown-linux-gnu = None
+AR_x86_64_unknown_linux_gnu = None
+HOST_AR = None
+AR = Some("ar")
+running: "ar" "crs" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/microbench-7b6b53175ad96255/out/libcpputils.a" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/microbench-7b6b53175ad96255/out/cpputils/memory_bandwidth.o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/microbench-7b6b53175ad96255/out/cpputils/memory_latency.o"
+exit status: 0
+cargo:rustc-link-lib=static=cpputils
+cargo:rustc-link-search=native=/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/microbench-7b6b53175ad96255/out
+CXXSTDLIB_x86_64-unknown-linux-gnu = None
+CXXSTDLIB_x86_64_unknown_linux_gnu = None
+HOST_CXXSTDLIB = None
+CXXSTDLIB = None
+cargo:rustc-link-lib=stdc++
+cargo:rustc-link-lib=atomic
+cargo:rerun-if-changed=include/
+cargo:rerun-if-changed=cpputils/
+cargo:rerun-if-changed=cudautils/
+cargo:rerun-if-changed=include/cpu_clock.h
+cargo:rerun-if-changed=include/cuda_clock.h
+cargo:rerun-if-changed=include/cuda_vector.h
+cargo:rerun-if-changed=include/ppc_intrinsics.h
+cargo:rerun-if-changed=include/timer.hpp
+cargo:rerun-if-changed=cudautils/memory_bandwidth.cu
+cargo:rerun-if-changed=cudautils/memory_latency.cu
+cargo:rerun-if-changed=cudautils/tlb_latency.cu
+cargo:rerun-if-changed=cudautils/cuda_clock.cu
+cargo:rerun-if-changed=cpputils/memory_bandwidth.cpp
+cargo:rerun-if-changed=cpputils/memory_latency.cpp

@@ -1,0 +1,1 @@
+initSidebarItems({"macro":[["gen_cuda_functions","Generate CUDA function bindings that are callable from Rust"]],"struct":[["GpuMemoryBandwidth",""]]});

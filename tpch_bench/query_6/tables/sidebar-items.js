@@ -1,0 +1,1 @@
+initSidebarItems({"struct":[["LineItem","A columnar LineItem table for Query 6."],["LineItemTuple","A materialized LineItem tuple"]]});

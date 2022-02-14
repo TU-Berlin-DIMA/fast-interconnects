@@ -1,0 +1,11 @@
+/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/deps/unicode_segmentation-038d00f2068f77f1.rmeta: /home/lutzcle/.cargo/registry/src/github.com-1ecc6299db9ec823/unicode-segmentation-1.6.0/src/lib.rs /home/lutzcle/.cargo/registry/src/github.com-1ecc6299db9ec823/unicode-segmentation-1.6.0/src/grapheme.rs /home/lutzcle/.cargo/registry/src/github.com-1ecc6299db9ec823/unicode-segmentation-1.6.0/src/tables.rs /home/lutzcle/.cargo/registry/src/github.com-1ecc6299db9ec823/unicode-segmentation-1.6.0/src/word.rs /home/lutzcle/.cargo/registry/src/github.com-1ecc6299db9ec823/unicode-segmentation-1.6.0/src/sentence.rs
+
+/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/deps/libunicode_segmentation-038d00f2068f77f1.rlib: /home/lutzcle/.cargo/registry/src/github.com-1ecc6299db9ec823/unicode-segmentation-1.6.0/src/lib.rs /home/lutzcle/.cargo/registry/src/github.com-1ecc6299db9ec823/unicode-segmentation-1.6.0/src/grapheme.rs /home/lutzcle/.cargo/registry/src/github.com-1ecc6299db9ec823/unicode-segmentation-1.6.0/src/tables.rs /home/lutzcle/.cargo/registry/src/github.com-1ecc6299db9ec823/unicode-segmentation-1.6.0/src/word.rs /home/lutzcle/.cargo/registry/src/github.com-1ecc6299db9ec823/unicode-segmentation-1.6.0/src/sentence.rs
+
+/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/deps/unicode_segmentation-038d00f2068f77f1.d: /home/lutzcle/.cargo/registry/src/github.com-1ecc6299db9ec823/unicode-segmentation-1.6.0/src/lib.rs /home/lutzcle/.cargo/registry/src/github.com-1ecc6299db9ec823/unicode-segmentation-1.6.0/src/grapheme.rs /home/lutzcle/.cargo/registry/src/github.com-1ecc6299db9ec823/unicode-segmentation-1.6.0/src/tables.rs /home/lutzcle/.cargo/registry/src/github.com-1ecc6299db9ec823/unicode-segmentation-1.6.0/src/word.rs /home/lutzcle/.cargo/registry/src/github.com-1ecc6299db9ec823/unicode-segmentation-1.6.0/src/sentence.rs
+
+/home/lutzcle/.cargo/registry/src/github.com-1ecc6299db9ec823/unicode-segmentation-1.6.0/src/lib.rs:
+/home/lutzcle/.cargo/registry/src/github.com-1ecc6299db9ec823/unicode-segmentation-1.6.0/src/grapheme.rs:
+/home/lutzcle/.cargo/registry/src/github.com-1ecc6299db9ec823/unicode-segmentation-1.6.0/src/tables.rs:
+/home/lutzcle/.cargo/registry/src/github.com-1ecc6299db9ec823/unicode-segmentation-1.6.0/src/word.rs:
+/home/lutzcle/.cargo/registry/src/github.com-1ecc6299db9ec823/unicode-segmentation-1.6.0/src/sentence.rs:

@@ -1,0 +1,113 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Radix partition operators for CPU and GPU."><meta name="keywords" content="rust, rustlang, rust-lang, cpu_radix_partition"><title>sql_ops::partition::cpu_radix_partition - Rust</title><link rel="preload" as="font" type="font/woff2" crossorigin href="../../../SourceSerif4-Regular.ttf.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../../../FiraSans-Regular.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../../../FiraSans-Medium.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../../../SourceCodePro-Regular.ttf.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../../../SourceSerif4-Bold.ttf.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../../../SourceCodePro-Semibold.ttf.woff2"><link rel="stylesheet" type="text/css" href="../../../normalize.css"><link rel="stylesheet" type="text/css" href="../../../rustdoc.css" id="mainThemeStyle"><link rel="stylesheet" type="text/css" href="../../../ayu.css" disabled><link rel="stylesheet" type="text/css" href="../../../dark.css" disabled><link rel="stylesheet" type="text/css" href="../../../light.css" id="themeStyle"><script id="default-settings" ></script><script src="../../../storage.js"></script><script src="../../../crates.js"></script><script defer src="../../../main.js"></script>
+    <noscript><link rel="stylesheet" href="../../../noscript.css"></noscript><link rel="alternate icon" type="image/png" href="../../../favicon-16x16.png"><link rel="alternate icon" type="image/png" href="../../../favicon-32x32.png"><link rel="icon" type="image/svg+xml" href="../../../favicon.svg"></head><body class="rustdoc mod"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="mobile-topbar"><button class="sidebar-menu-toggle">&#9776;</button><a class="sidebar-logo" href="../../../sql_ops/index.html"><div class="logo-container"><img class="rust-logo" src="../../../rust-logo.svg" alt="logo"></div>
+        </a><h2 class="location"></h2>
+    </nav>
+    <nav class="sidebar"><a class="sidebar-logo" href="../../../sql_ops/index.html"><div class="logo-container"><img class="rust-logo" src="../../../rust-logo.svg" alt="logo"></div>
+        </a><h2 class="location"><a href="#">Module cpu_radix_partition</a></h2><div class="sidebar-elems"><section><div class="block"><ul><li><a href="#structs">Structs</a></li><li><a href="#enums">Enums</a></li><li><a href="#traits">Traits</a></li></ul></div></section><div id="sidebar-vars" data-name="cpu_radix_partition" data-ty="mod" data-relpath="./"></div><script defer src="./sidebar-items.js"></script></div></nav><main><div class="width-limiter"><div class="sub-container"><a class="sub-logo-container" href="../../../sql_ops/index.html"><img class="rust-logo" src="../../../rust-logo.svg" alt="logo"></a><nav class="sub"><div class="theme-picker hidden"><button id="theme-picker" aria-label="Pick another theme!" aria-haspopup="menu" title="themes"><img width="22" height="22" alt="Pick another theme!" src="../../../brush.svg"></button><div id="theme-choices" role="menu"></div></div><form class="search-form"><div class="search-container"><span></span><input class="search-input" name="search" autocomplete="off" spellcheck="false" placeholder="Click or press ‘S’ to search, ‘?’ for more options…" type="search"><button type="button" id="help-button" title="help">?</button><a id="settings-menu" href="../../../settings.html" title="settings"><img width="22" height="22" alt="Change settings" src="../../../wheel.svg"></a></div></form></nav></div><section id="main-content" class="content"><div class="main-heading">
+    <h1 class="fqn"><span class="in-band">Module <a href="../../index.html">sql_ops</a>::<wbr><a href="../index.html">partition</a>::<wbr><a class="mod" href="#">cpu_radix_partition</a><button id="copy-path" onclick="copy_path(this)" title="Copy item path to clipboard"><img src="../../../clipboard.svg" width="19" height="18" alt="Copy item path"></button></span></h1><span class="out-of-band"><a class="srclink" href="../../../src/sql_ops/partition/cpu_radix_partition.rs.html#15-640">source</a> · <a id="toggle-all-docs" href="javascript:void(0)" title="collapse all docs">[<span class="inner">&#x2212;</span>]</a></span></div><details class="rustdoc-toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Radix partition operators for CPU and GPU.</p>
+<h2 id="overview"><a href="#overview">Overview</a></h2>
+<p>CPU and GPU partitioning operators are compatible. The devices can cooperate
+to partition a relation in parallel. Note that this only holds for equivalent
+operator algorithms, i.e., <code>chunked_radix_partition_swwc</code> cannot be combined
+with <code>chunked_radix_partition</code>.</p>
+<p>Provided is one radix partitioning algorithm, chunked radix partitioning with
+software write-combine buffering (SWWC). This algorithm is described by Schuh
+et al. in Section 6 of “An Experimental Comparison of Thirteen Relational
+Equi-Joins in Main Memory”.</p>
+<h2 id="thread-safety"><a href="#thread-safety">Thread-safety</a></h2>
+<p>The radix partitioning operators are designed to be thread-safe. Although the
+input data can be shared between threads, threads should typically work on
+disjuct input partitions for correct results. In contrast, each thread must
+have exclusive ownership of its output and intermediate state buffers.</p>
+<h2 id="padding"><a href="#padding">Padding</a></h2>
+<p>It is important to note that partitions are padded to, at minimum, the
+cache-line size. This is necessary for SWWC buffering because cache-lines
+are written back to memory as a whole. However, partition offsets are not
+naturally aligned, because partitions can have any size. Therefore,
+all partitions are padded in front by, at minimum, the length of a cache-line.
+The cache-alignment is also necessary for non-temporal SIMD writes, which
+must be aligned to their SIMD vector length.</p>
+<h2 id="combining-cpu-histogram-with-a-gpu-partitioner"><a href="#combining-cpu-histogram-with-a-gpu-partitioner">Combining CPU histogram with a GPU partitioner</a></h2>
+<p>CPU and GPU histograms and radix partitioners can be mixed and matched.
+For example, <code>CpuHistogramAlgorithm::Chunked</code> computes the exact same result
+as <code>GpuHistogramAlgorithm::Chunked</code>.</p>
+<p>Combining a CPU histogram with a GPU partitioner saves us from transferring
+the keys twice over the interconnect, once for the histogram and once for
+partitioning. Computing a histogram is light-weight and should be close to
+the memory bandwidth. See Polychroniou et al. “A comprehensive study of
+main-memory partitioning and its application to large-scale comparison-
+and radix-sort.</p>
+<p>The reasoning is that the required histograms are cheap to compute. The
+target size at maximum 2^12 buckets, which is only 32 KiB and should fit
+into the CPU’s L1 cache. This upper bound for buckets is given by the
+GPU hardware and partitioning algorithm.</p>
+<h2 id="optimizations-and-tuning"><a href="#optimizations-and-tuning">Optimizations and tuning</a></h2><h3 id="hardware-prefetching"><a href="#hardware-prefetching">Hardware prefetching</a></h3>
+<p>On most CPU architectures, the behavior of the hardware prefetcher can be
+tuned using model-specific registers (MSRs). On POWER9, disabling N-stride
+prefetching and setting an aggressive prefetch depth increases the
+throughput of the prefix sum and partitioning.</p>
+<h3 id="loop-unrolling"><a href="#loop-unrolling">Loop unrolling</a></h3>
+<p>Manual loop unrolling is a well-known optimization. For the POWER9
+architecture, loading 128-byte cachelines with a sequence of SIMD
+instructions improves throughput. However, as the VSX instruction set
+doesn’t support gather-scatter memory operations, this is only a load
+optimization and not a “pure” SIMD implementation.</p>
+<h3 id="simd-vectorization"><a href="#simd-vectorization">SIMD vectorization</a></h3>
+<p>Keys are hashed using VSX instructions on POWER9.</p>
+<h3 id="data-hazard-avoidance"><a href="#data-hazard-avoidance">Data hazard avoidance</a></h3>
+<p>Out-of-order execution stalls if there is a read-after-write hazard in the
+CPU pipeline. This occurs in the prefix sum due the memory dependency on the
+previous value of a histogram bucket. As only small histograms are affected,
+the histogram can be replicated within the L1 cache for low fanouts, and use
+a single copy per thread for high fanouts.</p>
+<h2 id="copyright-notes"><a href="#copyright-notes">Copyright notes</a></h2>
+<p>The C/C++ CPU code is based on <a href="https://www.systems.ethz.ch/sites/default/files/file/PublishedCode/multicore-distributed-hashjoins-0_1.zip">code kindly published by Cagri Balkesen and
+Claude Barthels</a>. As such, we adhere to their copyright and license
+(MIT) in derived code. Modifications are licensed under Apache License 2.0.</p>
+<h3 id="summary-of-changes"><a href="#summary-of-changes">Summary of changes</a></h3>
+<p>We have made several changes to the original code. These include:</p>
+<ul>
+<li>
+<p>Fix race condition in SWWC partitioning variant. Each thread writes its
+result into a separate chunk with padding between chunks and (within each
+chunk) partitions. The race condition occurs because the flushes are
+aligned to a cacheline. Thus, the first flush of a thread might overwrite
+the last flush of its neighboring thread. A (potential) drawback is that
+resulting partitions are non-contiguous.</p>
+</li>
+<li>
+<p>Support different tuple types at run-time instead of at compile-time.
+Implemented by instantiating C++ templates with multiple types instead of C
+preprocessor.</p>
+</li>
+<li>
+<p>Split prefix sum and partitioning into separate functions. This
+facilitates CPU microarchitecture optimization and allows recombination
+with equivalent GPU kernels.</p>
+</li>
+<li>
+<p>Add SIMD prefix sum variant for IBM POWER9.</p>
+</li>
+<li>
+<p>Add SIMD partitioning variant for IBM POWER9.</p>
+</li>
+<li>
+<p>Avoid data hazards in the prefix sum.</p>
+</li>
+<li>
+<p>Tune the hardware prefetcher for IBM POWER9.</p>
+</li>
+<li>
+<p>Add SWWC flush variants for POWERPC64 VSX and x86_64 AVX-512.</p>
+</li>
+</ul>
+</div></details><h2 id="structs" class="small-section-header"><a href="#structs">Structs</a></h2>
+<div class="item-table"><div class="item-row"><div class="item-left module-item"><a class="struct" href="struct.CpuRadixPartitioner.html" title="sql_ops::partition::cpu_radix_partition::CpuRadixPartitioner struct">CpuRadixPartitioner</a></div><div class="item-right docblock-short"><p>A CPU radix partitioner that provides partitioning functions.</p>
+</div></div></div><h2 id="enums" class="small-section-header"><a href="#enums">Enums</a></h2>
+<div class="item-table"><div class="item-row"><div class="item-left module-item"><a class="enum" href="enum.CpuHistogramAlgorithm.html" title="sql_ops::partition::cpu_radix_partition::CpuHistogramAlgorithm enum">CpuHistogramAlgorithm</a></div><div class="item-right docblock-short"><p>Specifies the histogram algorithm that computes the partition offsets.</p>
+</div></div><div class="item-row"><div class="item-left module-item"><a class="enum" href="enum.CpuRadixPartitionAlgorithm.html" title="sql_ops::partition::cpu_radix_partition::CpuRadixPartitionAlgorithm enum">CpuRadixPartitionAlgorithm</a></div><div class="item-right docblock-short"><p>Specifies the radix partition algorithm.</p>
+</div></div></div><h2 id="traits" class="small-section-header"><a href="#traits">Traits</a></h2>
+<div class="item-table"><div class="item-row"><div class="item-left module-item"><a class="trait" href="trait.CpuRadixPartitionable.html" title="sql_ops::partition::cpu_radix_partition::CpuRadixPartitionable trait">CpuRadixPartitionable</a></div><div class="item-right docblock-short"><p>Specifies that the implementing type can be used as partitioning key in
+<code>CpuRadixPartitioner</code>.</p>
+</div></div></div></section><section id="search" class="content hidden"></section></div></main><div id="rustdoc-vars" data-root-path="../../../" data-current-crate="sql_ops" data-themes="ayu,dark,light" data-resource-suffix="" data-rustdoc-version="1.60.0" ></div>
+</body></html>

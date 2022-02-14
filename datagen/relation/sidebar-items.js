@@ -1,0 +1,1 @@
+initSidebarItems({"struct":[["UniformRelation","Generator for relations with uniform distribution."],["ZipfRelation","Generator for relations with Zipf distribution."]],"trait":[["KeyAttribute","Specifies that the type is suitable to be a join, grouping, or partitioning key."]]});

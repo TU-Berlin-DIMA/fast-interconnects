@@ -1,0 +1,11 @@
+var N = null;var sourcesIndex = {};
+sourcesIndex["data_store"] = {"name":"","files":["error.rs","join_data.rs","lib.rs"]};
+sourcesIndex["datagen"] = {"name":"","files":["error.rs","lib.rs","popular.rs","relation.rs"]};
+sourcesIndex["generate"] = {"name":"","files":["generate.rs"]};
+sourcesIndex["hashjoin"] = {"name":"","dirs":[{"name":"measurement","files":["data_point.rs","harness.rs","hash_join_bench.rs"]}],"files":["error.rs","main.rs","measurement.rs","types.rs"]};
+sourcesIndex["microbench"] = {"name":"","dirs":[{"name":"memory_bandwidth","files":["cpu_measurement.rs","cpu_memory_bandwidth.rs","data_point.rs","gpu_measurement.rs","gpu_memory_bandwidth.rs"]},{"name":"tlb_latency","files":["data_point.rs","gpu_tlb_latency.rs"]}],"files":["cuda_memcopy.rs","error.rs","main.rs","memory_bandwidth.rs","memory_latency.rs","numa_memcopy.rs","tlb_latency.rs","types.rs"]};
+sourcesIndex["numa_gpu"] = {"name":"","dirs":[{"name":"runtime","dirs":[{"name":"dispatcher","files":["het_morsel_executor.rs","het_morsel_iterator.rs","morsel_dispatcher.rs"]}],"files":["allocator.rs","cpu_affinity.rs","cuda.rs","cuda_wrapper.rs","dispatcher.rs","hw_info.rs","linux_wrapper.rs","memory.rs","numa.rs","nvml.rs","nvtx.rs"]},{"name":"utils","files":["cache_padded.rs","device_type.rs","gpu_utils.rs"]}],"files":["error.rs","lib.rs","runtime.rs","utils.rs"]};
+sourcesIndex["radix_join"] = {"name":"","dirs":[{"name":"execution_methods","files":["cpu_partitioned_radix_join.rs","gpu_radix_join.rs","gpu_triton_join.rs"]},{"name":"measurement","files":["data_point.rs","harness.rs"]}],"files":["error.rs","execution_methods.rs","lib.rs","measurement.rs","types.rs"]};
+sourcesIndex["sql_ops"] = {"name":"","dirs":[{"name":"join","files":["cuda_radix_join.rs","hashing_scheme.rs","no_partitioning_join.rs"]},{"name":"partition","files":["cpu_radix_partition.rs","gpu_radix_partition.rs","partition_input_chunk.rs","partitioned_relation.rs"]},{"name":"prefix_scan","files":["gpu_prefix_scan.rs"]}],"files":["error.rs","join.rs","lib.rs","partition.rs","prefix_scan.rs"]};
+sourcesIndex["tpch_bench"] = {"name":"","dirs":[{"name":"query_6","files":["cpu.rs","gpu.rs","tables.rs"]}],"files":["data_point.rs","error.rs","harness.rs","main.rs","query_6.rs","types.rs"]};
+createSourceSidebar();

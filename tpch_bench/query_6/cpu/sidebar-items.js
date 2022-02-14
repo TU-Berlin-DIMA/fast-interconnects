@@ -1,0 +1,1 @@
+initSidebarItems({"fn":[["tpch_q6_branching",""],["tpch_q6_predication",""]],"struct":[["Query6Cpu",""]]});

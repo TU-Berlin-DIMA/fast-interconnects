@@ -1,0 +1,87 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="The SQL Operator Library"><meta name="keywords" content="rust, rustlang, rust-lang, sql_ops"><title>sql_ops - Rust</title><link rel="preload" as="font" type="font/woff2" crossorigin href="../SourceSerif4-Regular.ttf.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../FiraSans-Regular.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../FiraSans-Medium.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../SourceCodePro-Regular.ttf.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../SourceSerif4-Bold.ttf.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../SourceCodePro-Semibold.ttf.woff2"><link rel="stylesheet" type="text/css" href="../normalize.css"><link rel="stylesheet" type="text/css" href="../rustdoc.css" id="mainThemeStyle"><link rel="stylesheet" type="text/css" href="../ayu.css" disabled><link rel="stylesheet" type="text/css" href="../dark.css" disabled><link rel="stylesheet" type="text/css" href="../light.css" id="themeStyle"><script id="default-settings" ></script><script src="../storage.js"></script><script src="../crates.js"></script><script defer src="../main.js"></script>
+    <noscript><link rel="stylesheet" href="../noscript.css"></noscript><link rel="alternate icon" type="image/png" href="../favicon-16x16.png"><link rel="alternate icon" type="image/png" href="../favicon-32x32.png"><link rel="icon" type="image/svg+xml" href="../favicon.svg"></head><body class="rustdoc mod crate"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="mobile-topbar"><button class="sidebar-menu-toggle">&#9776;</button><a class="sidebar-logo" href="../sql_ops/index.html"><div class="logo-container"><img class="rust-logo" src="../rust-logo.svg" alt="logo"></div>
+        </a><h2 class="location"></h2>
+    </nav>
+    <nav class="sidebar"><a class="sidebar-logo" href="../sql_ops/index.html"><div class="logo-container"><img class="rust-logo" src="../rust-logo.svg" alt="logo"></div>
+        </a><h2 class="location"><a href="#">Crate sql_ops</a></h2><div class="sidebar-elems"><div class="block"><ul><li class="version">Version 0.1.0</li><li><a id="all-types" href="all.html">All Items</a></li></div></ul><section><div class="block"><ul><li><a href="#modules">Modules</a></li><li><a href="#constants">Constants</a></li></ul></div></section><div id="sidebar-vars" data-name="sql_ops" data-ty="mod" data-relpath=""></div><script defer src="sidebar-items.js"></script></div></nav><main><div class="width-limiter"><div class="sub-container"><a class="sub-logo-container" href="../sql_ops/index.html"><img class="rust-logo" src="../rust-logo.svg" alt="logo"></a><nav class="sub"><div class="theme-picker hidden"><button id="theme-picker" aria-label="Pick another theme!" aria-haspopup="menu" title="themes"><img width="22" height="22" alt="Pick another theme!" src="../brush.svg"></button><div id="theme-choices" role="menu"></div></div><form class="search-form"><div class="search-container"><span></span><input class="search-input" name="search" autocomplete="off" spellcheck="false" placeholder="Click or press ‘S’ to search, ‘?’ for more options…" type="search"><button type="button" id="help-button" title="help">?</button><a id="settings-menu" href="../settings.html" title="settings"><img width="22" height="22" alt="Change settings" src="../wheel.svg"></a></div></form></nav></div><section id="main-content" class="content"><div class="main-heading">
+    <h1 class="fqn"><span class="in-band">Crate <a class="mod" href="#">sql_ops</a><button id="copy-path" onclick="copy_path(this)" title="Copy item path to clipboard"><img src="../clipboard.svg" width="19" height="18" alt="Copy item path"></button></span></h1><span class="out-of-band"><a class="srclink" href="../src/sql_ops/lib.rs.html#15-142">source</a> · <a id="toggle-all-docs" href="javascript:void(0)" title="collapse all docs">[<span class="inner">&#x2212;</span>]</a></span></div><details class="rustdoc-toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="the-sql-operator-library"><a href="#the-sql-operator-library">The SQL Operator Library</a></h2>
+<p><code>sql-ops</code> is a collection of SQL operators and building blocks for CPUs and
+GPUs. Currently it includes the operators:</p>
+<ul>
+<li>Hash join (no-partitioning and radix-partitioned)</li>
+<li>Radix partition</li>
+<li>Prefix scan (exclusive)</li>
+</ul>
+<h2 id="tuning-parameters"><a href="#tuning-parameters">Tuning parameters</a></h2>
+<p>Several tuning parameters are defined as constant values. These affect
+the performance and should be adjusted if necessary.</p>
+<p>The tuning parameters are set in the <code>build.rs</code> file, which exports them to Rust, C++, and
+CUDA.</p>
+<h3 id="cpu-cacheline-size"><a href="#cpu-cacheline-size">CPU cacheline size</a></h3>
+<p><code>CPU_CACHE_LINE_SIZE</code> defines the number of bytes used for padding to prevent false sharing,
+and SWWC radix partitioning buffers. The size is specific to the CPU architecture and set to
+different values depending on the ISA:</p>
+<ul>
+<li>aarch64: 64 bytes</li>
+<li>x86_64: 64 bytes</li>
+<li>powerpc64: 128 bytes</li>
+</ul>
+<h3 id="gpu-cacheline-size"><a href="#gpu-cacheline-size">GPU cacheline size</a></h3>
+<p><code>GPU_CACHE_LINE_SIZE</code> serves the same purpose as the CPU cacheline size, but is used in GPU
+code paths. The size is set to 128 bytes, which is the size used by many Nvidia GPUs (e.g.,
+Pascal, Volta, Ampere).</p>
+<h3 id="align-bytes"><a href="#align-bytes">Align bytes</a></h3>
+<p><code>ALIGN_BYTES</code> defines the alignment of partitions in bytes. This parameter is intended to
+prevent cache conflict misses. It should be set to a multiple of the cacheline size.</p>
+<p>Furthermore, cacheline alignment is necessary for:</p>
+<ul>
+<li>non-temporal store instructions</li>
+<li>vector load and store instructions</li>
+<li>perfectly aligned coalesced loads and stores on GPUs</li>
+</ul>
+<h3 id="padding-bytes"><a href="#padding-bytes">Padding bytes</a></h3>
+<p><code>PADDING_BYTES</code> defines the padding size between partitions.  Padding is necessary for
+partitioning algorithms to align writes. Aligned writes have fixed length and may overwrite the
+padding space in front of their partition.  For this reason, also the first partition includes
+padding in front.</p>
+<p>If no padding is used, aligned writes incur a race condition between threads. Given two
+partitions, a thread writing to the end of the first partition must write after a different
+thread writing to the beginning of the second partition, because the written locations may
+overlap due to aligning the second thread to <code>PADDING_BYTES</code>.</p>
+<h3 id="number-of-banks"><a href="#number-of-banks">Number of banks</a></h3>
+<p><code>LOG2_NUM_BANKS</code> defines the number of shared memory banks on GPUs. This parameter is used to
+avoid bank conflicts.</p>
+<h3 id="la-swwc-tuples-per-thread"><a href="#la-swwc-tuples-per-thread">LA-SWWC tuples per thread</a></h3>
+<p><code>LASWWC_TUPLES_PER_THREAD</code> defines the number of tuples processed at a time per thread. More
+tuples require more shared memory and more registers. Thus, the parameter should be tuned for
+each GPU architecture.</p>
+<p>The Stehle and Jacobsen set the value to <code>3</code> for a Tesla P100 GPU in their work: <a href="http://doi.acm.org/10.1145/3035918.3064043"><em>A Memory
+Bandwidth-Efficient Hybrid Radix Sort on GPUs</em></a>. We
+set the value to <code>5</code> for a Tesla V100 GPU.</p>
+<h3 id="bucket-chaining-entries"><a href="#bucket-chaining-entries">Bucket chaining entries</a></h3>
+<p><code>RADIX_JOIN_BUCKET_CHAINING_ENTRIES</code> defines the number of hash table entries used by the
+bucket chaining scheme of the radix join.</p>
+<p>The value must be set to a power of two, and at least 1. No further constraints.</p>
+<h2 id="library-initialization"><a href="#library-initialization">Library initialization</a></h2>
+<p>GPU operators are compiled as a <a href="https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html#fatbinaries">CUDA <code>fatbinary</code> module</a>. The
+module must be loaded into the current context before using the
+<a href="https://docs.nvidia.com/cuda/archive/10.2/cuda-driver-api/group__CUDA__MODULE.html#group__CUDA__MODULE_1g366093bd269dafd0af21f1c7d18115d3"><code>cuModuleLoad</code> driver function</a> before the operator can start
+executing. Module loading can take up to several hundred milliseconds.</p>
+<p>To avoid load the module each time an operator is executed, the <code>sql-ops</code>
+library globally loads the module exactly once. The load is lazy and is
+performed when a GPU operator is executed for the first time. Thus, later
+executions of any GPU operator use the already-loaded module.</p>
+<p><strong>Important:</strong> The CUDA context must be initialized before calling the
+a GPU operator. <em>Destroying this context will also destroy the module!</em></p>
+<p>This is usually not a problem in applications that initialize the context
+once at the start of the program. However, in unit tests, a common pattern
+is to initialize a context for each test case. Instead, tests should create
+a singleton instance of the context that is only initialized once. See
+<code>sql-ops/tests/test_gpu_radix_partition.rs</code> as an example.</p>
+</div></details><h2 id="modules" class="small-section-header"><a href="#modules">Modules</a></h2>
+<div class="item-table"><div class="item-row"><div class="item-left module-item"><a class="mod" href="error/index.html" title="sql_ops::error mod">error</a></div><div class="item-right docblock-short"></div></div><div class="item-row"><div class="item-left module-item"><a class="mod" href="join/index.html" title="sql_ops::join mod">join</a></div><div class="item-right docblock-short"><p>A collection of relational join operators.</p>
+</div></div><div class="item-row"><div class="item-left module-item"><a class="mod" href="partition/index.html" title="sql_ops::partition mod">partition</a></div><div class="item-right docblock-short"><p>A collection of partitioning operators.</p>
+</div></div><div class="item-row"><div class="item-left module-item"><a class="mod" href="prefix_scan/index.html" title="sql_ops::prefix_scan mod">prefix_scan</a></div><div class="item-right docblock-short"><p>A collection of prefix scan operators.</p>
+</div></div></div><h2 id="constants" class="small-section-header"><a href="#constants">Constants</a></h2>
+<div class="item-table"><div class="item-row"><div class="item-left module-item"><a class="constant" href="constant.CPU_CACHE_LINE_SIZE.html" title="sql_ops::CPU_CACHE_LINE_SIZE constant">CPU_CACHE_LINE_SIZE</a></div><div class="item-right docblock-short"></div></div><div class="item-row"><div class="item-left module-item"><a class="constant" href="constant.GPU_CACHE_LINE_SIZE.html" title="sql_ops::GPU_CACHE_LINE_SIZE constant">GPU_CACHE_LINE_SIZE</a></div><div class="item-right docblock-short"></div></div></div></section><section id="search" class="content hidden"></section></div></main><div id="rustdoc-vars" data-root-path="../" data-current-crate="sql_ops" data-themes="ayu,dark,light" data-resource-suffix="" data-rustdoc-version="1.60.0" ></div>
+</body></html>

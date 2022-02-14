@@ -1,0 +1,1 @@
+initSidebarItems({"enum":[["BareMemType",""]],"struct":[["Block","CUDA block size"],["Cycles","Clock cycles"],["Grid","CUDA grid size"],["MemTypeDescription",""],["ThreadCount","Thread count"]],"type":[["DeviceId","The device type and it’s ID"]]});

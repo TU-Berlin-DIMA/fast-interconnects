@@ -1,0 +1,2 @@
+cargo:rustc-env=RESOURCES_PATH=/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/numa-gpu-f64585e8d4b6e8d5/out
+cargo:rerun-if-changed=resources/noop.ptx

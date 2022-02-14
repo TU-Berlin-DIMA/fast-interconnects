@@ -1,0 +1,1 @@
+initSidebarItems({"struct":[["Blanas","Generator for the Blanas data set."],["Kim","Generator for the Kim data set."]]});

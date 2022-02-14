@@ -1,0 +1,92 @@
+cargo:rerun-if-env-changed=CXX
+cargo:rustc-env=CUDAUTILS_PATH=/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/sql-ops-8828bf78b64e5ac6/out/cudautils.fatbin
+cargo:rustc-link-search=native=/opt/cuda/lib64
+cargo:rustc-link-search=native=/usr/local/cuda/lib64
+cargo:rustc-link-lib=cudart
+TARGET = Some("x86_64-unknown-linux-gnu")
+OPT_LEVEL = Some("0")
+HOST = Some("x86_64-unknown-linux-gnu")
+CXX_x86_64-unknown-linux-gnu = None
+CXX_x86_64_unknown_linux_gnu = None
+HOST_CXX = None
+CXX = Some("g++")
+CXXFLAGS_x86_64-unknown-linux-gnu = None
+CXXFLAGS_x86_64_unknown_linux_gnu = None
+HOST_CXXFLAGS = None
+CXXFLAGS = None
+CRATE_CC_NO_DEFAULTS = None
+CARGO_CFG_TARGET_FEATURE = Some("fxsr,sse,sse2")
+CXX_x86_64-unknown-linux-gnu = None
+CXX_x86_64_unknown_linux_gnu = None
+HOST_CXX = None
+CXX = Some("g++")
+CXXFLAGS_x86_64-unknown-linux-gnu = None
+CXXFLAGS_x86_64_unknown_linux_gnu = None
+HOST_CXXFLAGS = None
+CXXFLAGS = None
+CRATE_CC_NO_DEFAULTS = None
+CARGO_CFG_TARGET_FEATURE = Some("fxsr,sse,sse2")
+CXX_x86_64-unknown-linux-gnu = None
+CXX_x86_64_unknown_linux_gnu = None
+HOST_CXX = None
+CXX = Some("g++")
+CXXFLAGS_x86_64-unknown-linux-gnu = None
+CXXFLAGS_x86_64_unknown_linux_gnu = None
+HOST_CXXFLAGS = None
+CXXFLAGS = None
+CRATE_CC_NO_DEFAULTS = None
+CARGO_CFG_TARGET_FEATURE = Some("fxsr,sse,sse2")
+running: "g++" "-O0" "-ffunction-sections" "-fdata-sections" "-fPIC" "-g" "-fno-omit-frame-pointer" "-m64" "-I" "include" "-I" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/sql-ops-8828bf78b64e5ac6/out" "-Wall" "-Wextra" "-std=c++14" "-mtune=native" "-mcpu=native" "-march=native" "-DNO_WARN_X86_INTRINSICS" "-o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/sql-ops-8828bf78b64e5ac6/out/cpputils/gpu_common.o" "-c" "cpputils/gpu_common.cpp"
+running: "g++" "-O0" "-ffunction-sections" "-fdata-sections" "-fPIC" "-g" "-fno-omit-frame-pointer" "-m64" "-I" "include" "-I" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/sql-ops-8828bf78b64e5ac6/out" "-Wall" "-Wextra" "-std=c++14" "-mtune=native" "-mcpu=native" "-march=native" "-DNO_WARN_X86_INTRINSICS" "-o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/sql-ops-8828bf78b64e5ac6/out/cpputils/radix_partition.o" "-c" "cpputils/radix_partition.cpp"
+running: "g++" "-O0" "-ffunction-sections" "-fdata-sections" "-fPIC" "-g" "-fno-omit-frame-pointer" "-m64" "-I" "include" "-I" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/sql-ops-8828bf78b64e5ac6/out" "-Wall" "-Wextra" "-std=c++14" "-mtune=native" "-mcpu=native" "-march=native" "-DNO_WARN_X86_INTRINSICS" "-o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/sql-ops-8828bf78b64e5ac6/out/cpputils/no_partitioning_join.o" "-c" "cpputils/no_partitioning_join.cpp"
+cargo:warning=In file included from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/include/c++/8.5.0/x86_64-unknown-linux-gnu/bits/os_defines.h:39,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/include/c++/8.5.0/x86_64-unknown-linux-gnu/bits/c++config.h:508,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/include/c++/8.5.0/bits/atomic_base.h:35,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/include/c++/8.5.0/atomic:41,
+cargo:warning=                 from cpputils/no_partitioning_join.cpp:24:
+cargo:warning=/nix/store/pvn23vycg674bj6nypjcfyhqbr85rqxa-glibc-2.34-115-dev/include/features.h:412:4: warning: #warning _FORTIFY_SOURCE requires compiling with optimization (-O) [-Wcpp]
+cargo:warning= #  warning _FORTIFY_SOURCE requires compiling with optimization (-O)
+cargo:warning=    ^~~~~~~
+cargo:warning=In file included from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/include/c++/8.5.0/x86_64-unknown-linux-gnu/bits/os_defines.h:39,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/include/c++/8.5.0/x86_64-unknown-linux-gnu/bits/c++config.h:508,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/include/c++/8.5.0/cstdlib:41,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/include/c++/8.5.0/stdlib.h:36,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/lib/gcc/x86_64-unknown-linux-gnu/8.5.0/include/mm_malloc.h:27,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/lib/gcc/x86_64-unknown-linux-gnu/8.5.0/include/xmmintrin.h:34,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/lib/gcc/x86_64-unknown-linux-gnu/8.5.0/include/immintrin.h:29,
+cargo:warning=                 from cpputils/radix_partition.cpp:53:
+cargo:warning=/nix/store/pvn23vycg674bj6nypjcfyhqbr85rqxa-glibc-2.34-115-dev/include/features.h:412:4: warning: #warning _FORTIFY_SOURCE requires compiling with optimization (-O) [-Wcpp]
+cargo:warning= #  warning _FORTIFY_SOURCE requires compiling with optimization (-O)
+cargo:warning=    ^~~~~~~
+exit status: 0
+exit status: 0
+exit status: 0
+AR_x86_64-unknown-linux-gnu = None
+AR_x86_64_unknown_linux_gnu = None
+HOST_AR = None
+AR = Some("ar")
+running: "ar" "crs" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/sql-ops-8828bf78b64e5ac6/out/libcpputils.a" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/sql-ops-8828bf78b64e5ac6/out/cpputils/gpu_common.o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/sql-ops-8828bf78b64e5ac6/out/cpputils/no_partitioning_join.o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/sql-ops-8828bf78b64e5ac6/out/cpputils/radix_partition.o"
+exit status: 0
+cargo:rustc-link-lib=static=cpputils
+cargo:rustc-link-search=native=/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/sql-ops-8828bf78b64e5ac6/out
+CXXSTDLIB_x86_64-unknown-linux-gnu = None
+CXXSTDLIB_x86_64_unknown_linux_gnu = None
+HOST_CXXSTDLIB = None
+CXXSTDLIB = None
+cargo:rustc-link-lib=stdc++
+cargo:rerun-if-changed=include/
+cargo:rerun-if-changed=cpputils/
+cargo:rerun-if-changed=cudautils/
+cargo:rerun-if-changed=include/gpu_common.h
+cargo:rerun-if-changed=include/gpu_radix_partition.h
+cargo:rerun-if-changed=include/ppc_intrinsics.h
+cargo:rerun-if-changed=include/prefix_scan.h
+cargo:rerun-if-changed=include/prefix_scan_state.h
+cargo:rerun-if-changed=include/ptx_memory.h
+cargo:rerun-if-changed=cudautils/gpu_common.cu
+cargo:rerun-if-changed=cudautils/no_partitioning_join.cu
+cargo:rerun-if-changed=cudautils/radix_join.cu
+cargo:rerun-if-changed=cudautils/radix_partition.cu
+cargo:rerun-if-changed=cpputils/gpu_common.cpp
+cargo:rerun-if-changed=cpputils/no_partitioning_join.cpp
+cargo:rerun-if-changed=cpputils/radix_partition.cpp

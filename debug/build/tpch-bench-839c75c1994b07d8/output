@@ -1,0 +1,59 @@
+cargo:rustc-env=CUDAUTILS_PATH=/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/tpch-bench-839c75c1994b07d8/out/cudautils.fatbin
+cargo:rustc-link-search=native=/opt/cuda/lib64
+cargo:rustc-link-search=native=/usr/local/cuda/lib64
+cargo:rustc-link-lib=cudart
+TARGET = Some("x86_64-unknown-linux-gnu")
+OPT_LEVEL = Some("0")
+HOST = Some("x86_64-unknown-linux-gnu")
+CXX_x86_64-unknown-linux-gnu = None
+CXX_x86_64_unknown_linux_gnu = None
+HOST_CXX = None
+CXX = Some("g++")
+CXXFLAGS_x86_64-unknown-linux-gnu = None
+CXXFLAGS_x86_64_unknown_linux_gnu = None
+HOST_CXXFLAGS = None
+CXXFLAGS = None
+CRATE_CC_NO_DEFAULTS = None
+CARGO_CFG_TARGET_FEATURE = Some("fxsr,sse,sse2")
+CXX_x86_64-unknown-linux-gnu = None
+CXX_x86_64_unknown_linux_gnu = None
+HOST_CXX = None
+CXX = Some("g++")
+CXXFLAGS_x86_64-unknown-linux-gnu = None
+CXXFLAGS_x86_64_unknown_linux_gnu = None
+HOST_CXXFLAGS = None
+CXXFLAGS = None
+CRATE_CC_NO_DEFAULTS = None
+CARGO_CFG_TARGET_FEATURE = Some("fxsr,sse,sse2")
+CXX_x86_64-unknown-linux-gnu = None
+CXX_x86_64_unknown_linux_gnu = None
+HOST_CXX = None
+CXX = Some("g++")
+CXXFLAGS_x86_64-unknown-linux-gnu = None
+CXXFLAGS_x86_64_unknown_linux_gnu = None
+HOST_CXXFLAGS = None
+CXXFLAGS = None
+CRATE_CC_NO_DEFAULTS = None
+CARGO_CFG_TARGET_FEATURE = Some("fxsr,sse,sse2")
+running: "g++" "-O0" "-ffunction-sections" "-fdata-sections" "-fPIC" "-g" "-fno-omit-frame-pointer" "-m64" "-I" "include" "-Wall" "-Wextra" "-std=c++11" "-mtune=native" "-mcpu=native" "-march=native" "-DNO_WARN_X86_INTRINSICS" "-o" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/tpch-bench-839c75c1994b07d8/out/cpputils/queries.o" "-c" "cpputils/queries.cpp"
+cargo:warning=In file included from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/include/c++/8.5.0/x86_64-unknown-linux-gnu/bits/os_defines.h:39,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/include/c++/8.5.0/x86_64-unknown-linux-gnu/bits/c++config.h:508,
+cargo:warning=                 from /nix/store/jawrly5yv27r9k3wijshkb21zm8slhss-gcc-8.5.0/include/c++/8.5.0/cstdint:38,
+cargo:warning=                 from cpputils/queries.cpp:15:
+cargo:warning=/nix/store/pvn23vycg674bj6nypjcfyhqbr85rqxa-glibc-2.34-115-dev/include/features.h:412:4: warning: #warning _FORTIFY_SOURCE requires compiling with optimization (-O) [-Wcpp]
+cargo:warning= #  warning _FORTIFY_SOURCE requires compiling with optimization (-O)
+cargo:warning=    ^~~~~~~
+exit status: 0
+AR_x86_64-unknown-linux-gnu = None
+AR_x86_64_unknown_linux_gnu = None
+HOST_AR = None
+AR = Some("ar")
+running: "ar" "crs" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/tpch-bench-839c75c1994b07d8/out/libcpputils.a" "/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/tpch-bench-839c75c1994b07d8/out/cpputils/queries.o"
+exit status: 0
+cargo:rustc-link-lib=static=cpputils
+cargo:rustc-link-search=native=/home/lutzcle/code/numa-gpu/../numa-gpu-docs/debug/build/tpch-bench-839c75c1994b07d8/out
+CXXSTDLIB_x86_64-unknown-linux-gnu = None
+CXXSTDLIB_x86_64_unknown_linux_gnu = None
+HOST_CXXSTDLIB = None
+CXXSTDLIB = None
+cargo:rustc-link-lib=stdc++
