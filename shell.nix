@@ -1,23 +1,21 @@
-with import <nixpkgs> {};
+# Pin Nixpkgs version to Rust 1.60
+with import (fetchTarball {
+  name = "nixpkgs";
+  url = "https://github.com/NixOS/nixpkgs/archive/61970a41ec4605b23558fadfc75a1560c2bddef4.tar.gz";
+  sha256 = "092manddxwvjdk71mkq5xbrkd4n3s1993yjkzw0riclqz0558hy5";
+}) {};
 
-let src = fetchFromGitHub {
-      owner = "mozilla";
-      repo = "nixpkgs-mozilla";
-      # commit from: 2019-05-15
-      rev = "f233fdc4ff6ba2ffeb1e3e3cd6d63bb1297d6996";
-      sha256 = "1rzz03h0b38l5sg61rmfvzpbmbd5fn2jsi1ccvq22rb76s1nbh8i";
-   };
-in
-with import "${src.out}/rust-overlay.nix" pkgs pkgs;
+# Comment in to use system default version instead of pinned version
+# with import <nixpkgs> {};
 
 gcc8Stdenv.mkDerivation {
   name = "rust-env";
   nativeBuildInputs = [
-    # Rust overlay packages
-    latest.rustChannels.stable.rust
+    # Rust packages
+    cargo clippy rustc rustfmt
 
     # NixPkgs packages
-    clang numactl cudatoolkit_10_2 linuxPackages.nvidia_x11 valgrind
+    clang numactl cudaPackages_10_2.cudatoolkit linuxPackages.nvidia_x11 valgrind
   ];
   buildInputs = [
     # Example Run-time Additional Dependencies
@@ -25,9 +23,9 @@ gcc8Stdenv.mkDerivation {
 
   # Set Environment Variables
   RUST_BACKTRACE = "full";
-  CUDA_PATH=pkgs.cudatoolkit_10_2;
+  CUDA_PATH=pkgs.cudaPackages_10_2.cudatoolkit;
 
-  # LD_FLAGS = "-L${pkgs.cudatoolkit_10_2}/lib -L${pkgs.cudatoolkit_10_2.lib}/lib";
-  RUSTFLAGS = "-Lnative=${pkgs.stdenv.cc.cc.lib}/lib -Lnative=${pkgs.cudatoolkit_10_2}/lib -Lnative=${pkgs.cudatoolkit_10_2.lib}/lib -Lnative=${pkgs.linuxPackages.nvidia_x11}/lib";
-  LD_LIBRARY_PATH = "${pkgs.cudatoolkit_10_2}/lib:${pkgs.cudatoolkit_10_2}/lib/stubs:${pkgs.cudatoolkit_10_2.lib}/lib:$LD_LIBRARY_PATH -Lnative=${pkgs.linuxPackages.nvidia_x11}/lib";
+  # LD_FLAGS = "-L${pkgs.cudaPackages_10_2.cudatoolkit}/lib -L${pkgs.cudaPackages_10_2.cudatoolkit.lib}/lib";
+  RUSTFLAGS = "-Lnative=${pkgs.stdenv.cc.cc.lib}/lib -Lnative=${pkgs.cudaPackages_10_2.cudatoolkit}/lib -Lnative=${pkgs.cudaPackages_10_2.cudatoolkit.lib}/lib -Lnative=${pkgs.linuxPackages.nvidia_x11}/lib";
+  LD_LIBRARY_PATH = "${pkgs.cudaPackages_10_2.cudatoolkit}/lib:${pkgs.cudaPackages_10_2.cudatoolkit}/lib/stubs:${pkgs.cudaPackages_10_2.cudatoolkit.lib}/lib:$LD_LIBRARY_PATH -Lnative=${pkgs.linuxPackages.nvidia_x11}/lib";
 }
