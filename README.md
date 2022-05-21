@@ -146,6 +146,8 @@ Detailed setup guides are provided for the topics:
 
  * [NUMA in the context of fast interconnects](./guides/numa.md)
 
+ * [POWER9 Microarchitecture Tuning](./guides/power9.md)
+
 ## Usage
 
 The easiest way to launch NUMA-GPU commands is through `cargo run`. Some
