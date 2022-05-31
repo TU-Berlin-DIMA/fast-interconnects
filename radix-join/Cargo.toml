@@ -2,7 +2,7 @@
 name = "radix-join"
 version = "0.1.0"
 authors = ["Clemens Lutz <lutzcle@cml.li>"]
-license = "MPL-2.0"
+license = "Apache-2.0"
 repository = "https://github.com/TU-Berlin-DIMA/numa-gpu"
 description = "A partitioned hash join optimized for large-to-large joins on GPUs with fast interconnects"
 readme = "../README.md"

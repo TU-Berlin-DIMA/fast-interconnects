@@ -1,7 +1,5 @@
 /*
- * Copyright (c) 2019-2020 Clemens Lutz, German Research Center for Artificial
- * Intelligence
- * Author: Clemens Lutz <clemens.lutz@dfki.de>
+ * Copyright (c) 2019-2022 Clemens Lutz
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in

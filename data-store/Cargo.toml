@@ -2,7 +2,7 @@
 name = "data-store"
 version = "0.1.0"
 authors = ["Clemens Lutz <lutzcle@cml.li>"]
-license = "MPL-2.0"
+license = "Apache-2.0"
 repository = "https://github.com/TU-Berlin-DIMA/numa-gpu"
 description = "A collection of data stores for SQL operators"
 readme = "../README.md"

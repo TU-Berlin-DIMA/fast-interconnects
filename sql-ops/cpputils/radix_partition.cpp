@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2014 Cagri Balkesen, ETH Zurich
  * Copyright (c) 2014 Claude Barthels, ETH Zurich
- * Copyright (c) 2019-2021 Clemens Lutz
+ * Copyright (c) 2019-2022 Clemens Lutz
  *
  * Original sources by Cagri Balkesen and Claude Barthels are copyrighted under
  * the MIT license.
@@ -30,8 +30,6 @@
  * SOFTWARE.
  *
  * Apache License 2.0:
- *
- * Author: Clemens Lutz <lutzcle@cml.li>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
