@@ -108,7 +108,11 @@ fn main() {
     pub const LOG2_NUM_BANKS: u32 = {};\n\
     pub const RADIX_JOIN_BUCKET_CHAINING_ENTRIES: u32 = {};\n\
     ",
-                cache_line_size, gpu_cache_line_size, align_bytes, padding_bytes, log2_num_banks,
+                cache_line_size,
+                gpu_cache_line_size,
+                align_bytes,
+                padding_bytes,
+                log2_num_banks,
                 radix_join_bucket_chaining_entries
             )
             .as_bytes(),
