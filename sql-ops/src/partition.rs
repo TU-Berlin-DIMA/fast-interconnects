@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! A collection of partitioning operators.
+
 use crate::error::{Error, ErrorKind};
 use rustacuda::memory::DeviceCopy;
 use std::convert::TryFrom;

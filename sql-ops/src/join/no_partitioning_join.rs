@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Hash join operators for CPU and GPU.
+//! Hash join operators for CPUs and GPUs (that don't partition data).
 //!
 //! The hash join operator supports x86_64 and PPC64 CPUs and CUDA GPUs.
 //! The hash join can be executed in parallel. Heterogeneous parallel execution

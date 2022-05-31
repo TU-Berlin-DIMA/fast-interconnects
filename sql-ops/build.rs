@@ -66,6 +66,11 @@ fn main() {
     // partitioning variant.
     let laswwc_tuples_per_thread = 5;
 
+    // Hash table entries using in the bucket chaining scheme of the radix join.
+    //
+    // Must be a power of two, and at least 1. No further constraints.
+    let radix_join_bucket_chaining_entries = 2048;
+
     // Generate constants files for Rust and C++
     let cpp_constants_path = Path::new(&out_dir).join("constants.h");
     let rust_constants_path = Path::new(&out_dir).join("constants.rs");
@@ -101,8 +106,10 @@ fn main() {
     pub const ALIGN_BYTES: u32 = {};\n\
     pub const PADDING_BYTES: u32 = {};\n\
     pub const LOG2_NUM_BANKS: u32 = {};\n\
+    pub const RADIX_JOIN_BUCKET_CHAINING_ENTRIES: u32 = {};\n\
     ",
                 cache_line_size, gpu_cache_line_size, align_bytes, padding_bytes, log2_num_banks,
+                radix_join_bucket_chaining_entries
             )
             .as_bytes(),
         )

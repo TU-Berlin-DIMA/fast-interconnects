@@ -11,15 +11,12 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
-/*
- * Assumptions:
- *
- * Hash table's size is 2^x - 1
- * Key with value==-1 is reserved for NULL values
- * Key and payload are int64_t
- * Hash table is initialized with all entries set to -1
- */
+//
+// Assumptions:
+//
+// Hash table's size is 2^x - 1
+// Key with value == 0xFFF..F is reserved for the null_key<T>()
+// Hash table is initialized with all entries set to null_key<T>()
 
 #define CUDA_MODIFIER
 #include <gpu_common.h>

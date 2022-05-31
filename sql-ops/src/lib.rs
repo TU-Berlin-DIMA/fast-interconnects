@@ -21,6 +21,75 @@
 //! - Radix partition
 //! - Prefix scan (exclusive)
 //!
+//! # Tuning parameters
+//!
+//! Several tuning parameters are defined as constant values. These affect
+//! the performance and should be adjusted if necessary.
+//!
+//! The tuning parameters are set in the `build.rs` file, which exports them to Rust, C++, and
+//! CUDA.
+//!
+//! ## CPU cacheline size
+//!
+//! `CPU_CACHE_LINE_SIZE` defines the number of bytes used for padding to prevent false sharing,
+//! and SWWC radix partitioning buffers. The size is specific to the CPU architecture and set to
+//! different values depending on the ISA:
+//!
+//! - aarch64: 64 bytes
+//! - x86_64: 64 bytes
+//! - powerpc64: 128 bytes
+//!
+//! ## GPU cacheline size
+//!
+//! `GPU_CACHE_LINE_SIZE` serves the same purpose as the CPU cacheline size, but is used in GPU
+//! code paths. The size is set to 128 bytes, which is the size used by many Nvidia GPUs (e.g.,
+//! Pascal, Volta, Ampere).
+//!
+//! ## Align bytes
+//!
+//! `ALIGN_BYTES` defines the alignment of partitions in bytes. This parameter is intended to
+//! prevent cache conflict misses. It should be set to a multiple of the cacheline size.
+//!
+//! Furthermore, cacheline alignment is necessary for:
+//!
+//! - non-temporal store instructions
+//! - vector load and store instructions
+//! - perfectly aligned coalesced loads and stores on GPUs
+//!
+//! ## Padding bytes
+//!
+//! `PADDING_BYTES` defines the padding size between partitions.  Padding is necessary for
+//! partitioning algorithms to align writes. Aligned writes have fixed length and may overwrite the
+//! padding space in front of their partition.  For this reason, also the first partition includes
+//! padding in front.
+//!
+//! If no padding is used, aligned writes incur a race condition between threads. Given two
+//! partitions, a thread writing to the end of the first partition must write after a different
+//! thread writing to the beginning of the second partition, because the written locations may
+//! overlap due to aligning the second thread to `PADDING_BYTES`.
+//!
+//! ## Number of banks
+//!
+//! `LOG2_NUM_BANKS` defines the number of shared memory banks on GPUs. This parameter is used to
+//! avoid bank conflicts.
+//!
+//! ## LA-SWWC tuples per thread
+//!
+//! `LASWWC_TUPLES_PER_THREAD` defines the number of tuples processed at a time per thread. More
+//! tuples require more shared memory and more registers. Thus, the parameter should be tuned for
+//! each GPU architecture.
+//!
+//! The Stehle and Jacobsen set the value to `3` for a Tesla P100 GPU in their work: [*A Memory
+//! Bandwidth-Efficient Hybrid Radix Sort on GPUs*](http://doi.acm.org/10.1145/3035918.3064043). We
+//! set the value to `5` for a Tesla V100 GPU.
+//!
+//! ## Bucket chaining entries
+//!
+//! `RADIX_JOIN_BUCKET_CHAINING_ENTRIES` defines the number of hash table entries used by the
+//! bucket chaining scheme of the radix join.
+//!
+//! The value must be set to a power of two, and at least 1. No further constraints.
+//!
 //! # Library initialization
 //!
 //! GPU operators are compiled as a [CUDA `fatbinary` module][fatbin]. The

@@ -12,6 +12,48 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Radix join operators for GPUs.
+//!
+//! The radix join is specified to join two relations. The current method results in a set of
+//! aggregates, i.e., one aggregate per thread. These must be summed up by the caller, e.g., on the
+//! CPU.
+//!
+//! Specifically, the current join implementation performs:
+//!
+//! ```sql
+//! SELECT SUM(s.value)
+//! FROM r
+//! JOIN s ON r.key = s.key
+//! ```
+//!
+//! Note that `r.value` is inserted into the hash table in order to read all four columns. However,
+//! this wouldn't be strictly necessary to correctly answer the query.
+//!
+//! ## Hashing schemes
+//!
+//! Perfect hashing (i.e., join key as array index) and bucket chaining are implemented. Linear
+//! probing is currently not implemented. Bucket chaining was used because the radix joins by
+//! Balkesen et al. and Sioulas et al. also use this scheme.
+//!
+//! According to our measurements, the hashing scheme doesn't affect the join performance (see the
+//! Triton join paper). This might change if a higher fanout is required to fit the hash table into
+//! shared memory, e.g., due to the load factor of linear probing.
+//!
+//! ## Skew handling
+//!
+//! One call to `CudaRadixJoin::join` processes all partitions. Before the join starts, we
+//! calculate how large each partition is and assign partitions evenly among the thread blocks,
+//! using a greedy algorithm. Then, each thread block processes the partitions assigned to it in
+//! parallel.
+//!
+//! This assignment method thus handles skew, as long as none of the hash tables exceeds the shared
+//! memory capacity.
+//!
+//! Handling a high degree of skew would require dynamic recursive partitioning. I.e., if a
+//! partition exceeds the shared memory capacity, it should be recursively partitioned until all
+//! subpartitions fit into shared memory. Alternatively, spilling (parts of) the hash table to GPU
+//! memory would be possible as well.
+
 use super::{HashingScheme, HtEntry};
 use crate::error::{ErrorKind, Result};
 use crate::partition::PartitionedRelation;
@@ -52,6 +94,11 @@ struct JoinAggregateArgs {
 
 unsafe impl DeviceCopy for JoinAggregateArgs {}
 
+/// Specifies that the implementing type can be used as a join key in `CudaRadixJoin`.
+///
+/// CudaRadixJoinable is a trait for which specialized implementations exist for each implementing
+/// type (currently i32 and i64). Specialization is necessary because each type requires a
+/// different CUDA function to be called.
 pub trait CudaRadixJoinable: DeviceCopy + KeyAttribute {
     fn join_impl(
         rj: &CudaRadixJoin,
@@ -63,6 +110,9 @@ pub trait CudaRadixJoinable: DeviceCopy + KeyAttribute {
     ) -> Result<()>;
 }
 
+/// GPU radix join implementation in CUDA.
+///
+/// See the module documentation for details.
 #[derive(Debug)]
 pub struct CudaRadixJoin {
     radix_pass: RadixPass,
@@ -73,6 +123,7 @@ pub struct CudaRadixJoin {
 }
 
 impl CudaRadixJoin {
+    /// Create a new radix join instance.
     pub fn new(
         radix_pass: RadixPass,
         radix_bits: RadixBits,
@@ -89,6 +140,7 @@ impl CudaRadixJoin {
         })
     }
 
+    /// Join two relations and output a set of aggregate values.
     pub fn join<T>(
         &self,
         build_rel: &PartitionedRelation<Tuple<T, T>>,
@@ -200,9 +252,7 @@ macro_rules! impl_cuda_radix_join_for_type {
                         }
                         HashingScheme::LinearProbing => unimplemented!(),
                         HashingScheme::BucketChaining => {
-                            // Tuning parameter for the number of hash table buckets in the bucket-chained
-                            // hashing scheme. Must be a power of 2, and at least 1. No further constraints.
-                            args.ht_entries = 2048;
+                            args.ht_entries = crate::constants::RADIX_JOIN_BUCKET_CHAINING_ENTRIES;
 
                             let name = std::ffi::CString::new(stringify!([<
                                      gpu_join_aggregate_smem_chaining_ $Suffix _ $Suffix _ $Suffix

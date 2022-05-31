@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! A collection of relational join operators.
+
 pub mod cuda_radix_join;
 mod hashing_scheme;
 pub mod no_partitioning_join;
