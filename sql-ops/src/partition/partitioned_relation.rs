@@ -588,7 +588,6 @@ pub struct PartitionedRelationChunksMut<'a, T: DeviceCopy> {
     relation_remainder: Option<&'a mut [T]>,
     canonical_chunk_len: usize,
     offsets_chunks: ChunksMut<'a, u64>,
-    chunk_id: u32,
     chunks: u32,
     radix_bits: u32,
 }
@@ -614,7 +613,6 @@ impl<'a, K: DeviceCopy, V: DeviceCopy> PartitionedRelationChunksMut<'a, Tuple<K,
                 relation_remainder,
                 canonical_chunk_len,
                 offsets_chunks,
-                chunk_id: 0,
                 chunks: rel.chunks,
                 radix_bits: rel.radix_bits,
             }
@@ -639,13 +637,9 @@ impl<'a, T: DeviceCopy> Iterator for PartitionedRelationChunksMut<'a, T> {
         let zipped =
             chunk.and_then(|rel| self.offsets_chunks.next().and_then(|off| Some((rel, off))));
         zipped.and_then(|(r, o)| {
-            let chunk_id = self.chunk_id;
-            self.chunk_id = self.chunk_id + 1;
-
             Some(PartitionedRelationMutSlice {
                 relation: r.as_launchable_mut_slice(),
                 offsets: o.as_launchable_mut_slice(),
-                chunk_id,
                 chunks: self.chunks,
                 radix_bits: self.radix_bits,
             })
@@ -662,7 +656,6 @@ pub struct PartitionedRelationMutSlice<'a, T> {
     // FIXME: convert to normal slice, and check that not DevMem in chunks_mut()
     pub(super) relation: LaunchableMutSlice<'a, T>,
     pub(super) offsets: LaunchableMutSlice<'a, u64>,
-    pub(super) chunk_id: u32,
     pub(super) chunks: u32,
     pub(super) radix_bits: u32,
 }
