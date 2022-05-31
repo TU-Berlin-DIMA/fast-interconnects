@@ -211,13 +211,10 @@ struct GpuMemoryLatency {
 }
 
 #[derive(Debug)]
-struct CpuMemoryLatency {
-    device_id: u16,
-}
+struct CpuMemoryLatency;
 
 #[derive(Debug)]
 struct MeasurementParameters {
-    range: usize,
     stride: usize,
     iterations: u32,
 }
@@ -269,7 +266,6 @@ impl Measurement {
                 let mut warm_up = true;
 
                 let mp = MeasurementParameters {
-                    range,
                     stride,
                     iterations,
                 };
@@ -440,7 +436,7 @@ impl CpuMemoryLatency {
     fn new(device_id: u16) -> Self {
         numa::run_on_node(device_id).expect("Couldn't set NUMA node");
 
-        Self { device_id }
+        Self
     }
 
     fn run(

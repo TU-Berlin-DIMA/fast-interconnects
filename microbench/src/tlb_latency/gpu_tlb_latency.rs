@@ -46,8 +46,11 @@ pub(super) struct GpuTlbLatency {
     // `module` must be dropped before `context`. Rust specifies the drop order as the field order
     // in the struct. See RFC 1857: https://github.com/rust-lang/rfcs/pull/1857
     module: Module,
+
+    // Keep CUDA context until the end of the measurement
+    #[allow(dead_code)]
     context: Context,
-    device: Device,
+
     device_id: u32,
     template: DataPoint,
 
@@ -73,7 +76,6 @@ impl GpuTlbLatency {
 
         Ok(Self {
             context,
-            device,
             device_id,
             module,
             template: gpu_template,
