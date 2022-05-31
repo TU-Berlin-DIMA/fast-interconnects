@@ -12,8 +12,9 @@ The following platforms are currently tested:
  * `powerpc64le-unknown-linux-gnu`
 
 We try to also support `aarch64-unknown-linux-gnu` on the Nvidia Jetson Nano
-platform. However, currently not all modules compile on Arm because the CUDA
-NVTX and NVML libraries are not available.
+platform. However, we don't regularly test on Arm. This can lead to breakage
+because the CUDA NVTX and NVML libraries are not available and require custom
+workarounds.
 
 ### Interconnect Limitations
 
@@ -24,8 +25,10 @@ discrete GPUs connected by PCI-e.
 On these GPUs, Project Triton does not support features that require
 cache-coherence.  Notable examples are GPU access to pageable memory (i.e,
 non-pinned), CPU-GPU cooperative exectution, and memory allocations distributed
-over multiple NUMA nodes. For example, the Triton join currently requires
-NUMA-distributed memory allocations and does not work with PCI-e.
+over multiple NUMA nodes.
+
+For example, the Triton join currently requires NUMA-distributed memory
+allocations and does not work with PCI-e.
 
 ### Hardware Monitoring Limitations
 
