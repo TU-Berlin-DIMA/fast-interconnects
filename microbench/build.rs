@@ -29,7 +29,6 @@ fn main() {
         "include/cpu_clock.h",
         "include/cuda_clock.h",
         "include/cuda_vector.h",
-        "include/helper.h",
         "include/ppc_intrinsics.h",
         "include/timer.hpp",
     ];
