@@ -150,13 +150,8 @@ arg_enum! {
     pub enum ArgRadixPartitionAlgorithm {
         NC,
         LASWWC,
-        SSWWC,
-        SSWWCNT,
         SSWWCv2,
         SSWWCv2G,
-        HSSWWC,
-        HSSWWCv2,
-        HSSWWCv3,
         HSSWWCv4,
     }
 }
@@ -166,13 +161,8 @@ impl Into<GpuRadixPartitionAlgorithm> for ArgRadixPartitionAlgorithm {
         match self {
             Self::NC => GpuRadixPartitionAlgorithm::NC,
             Self::LASWWC => GpuRadixPartitionAlgorithm::LASWWC,
-            Self::SSWWC => GpuRadixPartitionAlgorithm::SSWWC,
-            Self::SSWWCNT => GpuRadixPartitionAlgorithm::SSWWCNT,
             Self::SSWWCv2 => GpuRadixPartitionAlgorithm::SSWWCv2,
             Self::SSWWCv2G => GpuRadixPartitionAlgorithm::SSWWCv2G,
-            Self::HSSWWC => GpuRadixPartitionAlgorithm::HSSWWC,
-            Self::HSSWWCv2 => GpuRadixPartitionAlgorithm::HSSWWCv2,
-            Self::HSSWWCv3 => GpuRadixPartitionAlgorithm::HSSWWCv3,
             Self::HSSWWCv4 => GpuRadixPartitionAlgorithm::HSSWWCv4,
         }
     }
@@ -224,6 +214,7 @@ struct Options {
 
     /// No effect (passed by Cargo to run only benchmarks instead of unit tests)
     #[structopt(long, hidden = true)]
+    #[allow(dead_code)]
     bench: bool,
 
     /// Number of tuples in the relation

@@ -93,12 +93,7 @@ arg_enum! {
         CpuSWWCSIMD,
         GpuNC,
         GpuLASWWC,
-        GpuSSWWC,
-        GpuSSWWCNT,
         GpuSSWWCv2,
-        GpuHSSWWC,
-        GpuHSSWWCv2,
-        GpuHSSWWCv3,
         GpuHSSWWCv4,
     }
 }
@@ -219,12 +214,7 @@ impl Into<DeviceType<CpuRadixPartitionAlgorithm, GpuRadixPartitionAlgorithm>>
             Self::CpuSWWCSIMD => DeviceType::Cpu(CpuRadixPartitionAlgorithm::SwwcSimd),
             Self::GpuNC => DeviceType::Gpu(GpuRadixPartitionAlgorithm::NC),
             Self::GpuLASWWC => DeviceType::Gpu(GpuRadixPartitionAlgorithm::LASWWC),
-            Self::GpuSSWWC => DeviceType::Gpu(GpuRadixPartitionAlgorithm::SSWWC),
-            Self::GpuSSWWCNT => DeviceType::Gpu(GpuRadixPartitionAlgorithm::SSWWCNT),
             Self::GpuSSWWCv2 => DeviceType::Gpu(GpuRadixPartitionAlgorithm::SSWWCv2),
-            Self::GpuHSSWWC => DeviceType::Gpu(GpuRadixPartitionAlgorithm::HSSWWC),
-            Self::GpuHSSWWCv2 => DeviceType::Gpu(GpuRadixPartitionAlgorithm::HSSWWCv2),
-            Self::GpuHSSWWCv3 => DeviceType::Gpu(GpuRadixPartitionAlgorithm::HSSWWCv3),
             Self::GpuHSSWWCv4 => DeviceType::Gpu(GpuRadixPartitionAlgorithm::HSSWWCv4),
         }
     }

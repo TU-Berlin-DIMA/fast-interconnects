@@ -256,17 +256,6 @@ pub enum GpuRadixPartitionAlgorithm {
     /// the authors do not mention or cite it in the paper.
     LASWWC,
 
-    /// Radix partitioning with shared software write combining.
-    ///
-    /// This algorithm shares the software write-combine buffers within a thread
-    /// block. The buffers are cached in shared memory. To share the buffers,
-    /// the thread block synchronizes access to each buffer via a lock.
-    SSWWC,
-
-    /// Radix partitioning with shared software write combining and non-temporal
-    /// loads/stores.
-    SSWWCNT,
-
     /// Radix partitioning with shared software write combining, version 2.
     ///
     /// In version 1, a warp can block all other warps by holding locks on more
@@ -287,31 +276,6 @@ pub enum GpuRadixPartitionAlgorithm {
     /// as the buffers are too large. To avoid polluting the L2 cache, reading
     /// input and writing output uses streaming load and store instructions.
     SSWWCv2G,
-
-    /// Radix partitioning with hierarchical shared software write combining.
-    ///
-    /// This algorithm adds a second level of software write-combine buffers in
-    /// device memory. The purpose is to more efficiently transfer data over a
-    /// GPU interconnect (e.g., NVLink). Larger buffers amortize the overheads
-    /// such as TLB misses over more tuples, which can lead to higher throughput.
-    HSSWWC,
-
-    /// Radix partitioning with hierarchical shared software write combining, version 2.
-    ///
-    /// In version 1, a warp can block all other warps by holding locks on more
-    /// than one buffer (i.e., leader candidates).
-    ///
-    /// Version 2 tries to avoid blocking other warps by releasing all locks except
-    /// one (i.e., the leader's buffer lock).
-    HSSWWCv2,
-
-    /// Radix partitioning with hierarchical shared software write combining, version 3.
-    ///
-    /// Version 3 performs the buffer flush from dmem to memory asynchronously.
-    /// This change enables other warps to make progress during the dmem flush, which
-    /// is important because the dmem buffer is large (several MBs) and the flush can
-    /// take a long time.
-    HSSWWCv3,
 
     /// Radix partitioning with hierarchical shared software write combining, version 4.
     ///
@@ -387,10 +351,7 @@ impl GpuRadixPartitioner {
                     swwc_buffer: DeviceBuffer::uninitialized(0)?,
                 }
             },
-            GpuRadixPartitionAlgorithm::HSSWWC
-            | GpuRadixPartitionAlgorithm::HSSWWCv2
-            | GpuRadixPartitionAlgorithm::HSSWWCv3
-            | GpuRadixPartitionAlgorithm::HSSWWCv4 => RadixPartitionState::HSSWWC {
+            GpuRadixPartitionAlgorithm::HSSWWCv4 => RadixPartitionState::HSSWWC {
                 device_memory_buffers: unsafe { DeviceBuffer::uninitialized(0)? },
                 buffer_bytes_per_block: 0,
             },
@@ -402,13 +363,8 @@ impl GpuRadixPartitioner {
             match partition_algorithm {
                 GpuRadixPartitionAlgorithm::NC => 1024,
                 GpuRadixPartitionAlgorithm::LASWWC => 1024,
-                GpuRadixPartitionAlgorithm::SSWWC => 1024,
-                GpuRadixPartitionAlgorithm::SSWWCNT => 1024,
                 GpuRadixPartitionAlgorithm::SSWWCv2 => 1024,
                 GpuRadixPartitionAlgorithm::SSWWCv2G => 1024,
-                GpuRadixPartitionAlgorithm::HSSWWC => 512,
-                GpuRadixPartitionAlgorithm::HSSWWCv2 => 512,
-                GpuRadixPartitionAlgorithm::HSSWWCv3 => 512,
                 GpuRadixPartitionAlgorithm::HSSWWCv4 => 512,
             },
         ));
@@ -1040,11 +996,6 @@ macro_rules! impl_gpu_radix_partition_for_type {
                     rp.partition_state = partition_state;
 
                     let dmem_buffer_bytes_per_block = match rp.partition_algorithm {
-                        GpuRadixPartitionAlgorithm::HSSWWC
-                            | GpuRadixPartitionAlgorithm::HSSWWCv2
-                            | GpuRadixPartitionAlgorithm::HSSWWCv3 => {
-                                rp.dmem_buffer_bytes * fanout_u32 as usize
-                            },
                         GpuRadixPartitionAlgorithm::HSSWWCv4 => {
                             let warps_per_block = rp_block_size.x / warp_size;
                             rp.dmem_buffer_bytes * (fanout_u32 + warps_per_block) as usize
@@ -1224,46 +1175,6 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                        ))?;
                             }
                         },
-                        GpuRadixPartitionAlgorithm::SSWWC => {
-                            let name = std::ffi::CString::new(
-                                    stringify!([<gpu_chunked_sswwc_radix_partition_ $Suffix _ $Suffix>])
-                                    ).unwrap();
-                            let mut function = module.get_function(&name)?;
-                            function.set_max_dynamic_shared_size_bytes(max_shared_mem_bytes)?;
-
-                            unsafe {
-                                launch!(
-                                    function<<<
-                                    grid_size,
-                                    rp_block_size,
-                                    max_shared_mem_bytes,
-                                    stream
-                                    >>>(
-                                        args.clone(),
-                                        max_shared_mem_bytes
-                                       ))?;
-                            }
-                        },
-                        GpuRadixPartitionAlgorithm::SSWWCNT => {
-                            let name = std::ffi::CString::new(
-                                    stringify!([<gpu_chunked_sswwc_non_temporal_radix_partition_ $Suffix _ $Suffix>])
-                                    ).unwrap();
-                            let mut function = module.get_function(&name)?;
-                            function.set_max_dynamic_shared_size_bytes(max_shared_mem_bytes)?;
-
-                            unsafe {
-                                launch!(
-                                    function<<<
-                                    grid_size,
-                                    rp_block_size,
-                                    max_shared_mem_bytes,
-                                    stream
-                                    >>>(
-                                        args.clone(),
-                                        max_shared_mem_bytes
-                                       ))?;
-                            }
-                        },
                         GpuRadixPartitionAlgorithm::SSWWCv2 => {
                             let name = std::ffi::CString::new(
                                 stringify!([<gpu_chunked_sswwc_radix_partition_v2_ $Suffix _ $Suffix>])
@@ -1299,66 +1210,6 @@ macro_rules! impl_gpu_radix_partition_for_type {
                                     stream
                                     >>>(
                                         args.clone()
-                                       ))?;
-                            }
-                        },
-                        GpuRadixPartitionAlgorithm::HSSWWC => {
-                            let name = std::ffi::CString::new(
-                                stringify!([<gpu_chunked_hsswwc_radix_partition_ $Suffix _ $Suffix>])
-                                ).unwrap();
-                            let mut function = module.get_function(&name)?;
-                            function.set_max_dynamic_shared_size_bytes(max_shared_mem_bytes)?;
-
-                            unsafe {
-                                launch!(
-                                    function<<<
-                                    grid_size,
-                                    rp_block_size,
-                                    max_shared_mem_bytes,
-                                    stream
-                                    >>>(
-                                        args.clone(),
-                                        max_shared_mem_bytes
-                                       ))?;
-                            }
-                        },
-                        GpuRadixPartitionAlgorithm::HSSWWCv2 => {
-                            let name = std::ffi::CString::new(
-                                stringify!([<gpu_chunked_hsswwc_radix_partition_v2_ $Suffix _ $Suffix>])
-                                ).unwrap();
-                            let mut function = module.get_function(&name)?;
-                            function.set_max_dynamic_shared_size_bytes(max_shared_mem_bytes)?;
-
-                            unsafe {
-                                launch!(
-                                    function<<<
-                                    grid_size,
-                                    rp_block_size,
-                                    max_shared_mem_bytes,
-                                    stream
-                                    >>>(
-                                        args.clone(),
-                                        max_shared_mem_bytes
-                                       ))?;
-                            }
-                        },
-                        GpuRadixPartitionAlgorithm::HSSWWCv3 => {
-                            let name = std::ffi::CString::new(
-                                stringify!([<gpu_chunked_hsswwc_radix_partition_v3_ $Suffix _ $Suffix>])
-                                ).unwrap();
-                            let mut function = module.get_function(&name)?;
-                            function.set_max_dynamic_shared_size_bytes(max_shared_mem_bytes)?;
-
-                            unsafe {
-                                launch!(
-                                    function<<<
-                                    grid_size,
-                                    rp_block_size,
-                                    max_shared_mem_bytes,
-                                    stream
-                                    >>>(
-                                        args.clone(),
-                                        max_shared_mem_bytes
                                        ))?;
                             }
                         },

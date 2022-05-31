@@ -223,6 +223,7 @@ struct Options {
 
     /// No effect (passed by Cargo to run only benchmarks instead of unit tests)
     #[structopt(long, hidden = true)]
+    #[allow(dead_code)]
     bench: bool,
 
     /// Number of tuples in the relation
