@@ -38,29 +38,33 @@ how we tuned our code for IBM POWER9 CPUs and Nvidia Volta GPUs:
 
 ## Code Structure
 
-NUMA-GPU provides the following applications and libraries:
+Project Triton provides the following applications and libraries:
 
- * `datagen` is a application and library to generate data with data
-   distributions. It is used as a library by `data-store` and `tpch-bench`.
- * `data-store` is a library for generating relational data sets. It is used by
-   `hashjoin` and `radix-join`.
- * `hashjoin` is an application to execute and benchmark hash joins on CPUs and
-   GPUs.
- * `microbench` is a collection of microbenchmarks for CPUs, GPUs, and GPU
-   interconnects.
- * `numa-gpu` is a library with abstractions and tools to program GPUs with and
-   without NVLink.
- * `radix-join` is an application to execute and benchmark radix joins on CPUs
-   and GPUs. The distinction from `hashjoin` enables a specialized API for
-   radix joins.
- * `sql-ops` is a library that implements SQL operators. These are used by
-   `hashjoin` and `radix-join`.
- * `tpch-bench` is an application to execute and benchmark TPC-H on CPUs and
-   GPUs. Currently, Query 6 is implemented.
+ * [`datagen`](https://tu-berlin-dima.github.io/numa-gpu/datagen/index.html) is
+   a application and library to generate data with data distributions. It is
+   used as a library by `data-store` and `tpch-bench`.
+ * [`data-store`](https://tu-berlin-dima.github.io/numa-gpu/data_store/index.html)
+   is a library for generating relational data sets. It is used by `hashjoin`
+   and `radix-join`.
+ * [`hashjoin`](https://tu-berlin-dima.github.io/numa-gpu/hashjoin/index.html)
+   is an application to execute and benchmark hash joins on CPUs and GPUs.
+ * [`microbench`](https://tu-berlin-dima.github.io/numa-gpu/microbench/index.html)
+   is a collection of microbenchmarks for CPUs, GPUs, and GPU interconnects.
+ * [`numa-gpu`](https://tu-berlin-dima.github.io/numa-gpu/numa_gpu/index.html)
+   is a library with abstractions and tools to program GPUs with and without
+   NVLink.
+ * [`radix-join`](https://tu-berlin-dima.github.io/numa-gpu/radix_join/index.html)
+   is an application to execute and benchmark radix joins on CPUs and GPUs. The
+   distinction from `hashjoin` enables a specialized API for radix joins.
+ * [`sql-ops`](https://tu-berlin-dima.github.io/numa-gpu/sql_ops/index.html) is
+   a library that implements SQL operators. These are used by `hashjoin` and
+   `radix-join`.
+ * [`tpch-bench`](https://tu-berlin-dima.github.io/numa-gpu/tpch_bench/index.html)
+   is an application to execute and benchmark TPC-H on CPUs and GPUs.
+   Currently, Query 6 is implemented.
 
-[Code documentation is available on GitHub
-Pages](https://tu-berlin-dima.github.io/numa-gpu/sql_ops/). You can also build
-it yourself by running:
+Code documentation is available on GitHub Pages, and linked in the above list.
+You can also build it yourself by running:
 ```sh
 cargo doc --document-private-items --no-deps --open
 ```
