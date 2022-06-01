@@ -398,12 +398,20 @@ where
     //
     // Note that CudaMemInfo over-reports how much memory is free. The Linux
     // kernel seems to give a more accurate report (on IBM AC922 with CUDA 10.2).
-    let cache_node = CurrentContext::get_device()?.numa_node().map_err(|_| {
-        ErrorKind::RuntimeError(
-            "Failed to get the GPU NUMA node. Maybe it isn't a cache-coherent GPU?".to_string(),
-        )
-    })?;
-    let linux_wrapper::NumaMemInfo { free, .. } = linux_wrapper::numa_mem_info(cache_node)?;
+    let free = CurrentContext::get_device()?
+        .numa_node()
+        .and_then(|cache_node| {
+            linux_wrapper::numa_mem_info(cache_node)
+                .map(|linux_wrapper::NumaMemInfo { free, .. }| free)
+        })
+        .or_else(|_| {
+            eprintln!(
+            "Warning: Couldn't get free GPU memory from Linux, falling back to CUDA get_mem_info. \
+            This method is less accurate and may lead to out-of-memory failures."
+            );
+            cuda_wrapper::mem_info().map(|cuda_wrapper::CudaMemInfo { free, .. }| free)
+        })?;
+
     let free = free - GPU_MEM_SLACK_BYTES;
     let cache_bytes = max_partitions_cache_bytes.map_or(free, |bytes| {
         if bytes > free {
