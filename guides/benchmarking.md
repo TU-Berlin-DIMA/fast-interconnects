@@ -35,6 +35,64 @@ always provide `--help`. The tools, especially the microbenchmarks, can be
 parameterized to explore different aspects of the hardware. We encourage you to
 experiment!
 
+## Measurement Results
+
+All tools output measurements as CSV files. To get hold of the CSV, add `--csv
+output.csv` as a commandline parameter.
+
+Our tools measure time in nanoseconds. We do our best to isolate the time taken
+by different parts of the program (e.g., the prefix sum, the first partitioning
+pass, and the GPU join pipeline).
+
+To get the join throughput, we take the input sizes and divide by the sum of
+the join phases. E.g., to get giga-tuples per second:
+
+```python
+(num_relations * num_tuples) / (prefix_sum_ns + partitioning_ns + join_ns)
+```
+
+The time to allocate memory is always reported separately. We don't consider
+memory allocation as part of the join, because we would expect a real system to
+reuse allocations (e.g., by using a memory pool or an efficient malloc
+implementation). Instead, we focus on producing consistent measurements.
+
+To achieve consistent measurements, we do the following:
+
+ * Measuring time with CUDA events instead of host timers. For CPU tasks, we
+   measure time with the Linux monotonic `clock_gettime` clock.
+
+ * Lock memory with `mlock`. This also prefaults pages and prevents paging to
+   disk. However, it takes the Linux kernel additional time to do this.
+
+ * Using HugeTLB pages instead of transparent huge pages. We have witnessed
+   that the transparent huge page allocator sometimes returns small pages,
+   despite sufficient huge pages being available.
+
+ * Early-boot page reservation. GPU TLBs compress their TLB entries if pages
+   are physically contiguous. This leads to deteriorating performance when huge
+   pages are fragmented. Unfortunately, Linux is not aware of this issue, and
+   thus we resort to reserving pages and occasionally rebooting to defrag the
+   pages. Reach out to us if you have a better solution for allocating
+   contiguous huge pages in userspace.
+
+ * Explicit NUMA allocation, instead of relying on a first-touch allocation
+   policy. Libraries such as `numa.h` internally call the `mmap` and then
+   `mbind` syscalls, which is slower than calling malloc.  Our `numa-gpu`
+   library does the same, but adds some extra configuration options.
+
+ * Pinning threads to CPU cores for CPU-based tasks, which has a big effect on
+   short-running benchmarks.
+
+ * Pinning the main program thread to the GPU's NUMA-affine CPU socket. This
+   increases the measured GPU performance of latency measurements and
+   short-running tasks.
+
+ * Setting the GPU clock frequency. This is only necessary for the memory
+   latency, TLB latency, and random memory access bandwidth microbenchmarks,
+   because these use clock cycle counters. We refrain from setting the
+   frequency in join benchmarks, as it complicates the setup and doesn't have a
+   big effect.
+
 ## NUMA Locality
 
 The big-ticket item is setting the right NUMA node. There are two nodes to be
