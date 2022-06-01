@@ -48,8 +48,7 @@ pub(super) struct GpuTlbLatency {
     module: Module,
 
     // Keep CUDA context until the end of the measurement
-    #[allow(dead_code)]
-    context: Context,
+    _context: Context,
 
     device_id: u32,
     template: DataPoint,
@@ -63,7 +62,7 @@ impl GpuTlbLatency {
     pub(super) fn new(device_id: u32, template: DataPoint) -> Result<Self> {
         rustacuda::init(CudaFlags::empty())?;
         let device = Device::get_device(device_id)?;
-        let context =
+        let _context =
             Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
         let module = Self::load_module()?;
         let nvml = NVML::init()?;
@@ -75,7 +74,7 @@ impl GpuTlbLatency {
         };
 
         Ok(Self {
-            context,
+            _context,
             device_id,
             module,
             template: gpu_template,

@@ -265,10 +265,7 @@ impl Measurement {
                 let mut data_points: Vec<DataPoint> = Vec::with_capacity(repeat as usize + 1);
                 let mut warm_up = true;
 
-                let mp = MeasurementParameters {
-                    stride,
-                    iterations,
-                };
+                let mp = MeasurementParameters { stride, iterations };
 
                 if i == 0 {
                     prepare(&mut state, &mut mem, &mp);
