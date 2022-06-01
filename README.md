@@ -28,6 +28,8 @@ how we tuned our code for IBM POWER9 CPUs and Nvidia Volta GPUs:
 
  * [Setup Guide](./guides/setup.md)
 
+ * [Benchmarking Guide](./guides/benchmarking.md)
+
  * [Problems when getting started](./guides/problems.md)
 
  * [Huge pages tuning](./guides/huge_pages.md)
