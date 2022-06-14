@@ -78,8 +78,9 @@ We've published our results from the Triton Project as academic papers:
  * [Lutz et al., *Pump Up the Volume: Processing Large Data on GPUs with Fast
    Interconnects*, SIGMOD 2020](https://doi.org/10.1145/3318464.3389705)
 
- * Lutz et al., *Triton Join: Efficiently Scaling to a Large Join State on GPUs
-   with Fast Interconnects*, SIGMOD 2022
+ * [Lutz et al., *Triton Join: Efficiently Scaling to a Large Join State on
+   GPUs with Fast Interconnects*, SIGMOD
+   2022](https://doi.org/10.1145/3514221.3517911)
 
 To cite our works, add these BibTeX snippets to your bibliography:
 
@@ -103,11 +104,10 @@ To cite our works, add these BibTeX snippets to your bibliography:
   title         = {Triton join: {Efficiently} scaling to a large join state
                   on {GPUs} with fast interconnects},
   booktitle     = {{SIGMOD}},
-  numpages      = {16},
+  pages         = {1017–1032},
   publisher     = {{ACM}},
   address       = {New York, NY, USA},
   year          = {2022},
-  doi           = {10.1145/3514221.3517911},
-  note          = {To be published}
+  doi           = {10.1145/3514221.3517911}
 }
 ```
